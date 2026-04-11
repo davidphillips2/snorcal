@@ -1,0 +1,148 @@
+import Database from 'better-sqlite3';
+import { MIGRATIONS, runSchemaMigrations } from './migrations.js';
+
+export class Db {
+  private db: Database.Database;
+
+  constructor(dbPath: string) {
+    this.db = new Database(dbPath);
+    this.db.pragma('journal_mode = WAL');
+    this.db.pragma('foreign_keys = ON');
+    this.migrate();
+  }
+
+  private migrate() {
+    for (const sql of MIGRATIONS) {
+      this.db.exec(sql);
+    }
+    runSchemaMigrations(this.db);
+  }
+
+  // --- Models ---
+
+  insertModel(model: {
+    id: string; name: string; filePath: string; fileSize: number;
+    format: string; faceCount: number; boundsX: number; boundsY: number; boundsZ: number;
+  }) {
+    this.db.prepare(`
+      INSERT INTO models (id, name, file_path, file_size, format, face_count, bounds_x, bounds_y, bounds_z)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(model.id, model.name, model.filePath, model.fileSize, model.format,
+      model.faceCount, model.boundsX, model.boundsY, model.boundsZ);
+  }
+
+  getModel(id: string) {
+    return this.db.prepare('SELECT * FROM models WHERE id = ?').get(id) as DbModel | undefined;
+  }
+
+  listModels() {
+    return this.db.prepare('SELECT id, name, format, face_count, file_size, created_at FROM models ORDER BY created_at DESC').all() as DbModelSummary[];
+  }
+
+  updateModelColors(id: string, colors: Buffer) {
+    this.db.prepare('UPDATE models SET face_colors = ? WHERE id = ?').run(colors, id);
+  }
+
+  deleteModel(id: string) {
+    this.db.prepare('DELETE FROM models WHERE id = ?').run(id);
+  }
+
+  // --- Jobs ---
+
+  insertJob(job: {
+    id: string; modelId: string; engine: string; settings: string; outputDir: string;
+  }) {
+    this.db.prepare(`
+      INSERT INTO jobs (id, model_id, engine, settings, output_dir)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(job.id, job.modelId, job.engine, job.settings, job.outputDir);
+  }
+
+  getJob(id: string) {
+    return this.db.prepare('SELECT * FROM jobs WHERE id = ?').get(id) as DbJob | undefined;
+  }
+
+  listJobs(status?: string) {
+    if (status) {
+      return this.db.prepare('SELECT * FROM jobs WHERE status = ? ORDER BY created_at DESC').all(status) as DbJob[];
+    }
+    return this.db.prepare('SELECT * FROM jobs ORDER BY created_at DESC').all() as DbJob[];
+  }
+
+  updateJobStatus(id: string, status: string, extra?: { progress?: number; currentStep?: string; errorMessage?: string }) {
+    if (status === 'running') {
+      this.db.prepare('UPDATE jobs SET status = ?, progress = ?, started_at = datetime(\'now\') WHERE id = ?')
+        .run(status, extra?.progress ?? 0, id);
+    } else if (status === 'completed' || status === 'failed' || status === 'cancelled') {
+      this.db.prepare('UPDATE jobs SET status = ?, progress = ?, completed_at = datetime(\'now\'), error_message = ? WHERE id = ?')
+        .run(status, extra?.progress ?? (status === 'completed' ? 100 : 0), extra?.errorMessage ?? null, id);
+    } else {
+      this.db.prepare('UPDATE jobs SET status = ?, progress = ?, current_step = ? WHERE id = ?')
+        .run(status, extra?.progress ?? 0, extra?.currentStep ?? null, id);
+    }
+  }
+
+  updateJobProgress(id: string, progress: number, currentStep?: string) {
+    this.db.prepare('UPDATE jobs SET progress = ?, current_step = ? WHERE id = ?')
+      .run(progress, currentStep ?? null, id);
+  }
+
+  updateJobOutput(id: string, gcodeSize: number) {
+    this.db.prepare('UPDATE jobs SET gcode_size = ? WHERE id = ?').run(gcodeSize, id);
+  }
+
+  // --- Profiles ---
+
+  listProfiles(engine: string, profileType?: string) {
+    if (profileType) {
+      return this.db.prepare('SELECT engine, profile_type, name, created_at FROM profiles WHERE engine = ? AND profile_type = ?').all(engine, profileType) as DbProfileSummary[];
+    }
+    return this.db.prepare('SELECT engine, profile_type, name, created_at FROM profiles WHERE engine = ?').all(engine) as DbProfileSummary[];
+  }
+
+  getProfile(engine: string, profileType: string, name: string) {
+    return this.db.prepare('SELECT * FROM profiles WHERE engine = ? AND profile_type = ? AND name = ?').get(engine, profileType, name) as DbProfile | undefined;
+  }
+
+  upsertProfile(engine: string, profileType: string, name: string, settings: string) {
+    this.db.prepare(`
+      INSERT INTO profiles (engine, profile_type, name, settings) VALUES (?, ?, ?, ?)
+      ON CONFLICT(engine, profile_type, name) DO UPDATE SET settings = excluded.settings, updated_at = datetime('now')
+    `).run(engine, profileType, name, settings);
+  }
+
+  deleteProfile(engine: string, profileType: string, name: string) {
+    this.db.prepare('DELETE FROM profiles WHERE engine = ? AND profile_type = ? AND name = ?').run(engine, profileType, name);
+  }
+
+  close() {
+    this.db.close();
+  }
+}
+
+// Database row types
+export interface DbModel {
+  id: string; name: string; file_path: string; file_size: number;
+  format: string; face_count: number; face_colors: Buffer | null;
+  bounds_x: number; bounds_y: number; bounds_z: number; created_at: string;
+}
+
+export interface DbModelSummary {
+  id: string; name: string; format: string; face_count: number; file_size: number; created_at: string;
+}
+
+export interface DbJob {
+  id: string; model_id: string; engine: string; status: string;
+  progress: number; current_step: string | null; settings: string;
+  output_dir: string | null; gcode_size: number | null;
+  error_message: string | null; created_at: string;
+  started_at: string | null; completed_at: string | null;
+}
+
+export interface DbProfileSummary {
+  engine: string; profile_type: string; name: string; created_at: string;
+}
+
+export interface DbProfile {
+  engine: string; profile_type: string; name: string; settings: string; created_at: string; updated_at: string;
+}

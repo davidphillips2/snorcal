@@ -1,0 +1,12 @@
+{
+  "name": "slorca",
+  "private": true,
+  "scripts": {
+    "dev": "pnpm --parallel --filter backend --filter frontend run dev",
+    "build": "pnpm --filter shared build && pnpm --parallel --filter backend --filter frontend run build",
+    "lint": "pnpm -r run lint"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

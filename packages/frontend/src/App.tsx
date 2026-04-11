@@ -1,0 +1,408 @@
+import { useState, useEffect, useRef, useCallback } from 'react';
+import * as THREE from 'three';
+import { Scene, type SceneRefs } from './components/Viewer/Scene';
+import { STLViewer, extractFaceColors, autoOrient, type Rotation3D } from './components/Viewer/STLViewer';
+import { FacePainter, type PaintMode } from './components/Viewer/FacePainter';
+import { ViewerToolbar } from './components/Viewer/ViewerToolbar';
+import { AxisIndicator } from './components/Viewer/AxisIndicator';
+import { ModelMover } from './components/Viewer/ModelMover';
+import { ModelUploader } from './components/ModelUploader';
+import { JobList } from './components/Jobs/JobList';
+import { SettingsPanel } from './components/Settings/SettingsPanel';
+import { PrinterSelect } from './components/PrinterSelect';
+import { PRINTERS, getSavedPrinter, savePrinter } from './config/printers';
+import { useSSE } from './hooks/useSSE';
+import * as api from './api/client';
+
+interface Model {
+  id: string;
+  name: string;
+  format: string;
+  faceCount: number;
+  fileSize: number;
+  createdAt: string;
+}
+
+interface Job {
+  id: string;
+  engine: string;
+  status: string;
+  progress: number;
+  currentStep?: string;
+  gcodeSize?: number;
+  errorMessage?: string;
+  createdAt: string;
+}
+
+export default function App() {
+  const [models, setModels] = useState<Model[]>([]);
+  const [selectedModelId, setSelectedModelId] = useState<string | null>(null);
+  const [isUploading, setIsUploading] = useState(false);
+
+  // Three.js refs — only set once Scene reports ready
+  const [sceneRefs, setSceneRefs] = useState<SceneRefs | null>(null);
+  const meshRef = useRef<THREE.Mesh | null>(null);
+  const [paintMode, setPaintMode] = useState<PaintMode>('orbit');
+  const [activeColor, setActiveColor] = useState('#FF0000');
+  const [faceColors, setFaceColors] = useState<Uint8Array | null>(null);
+  const [rotation, setRotation] = useState<Rotation3D>({ x: 0, y: 0, z: 0 });
+  const [positionOffset, setPositionOffset] = useState<THREE.Vector3 | null>(null);
+
+  // Printer selection — persisted in localStorage
+  const [printerId, setPrinterId] = useState<string | null>(() => getSavedPrinter()?.id ?? null);
+  const printer = printerId ? PRINTERS.find(p => p.id === printerId) : null;
+
+  const [jobs, setJobs] = useState<Job[]>([]);
+  const [engine, setEngine] = useState(() => printer?.engine ?? 'orcaslicer');
+  const [settings, setSettings] = useState<Record<string, string>>({});
+  const [selectedProfiles, setSelectedProfiles] = useState<{
+    machine?: string; filament?: string; process?: string;
+  }>({});
+
+  // Mobile panel toggles
+  const [showLeftPanel, setShowLeftPanel] = useState(false);
+  const [showRightPanel, setShowRightPanel] = useState(false);
+
+  // SSE
+  const { messages: sseMsgs } = useSSE('/api/events');
+
+  // Load models on mount
+  useEffect(() => {
+    api.listModels().then(setModels).catch(console.error);
+  }, []);
+
+  // Fetch face colors when selecting a model
+  useEffect(() => {
+    if (!selectedModelId) { setFaceColors(null); return; }
+    setFaceColors(null); // Clear old colors immediately
+    api.getModelColors(selectedModelId).then(setFaceColors).catch(() => setFaceColors(null));
+  }, [selectedModelId]);
+
+  // Load default settings when engine or printer changes
+  useEffect(() => {
+    setSelectedProfiles({});
+    if (printer) {
+      // Use printer preset defaults
+      const presets: Record<string, string> = {};
+      for (const [key, val] of Object.entries(printer.settings)) {
+        if (typeof val === 'string') presets[key] = val;
+      }
+      setSettings(presets);
+    } else {
+      api.getDefaultSettings(engine).then((data) => {
+        if (data?.process) setSettings(data.process);
+      }).catch(console.error);
+    }
+  }, [engine, printer]);
+
+  const handleSelectPrinter = useCallback((id: string) => {
+    savePrinter(id);
+    setPrinterId(id);
+    const p = PRINTERS.find(pr => pr.id === id);
+    if (p) setEngine(p.engine);
+  }, []);
+
+  // SSE updates
+  useEffect(() => {
+    for (const msg of sseMsgs) {
+      const jobId = msg.data.jobId as string;
+      if (!jobId) continue;
+      setJobs((prev) =>
+        prev.map((j) =>
+          j.id === jobId
+            ? {
+                ...j,
+                status: msg.type === 'job:completed' ? 'completed' : msg.type === 'job:failed' ? 'failed' : 'running',
+                progress: (msg.data.progress as number) ?? j.progress,
+                currentStep: msg.data.currentStep as string | undefined,
+                errorMessage: msg.data.error as string | undefined,
+              }
+            : j,
+        ),
+      );
+    }
+  }, [sseMsgs]);
+
+  // Poll running jobs for progress (fallback when SSE is unavailable)
+  useEffect(() => {
+    const running = jobs.filter((j) => j.status === 'running' || j.status === 'queued');
+    if (running.length === 0) return;
+
+    const interval = setInterval(async () => {
+      for (const job of running) {
+        try {
+          const updated = await api.getJob(job.id);
+          setJobs((prev) =>
+            prev.map((j) =>
+              j.id === job.id
+                ? {
+                    ...j,
+                    status: updated.status,
+                    progress: updated.progress,
+                    currentStep: updated.currentStep,
+                    errorMessage: updated.errorMessage,
+                    gcodeSize: updated.gcodeSize,
+                  }
+                : j,
+            ),
+          );
+        } catch {}
+      }
+    }, 2000);
+
+    return () => clearInterval(interval);
+  }, [jobs.length, jobs.filter((j) => j.status === 'running' || j.status === 'queued').length]);
+
+  const handleUpload = useCallback(async (file: File) => {
+    setIsUploading(true);
+    try {
+      const model = await api.uploadModel(file);
+      setModels((prev) => [
+        { id: model.id, name: model.name, format: 'stl', faceCount: model.faceCount, fileSize: 0, createdAt: new Date().toISOString() },
+        ...prev,
+      ]);
+      setSelectedModelId(model.id);
+    } catch (err) {
+      alert(`Upload failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setIsUploading(false);
+    }
+  }, []);
+
+  const handleSlice = useCallback(async () => {
+    if (!selectedModelId) return;
+    try {
+      if (meshRef.current) {
+        const colors = extractFaceColors(meshRef.current.geometry);
+        if (colors.length > 0) await api.saveFaceColors(selectedModelId, colors);
+      }
+      // Build process settings: printer defaults + UI overrides
+      const processSettings: Record<string, string> = {};
+      if (printer) {
+        for (const [key, val] of Object.entries(printer.settings)) {
+          if (typeof val === 'string') processSettings[key] = val;
+        }
+      }
+      // UI overrides take precedence
+      Object.assign(processSettings, settings);
+
+      const result = await api.submitSliceJob({
+        modelId: selectedModelId,
+        engine,
+        settings: { process: processSettings, machine: {}, filaments: [{}] },
+        profiles: selectedProfiles,
+      });
+      setJobs((prev) => [
+        { id: result.jobId, engine, status: 'queued', progress: 0, createdAt: new Date().toISOString() },
+        ...prev,
+      ]);
+    } catch (err) {
+      alert(`Slice failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }, [selectedModelId, engine, settings, printer, selectedProfiles]);
+
+  const handleSaveColors = useCallback(async () => {
+    if (!selectedModelId || !meshRef.current) return;
+    try {
+      const colors = extractFaceColors(meshRef.current.geometry);
+      await api.saveFaceColors(selectedModelId, colors);
+    } catch (err) {
+      console.error('Save failed:', err);
+    }
+  }, [selectedModelId]);
+
+  const handleUndo = useCallback(() => {
+    const undo = (window as any).__slorca_undo as (() => void) | undefined;
+    if (undo) undo();
+  }, []);
+
+  const handleCancelJob = useCallback(async (jobId: string) => {
+    await api.cancelJob(jobId);
+    setJobs((prev) => prev.map((j) => j.id === jobId ? { ...j, status: 'cancelled' } : j));
+  }, []);
+
+  const handleDownloadGcode = useCallback((jobId: string) => {
+    window.open(api.getGcodeUrl(jobId), '_blank');
+  }, []);
+
+  const handleGeometryReady = useCallback((geometry: THREE.BufferGeometry, mesh: THREE.Mesh) => {
+    meshRef.current = mesh;
+    setRotation({ x: 0, y: 0, z: 0 });
+    setPositionOffset(null);
+  }, []);
+
+  const handleAutoOrient = useCallback(() => {
+    if (!meshRef.current) return;
+    const newRotation = autoOrient(meshRef.current.geometry);
+    setRotation(newRotation);
+  }, []);
+
+  const handleLayOnFace = useCallback((newRotation: Rotation3D) => {
+    setRotation(newRotation);
+    setPaintMode('orbit');
+  }, []);
+
+  const modelUrl = selectedModelId ? api.getModelUrl(selectedModelId) : null;
+
+  const closeMobilePanels = useCallback(() => {
+    setShowLeftPanel(false);
+    setShowRightPanel(false);
+  }, []);
+
+  // Show printer selection on first visit
+  if (!printerId) {
+    return <PrinterSelect onSelect={handleSelectPrinter} />;
+  }
+
+  return (
+    <div className="h-screen flex flex-col bg-gray-900 text-white">
+      <header className="flex items-center justify-between px-4 py-2 bg-gray-800 border-b border-gray-700 shrink-0">
+        <div className="flex items-center gap-3">
+          <h1 className="text-lg font-bold tracking-tight">Slorca</h1>
+          {printer && (
+            <button
+              onClick={() => setPrinterId(null)}
+              className="text-xs text-gray-400 hover:text-white bg-gray-700 px-2 py-0.5 rounded transition"
+              title="Change printer"
+            >
+              {printer.name}
+            </button>
+          )}
+        </div>
+        <span className="text-xs text-gray-500 hidden sm:inline">Self-Hosted 3D Slicing Hub</span>
+        {/* Mobile panel toggles */}
+        <div className="flex md:hidden gap-2">
+          <button
+            onClick={() => { setShowLeftPanel(!showLeftPanel); setShowRightPanel(false); }}
+            className={`px-3 py-1.5 rounded-lg text-xs font-medium ${showLeftPanel ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-300'}`}
+          >
+            Models
+          </button>
+          <button
+            onClick={() => { setShowRightPanel(!showRightPanel); setShowLeftPanel(false); }}
+            className={`px-3 py-1.5 rounded-lg text-xs font-medium ${showRightPanel ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-300'}`}
+          >
+            Settings
+          </button>
+        </div>
+      </header>
+
+      <div className="flex flex-1 overflow-hidden relative">
+        {/* Backdrop for mobile panels */}
+        {(showLeftPanel || showRightPanel) && (
+          <div
+            className="md:hidden fixed inset-0 bg-black/50 z-10"
+            onClick={closeMobilePanels}
+          />
+        )}
+
+        {/* Left sidebar */}
+        <div className={`
+          w-72 bg-gray-800 border-r border-gray-700 flex flex-col overflow-hidden shrink-0
+          absolute md:relative z-20 top-0 left-0 h-full
+          transition-transform duration-200 ease-in-out
+          ${showLeftPanel ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}
+        `}>
+          <div className="p-3 space-y-3 overflow-y-auto flex-1">
+            <ModelUploader onUpload={handleUpload} isUploading={isUploading} />
+
+            {models.length > 0 && (
+              <div className="space-y-1">
+                <h3 className="text-xs font-medium text-gray-400 uppercase tracking-wider">Models</h3>
+                {models.map((m) => (
+                  <button
+                    key={m.id}
+                    onClick={() => { setSelectedModelId(m.id); setShowLeftPanel(false); }}
+                    className={`w-full text-left px-3 py-2 rounded-lg text-sm transition ${
+                      selectedModelId === m.id
+                        ? 'bg-blue-600/20 text-blue-300 border border-blue-600/30'
+                        : 'bg-gray-700/50 text-gray-300 hover:bg-gray-700'
+                    }`}
+                  >
+                    <div className="font-medium truncate">{m.name}</div>
+                    <div className="text-xs text-gray-500">{m.faceCount.toLocaleString()} faces</div>
+                  </button>
+                ))}
+              </div>
+            )}
+
+            <div>
+              <h3 className="text-xs font-medium text-gray-400 uppercase tracking-wider mb-2">Jobs</h3>
+              <JobList jobs={jobs} onCancel={handleCancelJob} onDownload={handleDownloadGcode} />
+            </div>
+          </div>
+        </div>
+
+        {/* Center: 3D Viewer — Scene is always mounted */}
+        <div className="flex-1 relative overflow-hidden">
+          <Scene onReady={setSceneRefs} />
+          {sceneRefs && modelUrl && (
+            <>
+              <AxisIndicator sceneRefs={sceneRefs} />
+              <STLViewer
+                modelUrl={modelUrl}
+                faceColors={faceColors || undefined}
+                rotation={rotation}
+                positionOffset={positionOffset || undefined}
+                sceneRef={{ current: sceneRefs }}
+                onGeometryReady={handleGeometryReady}
+              />
+              <ModelMover
+                mesh={meshRef.current}
+                sceneRefs={sceneRefs}
+                active={paintMode === 'orbit'}
+                onPositionChange={setPositionOffset}
+              />
+              <FacePainter
+                mesh={meshRef.current}
+                renderer={sceneRefs.renderer}
+                activeColor={activeColor}
+                paintMode={paintMode}
+                onLayOnFace={handleLayOnFace}
+              />
+              <ViewerToolbar
+                paintMode={paintMode}
+                onModeChange={setPaintMode}
+                activeColor={activeColor}
+                onColorChange={setActiveColor}
+                onUndo={handleUndo}
+                onSave={handleSaveColors}
+                rotation={rotation}
+                onRotationChange={setRotation}
+                onAutoOrient={handleAutoOrient}
+              />
+            </>
+          )}
+          {!modelUrl && (
+            <div className="absolute inset-0 flex items-center justify-center text-gray-500 pointer-events-none z-10">
+              <div className="text-center px-4">
+                <div className="text-6xl mb-4">&#9881;</div>
+                <p className="text-lg">Upload an STL model to get started</p>
+                <p className="text-sm mt-1">Tap <strong>Models</strong> to upload an STL file</p>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Right sidebar */}
+        <div className={`
+          w-80 bg-gray-800 border-l border-gray-700 overflow-hidden shrink-0
+          absolute md:relative z-20 top-0 right-0 h-full
+          transition-transform duration-200 ease-in-out
+          ${showRightPanel ? 'translate-x-0' : 'translate-x-full md:translate-x-0'}
+        `}>
+          <SettingsPanel
+            engine={engine}
+            onEngineChange={setEngine}
+            settings={settings}
+            onSettingsChange={setSettings}
+            onSlice={handleSlice}
+            isSlicing={jobs.some((j) => j.status === 'running' || j.status === 'queued')}
+            selectedProfiles={selectedProfiles}
+            onProfilesChange={setSelectedProfiles}
+          />
+        </div>
+      </div>
+    </div>
+  );
+}
