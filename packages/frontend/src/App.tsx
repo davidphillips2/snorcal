@@ -20,16 +20,21 @@ interface Model {
   format: string;
   faceCount: number;
   fileSize: number;
+  plateCount?: number;
   createdAt: string;
 }
 
 interface Job {
   id: string;
+  modelName?: string;
   engine: string;
   status: string;
   progress: number;
   currentStep?: string;
   gcodeSize?: number;
+  estimatedTime?: string;
+  filamentUsedG?: number;
+  filamentCost?: number;
   errorMessage?: string;
   createdAt: string;
 }
@@ -47,13 +52,19 @@ export default function App() {
   const [faceColors, setFaceColors] = useState<Uint8Array | null>(null);
   const [rotation, setRotation] = useState<Rotation3D>({ x: 0, y: 0, z: 0 });
   const [positionOffset, setPositionOffset] = useState<THREE.Vector3 | null>(null);
+  const [selectedPlate, setSelectedPlate] = useState(1);
+  const [plateCount, setPlateCount] = useState(1);
 
   // Printer selection — persisted in localStorage
   const [printerId, setPrinterId] = useState<string | null>(() => getSavedPrinter()?.id ?? null);
   const printer = printerId ? PRINTERS.find(p => p.id === printerId) : null;
 
   const [jobs, setJobs] = useState<Job[]>([]);
-  const [engine, setEngine] = useState(() => printer?.engine ?? 'orcaslicer');
+  const [engine, setEngineRaw] = useState(() => localStorage.getItem('slorca_engine') || printer?.engine || 'orcaslicer');
+  const setEngine = useCallback((e: string) => {
+    localStorage.setItem('slorca_engine', e);
+    setEngineRaw(e);
+  }, []);
   const [settings, setSettings] = useState<Record<string, string>>({});
   const [selectedProfiles, setSelectedProfiles] = useState<{
     machine?: string; filament?: string; process?: string;
@@ -62,6 +73,7 @@ export default function App() {
   // Mobile panel toggles
   const [showLeftPanel, setShowLeftPanel] = useState(false);
   const [showRightPanel, setShowRightPanel] = useState(false);
+  const [showJobsPanel, setShowJobsPanel] = useState(false);
 
   // SSE
   const { messages: sseMsgs } = useSSE('/api/events');
@@ -71,17 +83,17 @@ export default function App() {
     api.listModels().then(setModels).catch(console.error);
   }, []);
 
-  // Fetch face colors when selecting a model
+  // Fetch face colors when selecting a model or plate
   useEffect(() => {
     if (!selectedModelId) { setFaceColors(null); return; }
-    setFaceColors(null); // Clear old colors immediately
-    api.getModelColors(selectedModelId).then(setFaceColors).catch(() => setFaceColors(null));
-  }, [selectedModelId]);
+    setFaceColors(null);
+    api.getModelColors(selectedModelId, selectedPlate).then(setFaceColors).catch(() => setFaceColors(null));
+  }, [selectedModelId, selectedPlate]);
 
   // Load default settings when engine or printer changes
   useEffect(() => {
-    setSelectedProfiles({});
     if (printer) {
+      setSelectedProfiles(printer.defaultProfiles);
       // Use printer preset defaults
       const presets: Record<string, string> = {};
       for (const [key, val] of Object.entries(printer.settings)) {
@@ -142,6 +154,10 @@ export default function App() {
                     currentStep: updated.currentStep,
                     errorMessage: updated.errorMessage,
                     gcodeSize: updated.gcodeSize,
+                    modelName: updated.modelName,
+                    estimatedTime: updated.estimatedTime,
+                    filamentUsedG: updated.filamentUsedG,
+                    filamentCost: updated.filamentCost,
                   }
                 : j,
             ),
@@ -158,10 +174,12 @@ export default function App() {
     try {
       const model = await api.uploadModel(file);
       setModels((prev) => [
-        { id: model.id, name: model.name, format: 'stl', faceCount: model.faceCount, fileSize: 0, createdAt: new Date().toISOString() },
+        { id: model.id, name: model.name, format: 'stl', faceCount: model.faceCount, fileSize: 0, plateCount: model.plateCount, createdAt: new Date().toISOString() },
         ...prev,
       ]);
       setSelectedModelId(model.id);
+      setPlateCount(model.plateCount ?? 1);
+      setSelectedPlate(1);
     } catch (err) {
       alert(`Upload failed: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
@@ -172,9 +190,12 @@ export default function App() {
   const handleSlice = useCallback(async () => {
     if (!selectedModelId) return;
     try {
+      // Save colors in background — don't block slicing
       if (meshRef.current) {
         const colors = extractFaceColors(meshRef.current.geometry);
-        if (colors.length > 0) await api.saveFaceColors(selectedModelId, colors);
+        if (colors.length > 0) {
+          api.saveFaceColors(selectedModelId, colors, selectedPlate).catch(() => {});
+        }
       }
       // Build process settings: printer defaults + UI overrides
       const processSettings: Record<string, string> = {};
@@ -189,6 +210,7 @@ export default function App() {
       const result = await api.submitSliceJob({
         modelId: selectedModelId,
         engine,
+        plateIndex: selectedPlate,
         settings: { process: processSettings, machine: {}, filaments: [{}] },
         profiles: selectedProfiles,
       });
@@ -196,20 +218,25 @@ export default function App() {
         { id: result.jobId, engine, status: 'queued', progress: 0, createdAt: new Date().toISOString() },
         ...prev,
       ]);
+      // Auto-switch to Jobs panel on mobile
+      setShowLeftPanel(false);
+      setShowRightPanel(false);
+      setShowJobsPanel(true);
     } catch (err) {
+      console.error('Slice failed:', err);
       alert(`Slice failed: ${err instanceof Error ? err.message : String(err)}`);
     }
-  }, [selectedModelId, engine, settings, printer, selectedProfiles]);
+  }, [selectedModelId, engine, settings, printer, selectedProfiles, selectedPlate]);
 
   const handleSaveColors = useCallback(async () => {
     if (!selectedModelId || !meshRef.current) return;
     try {
       const colors = extractFaceColors(meshRef.current.geometry);
-      await api.saveFaceColors(selectedModelId, colors);
+      await api.saveFaceColors(selectedModelId, colors, selectedPlate);
     } catch (err) {
       console.error('Save failed:', err);
     }
-  }, [selectedModelId]);
+  }, [selectedModelId, selectedPlate]);
 
   const handleUndo = useCallback(() => {
     const undo = (window as any).__slorca_undo as (() => void) | undefined;
@@ -242,11 +269,12 @@ export default function App() {
     setPaintMode('orbit');
   }, []);
 
-  const modelUrl = selectedModelId ? api.getModelUrl(selectedModelId) : null;
+  const modelUrl = selectedModelId ? api.getModelUrl(selectedModelId, selectedPlate) : null;
 
   const closeMobilePanels = useCallback(() => {
     setShowLeftPanel(false);
     setShowRightPanel(false);
+    setShowJobsPanel(false);
   }, []);
 
   // Show printer selection on first visit
@@ -273,13 +301,19 @@ export default function App() {
         {/* Mobile panel toggles */}
         <div className="flex md:hidden gap-2">
           <button
-            onClick={() => { setShowLeftPanel(!showLeftPanel); setShowRightPanel(false); }}
+            onClick={() => { setShowLeftPanel(!showLeftPanel); setShowRightPanel(false); setShowJobsPanel(false); }}
             className={`px-3 py-1.5 rounded-lg text-xs font-medium ${showLeftPanel ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-300'}`}
           >
             Models
           </button>
           <button
-            onClick={() => { setShowRightPanel(!showRightPanel); setShowLeftPanel(false); }}
+            onClick={() => { setShowJobsPanel(!showJobsPanel); setShowRightPanel(false); setShowLeftPanel(false); }}
+            className={`px-3 py-1.5 rounded-lg text-xs font-medium ${showJobsPanel ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-300'}`}
+          >
+            Jobs
+          </button>
+          <button
+            onClick={() => { setShowRightPanel(!showRightPanel); setShowLeftPanel(false); setShowJobsPanel(false); }}
             className={`px-3 py-1.5 rounded-lg text-xs font-medium ${showRightPanel ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-300'}`}
           >
             Settings
@@ -289,7 +323,7 @@ export default function App() {
 
       <div className="flex flex-1 overflow-hidden relative">
         {/* Backdrop for mobile panels */}
-        {(showLeftPanel || showRightPanel) && (
+        {(showLeftPanel || showRightPanel || showJobsPanel) && (
           <div
             className="md:hidden fixed inset-0 bg-black/50 z-10"
             onClick={closeMobilePanels}
@@ -312,7 +346,12 @@ export default function App() {
                 {models.map((m) => (
                   <button
                     key={m.id}
-                    onClick={() => { setSelectedModelId(m.id); setShowLeftPanel(false); }}
+                    onClick={() => {
+                      setSelectedModelId(m.id);
+                      setPlateCount(m.plateCount ?? 1);
+                      setSelectedPlate(1);
+                      setShowLeftPanel(false);
+                    }}
                     className={`w-full text-left px-3 py-2 rounded-lg text-sm transition ${
                       selectedModelId === m.id
                         ? 'bg-blue-600/20 text-blue-300 border border-blue-600/30'
@@ -326,7 +365,8 @@ export default function App() {
               </div>
             )}
 
-            <div>
+            {/* Jobs — desktop only (mobile uses slide-in panel) */}
+            <div className="hidden md:block">
               <h3 className="text-xs font-medium text-gray-400 uppercase tracking-wider mb-2">Jobs</h3>
               <JobList jobs={jobs} onCancel={handleCancelJob} onDownload={handleDownloadGcode} />
             </div>
@@ -336,6 +376,24 @@ export default function App() {
         {/* Center: 3D Viewer — Scene is always mounted */}
         <div className="flex-1 relative overflow-hidden">
           <Scene onReady={setSceneRefs} />
+          {plateCount > 1 && modelUrl && (
+            <div className="absolute top-2 left-1/2 -translate-x-1/2 z-10 flex items-center gap-2 bg-gray-800/90 rounded-lg px-3 py-1.5 border border-gray-600">
+              <span className="text-xs text-gray-400">Plate:</span>
+              {Array.from({ length: plateCount }, (_, i) => i + 1).map((p) => (
+                <button
+                  key={p}
+                  onClick={() => setSelectedPlate(p)}
+                  className={`w-7 h-7 rounded text-xs font-medium transition ${
+                    selectedPlate === p
+                      ? 'bg-blue-600 text-white'
+                      : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                  }`}
+                >
+                  {p}
+                </button>
+              ))}
+            </div>
+          )}
           {sceneRefs && modelUrl && (
             <>
               <AxisIndicator sceneRefs={sceneRefs} />
@@ -384,9 +442,22 @@ export default function App() {
           )}
         </div>
 
+        {/* Jobs panel (mobile slide-in) */}
+        <div className={`
+          w-80 bg-gray-800 border-l border-gray-700 overflow-y-auto shrink-0
+          absolute md:hidden z-20 top-0 right-0 h-full
+          transition-transform duration-200 ease-in-out
+          ${showJobsPanel ? 'translate-x-0' : 'translate-x-full'}
+        `}>
+          <div className="p-4">
+            <h3 className="text-sm font-medium text-gray-400 uppercase tracking-wider mb-3">Jobs</h3>
+            <JobList jobs={jobs} onCancel={handleCancelJob} onDownload={handleDownloadGcode} />
+          </div>
+        </div>
+
         {/* Right sidebar */}
         <div className={`
-          w-80 bg-gray-800 border-l border-gray-700 overflow-hidden shrink-0
+          w-80 bg-gray-800 border-l border-gray-700 overflow-y-auto shrink-0
           absolute md:relative z-20 top-0 right-0 h-full
           transition-transform duration-200 ease-in-out
           ${showRightPanel ? 'translate-x-0' : 'translate-x-full md:translate-x-0'}

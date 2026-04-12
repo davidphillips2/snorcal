@@ -39,23 +39,31 @@ export async function fileRoutes(app: FastifyInstance, options: { db: Db }) {
     return reply.send(stream);
   });
 
-  // GET /api/files/model/:modelId — Download original model
-  app.get<{ Params: { modelId: string } }>('/api/files/model/:modelId', async (req, reply) => {
+  // GET /api/files/model/:modelId — Download original model (?plate=N for multi-plate)
+  app.get<{ Params: { modelId: string }, Querystring: { plate?: string } }>('/api/files/model/:modelId', async (req, reply) => {
     const model = db.getModel(req.params.modelId);
     if (!model) {
       return reply.status(404).send({ ok: false, error: 'Model not found' });
     }
 
-    if (!fs.existsSync(model.file_path)) {
+    let filePath = model.file_path;
+    const plateNum = req.query.plate ? parseInt(req.query.plate) : undefined;
+
+    if (plateNum && model.plate_count > 1) {
+      const plate = db.getPlate(req.params.modelId, plateNum);
+      if (plate) filePath = plate.file_path;
+    }
+
+    if (!fs.existsSync(filePath)) {
       return reply.status(404).send({ ok: false, error: 'Model file not found on disk' });
     }
 
-    const stat = fs.statSync(model.file_path);
+    const stat = fs.statSync(filePath);
     reply.header('Content-Type', 'application/octet-stream');
     reply.header('Content-Length', stat.size);
     reply.header('Content-Disposition', `attachment; filename="${model.name}"`);
 
-    const stream = fs.createReadStream(model.file_path);
+    const stream = fs.createReadStream(filePath);
     return reply.send(stream);
   });
 }

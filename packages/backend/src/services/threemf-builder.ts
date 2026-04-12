@@ -60,6 +60,32 @@ export async function build3MF(input: ThreeMFBuildInput): Promise<Buffer> {
   }
 
   // 3. Build 3MF XML model
+  // Compute center offset so model sits centered on the build plate
+  let offsetX = 0, offsetY = 0, offsetZ = 0;
+  const vertexCount = vertices.length / 3;
+  let minX = Infinity, minY = Infinity, minZ = Infinity;
+  let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+  for (let i = 0; i < vertexCount; i++) {
+    const x = vertices[i * 3], y = vertices[i * 3 + 1], z = vertices[i * 3 + 2];
+    if (x < minX) minX = x;
+    if (y < minY) minY = y;
+    if (z < minZ) minZ = z;
+    if (x > maxX) maxX = x;
+    if (y > maxY) maxY = y;
+    if (z > maxZ) maxZ = z;
+  }
+  // Center XY on plate (135, 135) and shift Z so minimum is at 0
+  offsetX = 135 - (minX + maxX) / 2;
+  offsetY = 135 - (minY + maxY) / 2;
+  offsetZ = -minZ;
+
+  // Apply offsets to vertices
+  for (let i = 0; i < vertexCount; i++) {
+    vertices[i * 3] += offsetX;
+    vertices[i * 3 + 1] += offsetY;
+    vertices[i * 3 + 2] += offsetZ;
+  }
+
   const modelXML = buildModelXML(vertices, indices, colorGroup, triProps);
 
   // 4. Build supporting XML files
@@ -82,11 +108,27 @@ export async function build3MF(input: ThreeMFBuildInput): Promise<Buffer> {
 
   // 6. Embed project settings if provided (slicer reads these from 3MF)
   if (input.projectSettings) {
+    // Ensure filament_colour is set (OrcaSlicer requires it)
+    const settings = { ...input.projectSettings };
+    if (!settings.filament_colour || !Array.isArray(settings.filament_colour) || (settings.filament_colour as string[]).length === 0) {
+      settings.filament_colour = ['#FFFFFF'];
+    }
     zip.folder('Metadata')!.file(
       'project_settings.config',
-      JSON.stringify(input.projectSettings, null, 4),
+      JSON.stringify(settings, null, 4),
     );
   }
+
+  // 7. Add slice_info.config — plate metadata that OrcaSlicer expects
+  const sliceInfoXML = `<?xml version="1.0" encoding="UTF-8"?>
+<config>
+  <plate>
+    <metadata key="index">1</metadata>
+    <metadata key="printer_model_id"></metadata>
+    <metadata key="nozzle_diameter">0.4</metadata>
+  </plate>
+</config>`;
+  zip.folder('Metadata')!.file('slice_info.config', sliceInfoXML);
 
   return zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
 }

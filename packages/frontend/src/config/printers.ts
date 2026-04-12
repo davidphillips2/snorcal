@@ -4,6 +4,11 @@ export interface PrinterPreset {
   engine: string;
   description: string;
   settings: Record<string, string | string[]>;
+  defaultProfiles: {
+    machine: string;
+    filament: string;
+    process: string;
+  };
 }
 
 export const PRINTERS: PrinterPreset[] = [
@@ -12,6 +17,11 @@ export const PRINTERS: PrinterPreset[] = [
     name: 'Snapmaker U1',
     engine: 'orcaslicer',
     description: '270 x 270 x 270 mm',
+    defaultProfiles: {
+      machine: 'Snapmaker U1 (0.4 nozzle)',
+      filament: 'Snapmaker PLA SnapSpeed',
+      process: '0.20 Standard @Snapmaker U1',
+    },
     settings: {
       printer_model: 'Snapmaker U1',
       printer_technology: 'FFF',
@@ -66,6 +76,11 @@ export const PRINTERS: PrinterPreset[] = [
     name: 'Bambu Lab P1S',
     engine: 'orcaslicer',
     description: '256 x 256 x 256 mm',
+    defaultProfiles: {
+      machine: 'Bambu Lab P1S (0.4 nozzle)',
+      filament: 'Bambu PLA Basic',
+      process: '0.20 Standard @Bambu P1S',
+    },
     settings: {
       printer_model: 'Bambu Lab P1S',
       printer_technology: 'FFF',

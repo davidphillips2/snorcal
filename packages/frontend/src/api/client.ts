@@ -16,7 +16,7 @@ export async function uploadModel(file: File) {
   const formData = new FormData();
   formData.append('file', file);
   return apiFetch('/models', { method: 'POST', body: formData }) as Promise<{
-    id: string; name: string; faceCount: number; bounds: { x: number; y: number; z: number };
+    id: string; name: string; faceCount: number; plateCount: number; bounds: { x: number; y: number; z: number };
   }>;
 }
 
@@ -30,9 +30,15 @@ export async function getModel(id: string) {
   return apiFetch(`/models/${id}`);
 }
 
-export async function saveFaceColors(modelId: string, faceColors: Uint8Array) {
-  const base64 = btoa(String.fromCharCode(...faceColors));
-  return apiFetch(`/models/${modelId}/colors`, {
+export async function saveFaceColors(modelId: string, faceColors: Uint8Array, plate?: number) {
+  const chunks: string[] = [];
+  for (let i = 0; i < faceColors.length; i += 8192) {
+    const slice = faceColors.subarray(i, Math.min(i + 8192, faceColors.length));
+    chunks.push(String.fromCharCode(...slice));
+  }
+  const base64 = btoa(chunks.join(''));
+  const params = plate && plate > 1 ? `?plate=${plate}` : '';
+  return apiFetch(`/models/${modelId}/colors${params}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ faceColors: base64 }),
@@ -43,9 +49,10 @@ export async function deleteModel(id: string) {
   return apiFetch(`/models/${id}`, { method: 'DELETE' });
 }
 
-export async function getModelColors(id: string): Promise<Uint8Array | null> {
+export async function getModelColors(id: string, plate?: number): Promise<Uint8Array | null> {
   try {
-    const data = await apiFetch(`/models/${id}/colors`) as { faceColors: string | null };
+    const params = plate && plate > 1 ? `?plate=${plate}` : '';
+    const data = await apiFetch(`/models/${id}/colors${params}`) as { faceColors: string | null };
     if (!data.faceColors) return null;
     const binary = atob(data.faceColors);
     const bytes = new Uint8Array(binary.length);
@@ -86,8 +93,9 @@ export function getGcodeUrl(jobId: string) {
   return `${API_BASE}/files/gcode/${jobId}`;
 }
 
-export function getModelUrl(modelId: string) {
-  return `${API_BASE}/files/model/${modelId}`;
+export function getModelUrl(modelId: string, plate?: number) {
+  const params = plate && plate > 1 ? `?plate=${plate}` : '';
+  return `${API_BASE}/files/model/${modelId}${params}`;
 }
 
 export async function getDefaultSettings(engine: string) {

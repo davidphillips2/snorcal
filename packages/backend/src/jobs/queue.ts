@@ -1,14 +1,19 @@
 import { Queue, Worker, type Job } from 'bullmq';
 import IORedis from 'ioredis';
+import { fileURLToPath } from 'node:url';
 import { build3MF } from '../services/threemf-builder.js';
 import { SlicerExecutor } from '../services/slicer-executor.js';
 import { PROJECT_SETTING_OVERRIDES } from '@slorca/shared';
-import defaultProjectSettingsRaw from '../routes/default-project-settings.json';
 import { Db } from '../db/index.js';
 import type { SliceJobData } from '@slorca/shared';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const defaultProjectSettingsRaw = JSON.parse(
+  fs.readFileSync(path.join(__dirname, '..', 'routes', 'default-project-settings.json'), 'utf-8'),
+);
 
 const QUEUE_NAME = 'slice-jobs';
 

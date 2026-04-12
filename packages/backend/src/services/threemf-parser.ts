@@ -41,7 +41,7 @@ const PARSER_OPTIONS = {
  *   - Per-object/part: extruder assignment from model_settings.config → filament color
  *   - Mixed filament definitions for virtual extruders
  */
-export async function parse3MF(buffer: Buffer): Promise<Parse3MFResult> {
+export async function parse3MF(buffer: Buffer, plateNumber?: number): Promise<Parse3MFResult> {
   const zip = await JSZip.loadAsync(buffer);
   const parser = new XMLParser(PARSER_OPTIONS);
 
@@ -58,8 +58,23 @@ export async function parse3MF(buffer: Buffer): Promise<Parse3MFResult> {
   // Parse model_settings.config for plate filtering and part→extruder mapping
   const modelSettings = await parseModelSettings(zip, parser);
 
-  // Get object IDs on plate 1 (import all if no plate info)
-  const plate1ObjectIds = modelSettings.plate1ObjectIds;
+  // Resolve which object IDs to include for the requested plate
+  const targetPlate = plateNumber ?? 1;
+  const plateObjIds = modelSettings.plates.get(targetPlate);
+
+  // Parse build item transforms — <item objectid="..." transform="..."/>
+  const buildItemTransforms = new Map<string, string>();
+  const build = model.build;
+  if (build) {
+    const items = toArray(build.item);
+    for (const item of items) {
+      const itemId = String(item['@_objectid'] || '');
+      const itemTransform = item['@_transform'];
+      if (itemId && itemTransform) {
+        buildItemTransforms.set(itemId, itemTransform);
+      }
+    }
+  }
 
   // Collect all meshes — either inline or via external component references
   const objects = toArray(resources.object);
@@ -70,13 +85,16 @@ export async function parse3MF(buffer: Buffer): Promise<Parse3MFResult> {
   for (const obj of objects) {
     const objId = String(obj['@_id'] || '');
 
-    // Skip objects not on plate 1 (if we have plate info)
-    if (plate1ObjectIds.size > 0 && !plate1ObjectIds.has(objId)) continue;
+    // Skip objects not on the target plate (if we have plate info)
+    if (plateObjIds && plateObjIds.size > 0 && !plateObjIds.has(objId)) continue;
 
     // Case 1: Inline mesh
     if (obj.mesh) {
       const result = parseMesh(obj);
       if (result) {
+        // Apply build item transform (scale/translation from <build><item>)
+        const itemTransform = buildItemTransforms.get(objId);
+        if (itemTransform) applyTransform(result.positions, itemTransform);
         result.extruder = modelSettings.objectExtruders.get(objId);
         meshEntries.push(result);
       }
@@ -86,6 +104,7 @@ export async function parse3MF(buffer: Buffer): Promise<Parse3MFResult> {
     // Case 2: External component references
     const components = obj.components;
     if (components) {
+      const entryStartIdx = meshEntries.length;
       const componentList = toArray(components.component);
       for (const comp of componentList) {
         const extPath = comp['@_p:path'];
@@ -144,6 +163,14 @@ export async function parse3MF(buffer: Buffer): Promise<Parse3MFResult> {
               }
             }
           }
+        }
+      }
+
+      // Apply build item transform (scale/translation from <build><item>) to all entries from this object
+      const itemTransform = buildItemTransforms.get(objId);
+      if (itemTransform) {
+        for (let i = entryStartIdx; i < meshEntries.length; i++) {
+          applyTransform(meshEntries[i].positions, itemTransform);
         }
       }
     }
@@ -255,8 +282,8 @@ interface ModelSettings {
   objectExtruders: Map<string, number>;
   /** "mainObjId:partId" → extruder (from part-level metadata) */
   partExtruders: Map<string, number>;
-  /** object IDs that appear on plate 1 */
-  plate1ObjectIds: Set<string>;
+  /** plate number → set of object IDs on that plate */
+  plates: Map<number, Set<string>>;
 }
 
 /**
@@ -266,7 +293,7 @@ async function parseModelSettings(zip: JSZip, parser: XMLParser): Promise<ModelS
   const result: ModelSettings = {
     objectExtruders: new Map(),
     partExtruders: new Map(),
-    plate1ObjectIds: new Set(),
+    plates: new Map(),
   };
 
   const file = zip.file('Metadata/model_settings.config');
@@ -304,22 +331,25 @@ async function parseModelSettings(zip: JSZip, parser: XMLParser): Promise<ModelS
       }
     }
 
-    // Parse plate 1 object IDs
+    // Parse ALL plates and their object IDs
     const plates = toArray(config.plate);
     for (const plate of plates) {
       const plateMetas = toArray(plate.metadata);
       const platerId = plateMetas.find((m: any) => m['@_key'] === 'plater_id');
-      if (!platerId || platerId['@_value'] !== '1') continue;
+      if (!platerId) continue;
+      const plateNum = parseInt(platerId['@_value']);
+      if (isNaN(plateNum)) continue;
 
+      const objIds = new Set<string>();
       const instances = toArray(plate.model_instance);
       for (const inst of instances) {
         const instMetas = toArray(inst.metadata);
         const objIdMeta = instMetas.find((m: any) => m['@_key'] === 'object_id');
         if (objIdMeta) {
-          result.plate1ObjectIds.add(String(objIdMeta['@_value']));
+          objIds.add(String(objIdMeta['@_value']));
         }
       }
-      break; // Only need plate 1
+      result.plates.set(plateNum, objIds);
     }
   } catch {
     // No model_settings or parse error — return defaults
@@ -614,6 +644,16 @@ async function readModelXml(zip: JSZip): Promise<string> {
 function toArray<T>(val: T | T[] | undefined): T[] {
   if (!val) return [];
   return Array.isArray(val) ? val : [val];
+}
+
+/**
+ * Count plates in a 3MF file without full geometry parsing.
+ */
+export async function countPlates(buffer: Buffer): Promise<number> {
+  const zip = await JSZip.loadAsync(buffer);
+  const parser = new XMLParser(PARSER_OPTIONS);
+  const settings = await parseModelSettings(zip, parser);
+  return settings.plates.size > 0 ? settings.plates.size : 1;
 }
 
 /**

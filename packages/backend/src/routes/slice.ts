@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { v4 as uuid } from 'uuid';
 import path from 'node:path';
 import fs from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import type { Db } from '../db/index.js';
 import { getQueue } from '../jobs/queue.js';
 import { ensureDir, getJobsDir } from '../services/model-parser.js';
@@ -12,17 +13,29 @@ import type { SliceRequest, SliceJobData } from '@slorca/shared';
 import os from 'node:os';
 
 // Load the full default project settings template (slicer-exported defaults)
-import defaultProjectSettingsRaw from './default-project-settings.json';
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const defaultProjectSettingsRaw = JSON.parse(
+  fs.readFileSync(path.join(__dirname, 'default-project-settings.json'), 'utf-8'),
+);
 
-/** Get default slicer datadir for the current platform */
-function getDefaultDataDir(): string {
+/** Get default slicer datadir for the current platform and engine */
+function getDefaultDataDir(engine: string): string {
   const home = os.homedir();
   if (process.platform === 'darwin') {
-    // Snapmaker Orca on macOS
-    return path.join(home, 'Library', 'Application Support', 'Snapmaker_Orca');
+    const macDirs: Record<string, string> = {
+      orcaslicer: 'OrcaSlicer',
+      bambustudio: 'BambuStudio',
+      snapmaker_orca: 'Snapmaker_Orca',
+    };
+    return path.join(home, 'Library', 'Application Support', macDirs[engine] ?? 'OrcaSlicer');
   }
-  // Linux (Docker) - OrcaSlicer
-  return path.join(home, '.config', 'OrcaSlicer');
+  // Linux (Docker)
+  const linuxDirs: Record<string, string> = {
+    orcaslicer: 'OrcaSlicer',
+    bambustudio: 'BambuStudio',
+    snapmaker_orca: 'Snapmaker_Orca',
+  };
+  return path.join(home, '.config', linuxDirs[engine] ?? 'OrcaSlicer');
 }
 
 export async function sliceRoutes(app: FastifyInstance, options: { db: Db }) {
@@ -81,7 +94,7 @@ export async function sliceRoutes(app: FastifyInstance, options: { db: Db }) {
       await queue.add('slice', jobData, { jobId });
     } else {
       // Direct execution (no Redis) — run in background, return immediately
-      runSliceDirect(jobId, body, model.file_path, workDir, db);
+      runSliceDirect(jobId, body, model.file_path, model.name, workDir, db);
     }
 
     return reply.send({ ok: true, data: { jobId } });
@@ -96,10 +109,15 @@ export async function sliceRoutes(app: FastifyInstance, options: { db: Db }) {
       data: jobs.map((j) => ({
         id: j.id,
         modelId: j.model_id,
+        modelName: j.model_name,
         engine: j.engine,
         status: j.status,
         progress: j.progress,
         currentStep: j.current_step,
+        gcodeSize: j.gcode_size,
+        estimatedTime: j.estimated_time,
+        filamentUsedG: j.filament_used_g,
+        filamentCost: j.filament_cost,
         createdAt: j.created_at,
       })),
     };
@@ -117,12 +135,16 @@ export async function sliceRoutes(app: FastifyInstance, options: { db: Db }) {
       data: {
         id: job.id,
         modelId: job.model_id,
+        modelName: job.model_name,
         engine: job.engine,
         status: job.status,
         progress: job.progress,
         currentStep: job.current_step,
         settings: JSON.parse(job.settings),
         gcodeSize: job.gcode_size,
+        estimatedTime: job.estimated_time,
+        filamentUsedG: job.filament_used_g,
+        filamentCost: job.filament_cost,
         errorMessage: job.error_message,
         createdAt: job.created_at,
         startedAt: job.started_at,
@@ -181,6 +203,7 @@ function runSliceDirect(
   jobId: string,
   body: SliceRequest,
   modelFilePath: string,
+  modelName: string,
   workDir: string,
   db: Db,
 ) {
@@ -224,10 +247,27 @@ function runSliceDirect(
         }
       }
 
-      const faceColors = (db.getModel(body.modelId))?.face_colors;
+      // Resolve per-plate STL and face colors
+      let stlPath = modelFilePath;
+      let faceColors: Uint8Array | undefined;
+      const plateIndex = (body.plateIndex ?? 1);
+      const modelRecord = db.getModel(body.modelId);
+
+      console.log(`[slice] model=${body.modelId} plate=${plateIndex} plate_count=${modelRecord?.plate_count} stl=${stlPath}`);
+
+      if (modelRecord && modelRecord.plate_count > 1) {
+        const plate = db.getPlate(body.modelId, plateIndex);
+        if (plate) {
+          stlPath = plate.file_path;
+          faceColors = plate.face_colors ? new Uint8Array(plate.face_colors) : undefined;
+        }
+      } else {
+        faceColors = modelRecord?.face_colors ? new Uint8Array(modelRecord.face_colors) : undefined;
+      }
+
       const threemfBuffer = await build3MF({
-        stlPath: modelFilePath,
-        faceColors: faceColors ? new Uint8Array(faceColors) : undefined,
+        stlPath,
+        faceColors,
         projectSettings,
       });
 
@@ -246,9 +286,9 @@ function runSliceDirect(
           processSettings: '',
           machineSettings: '',
           filamentSettings: [],
-          plateIndex: body.plateIndex ?? 0,
+          plateIndex: 0,
           workDir,
-          dataDir: process.env.SLICER_DATADIR || getDefaultDataDir(),
+          dataDir: process.env.SLICER_DATADIR || getDefaultDataDir(body.engine),
         },
         (progress: number, step: string) => {
           const mapped = Math.round(15 + (progress / 100) * 80);
@@ -257,14 +297,62 @@ function runSliceDirect(
       );
 
       if (result.exitCode !== 0) {
-        throw new Error(`Slicer exited with code ${result.exitCode}: ${result.stderr.slice(-500)}`);
+        const output = (result.stdout + '\n' + result.stderr).slice(-1000);
+        throw new Error(`Slicer exited with code ${result.exitCode}: ${output}`);
       }
 
       db.updateJobStatus(jobId, 'completed');
       if (result.gcodeSize) db.updateJobOutput(jobId, result.gcodeSize);
+
+      // Rename gcode to use model name
+      if (result.gcodePath) {
+        const baseName = modelName.replace(/\.[^.]+$/, ''); // strip extension
+        const gcodeName = `${baseName}.gcode`;
+        const renamedPath = path.join(path.dirname(result.gcodePath), gcodeName);
+        try { fs.renameSync(result.gcodePath, renamedPath); } catch { /* keep original name */ }
+      }
+
+      // Parse estimates from gcode comments
+      if (result.gcodePath && fs.existsSync(result.gcodePath)) {
+        const estimates = parseGcodeEstimates(result.gcodePath, modelName);
+        db.updateJobEstimates(jobId, estimates);
+      } else if (result.gcodePath) {
+        // Check renamed path
+        const renamed = path.join(path.dirname(result.gcodePath), `${modelName.replace(/\.[^.]+$/, '')}.gcode`);
+        if (fs.existsSync(renamed)) {
+          const estimates = parseGcodeEstimates(renamed, modelName);
+          db.updateJobEstimates(jobId, estimates);
+        }
+      }
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
+      const message = err instanceof Error ? `${err.message}\n${err.stack?.slice(0, 500)}` : String(err);
       db.updateJobStatus(jobId, 'failed', { errorMessage: message });
     }
   })();
+}
+
+function parseGcodeEstimates(gcodePath: string, modelName: string): {
+  modelName: string;
+  estimatedTime?: string;
+  filamentUsedG?: number;
+  filamentCost?: number;
+} {
+  const content = fs.readFileSync(gcodePath, 'utf-8');
+  const lines = content.split('\n');
+
+  let estimatedTime: string | undefined;
+  let filamentUsedG: number | undefined;
+  let filamentCost: number | undefined;
+
+  for (const line of lines) {
+    if (!line.startsWith(';')) continue;
+    const m1 = line.match(/estimated printing time \(normal mode\) = (.+)/);
+    if (m1) estimatedTime = m1[1].trim();
+    const m2 = line.match(/total filament used \[g\] = ([\d.]+)/);
+    if (m2) filamentUsedG = parseFloat(m2[1]);
+    const m3 = line.match(/total filament cost = ([\d.]+)/);
+    if (m3) filamentCost = parseFloat(m3[1]);
+  }
+
+  return { modelName, estimatedTime, filamentUsedG, filamentCost };
 }

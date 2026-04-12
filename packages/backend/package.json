@@ -5,7 +5,7 @@
   "main": "./dist/index.js",
   "scripts": {
     "dev": "tsx watch src/index.ts",
-    "build": "tsc",
+    "build": "tsc && cp src/routes/default-project-settings.json dist/routes/",
     "start": "node dist/index.js"
   },
   "dependencies": {

@@ -20,6 +20,7 @@ export interface SliceResult {
   gcodePath: string;
   gcodeSize: number;
   exitCode: number;
+  stdout: string;
   stderr: string;
 }
 
@@ -46,11 +47,13 @@ export class SlicerExecutor {
         gcodePath: '',
         gcodeSize: 0,
         exitCode: 127,
+        stdout: '',
         stderr: `Slicer binary not found at: ${binaryPath}\nSet the environment variable SLICER_PATH_${cmd.engine.toUpperCase()} to the correct path, or run in Docker.`,
       };
     }
 
     return new Promise((resolve, reject) => {
+      let stdout = '';
       let stderr = '';
       let killed = false;
 
@@ -71,14 +74,15 @@ export class SlicerExecutor {
         cwd: cmd.workDir,
         env: {
           ...process.env,
-          HOME: cmd.workDir,
           DISPLAY: process.env.DISPLAY || (isLinux ? ':99' : undefined),
         },
         stdio: ['pipe', 'pipe', 'pipe'],
       });
 
       this.child.stdout?.on('data', (data: Buffer) => {
-        this.parseProgress(data.toString(), onProgress);
+        const str = data.toString();
+        stdout += str;
+        this.parseProgress(str, onProgress);
       });
 
       this.child.stderr?.on('data', (data: Buffer) => {
@@ -97,7 +101,7 @@ export class SlicerExecutor {
         this.child = null;
 
         if (killed) {
-          resolve({ gcodePath: '', gcodeSize: 0, exitCode: -1, stderr: 'Job cancelled' });
+          resolve({ gcodePath: '', gcodeSize: 0, exitCode: -1, stdout, stderr: 'Job cancelled' });
           return;
         }
 
@@ -108,17 +112,18 @@ export class SlicerExecutor {
             gcodePath: gcodeResult?.path ?? '',
             gcodeSize: gcodeResult?.size ?? 0,
             exitCode: exitCode ?? 1,
+            stdout,
             stderr,
           });
           return;
         }
 
         if (!gcodeResult) {
-          resolve({ gcodePath: '', gcodeSize: 0, exitCode: 1, stderr: stderr + '\nNo gcode output found' });
+          resolve({ gcodePath: '', gcodeSize: 0, exitCode: 1, stdout, stderr: stderr + '\nNo gcode output found' });
           return;
         }
 
-        resolve({ gcodePath: gcodeResult.path, gcodeSize: gcodeResult.size, exitCode: 0, stderr });
+        resolve({ gcodePath: gcodeResult.path, gcodeSize: gcodeResult.size, exitCode: 0, stdout, stderr });
       });
     });
   }

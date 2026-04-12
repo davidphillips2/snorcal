@@ -41,6 +41,16 @@ export const MIGRATIONS = [
     PRIMARY KEY (engine, profile_type, name)
   )`,
 
+  `CREATE TABLE IF NOT EXISTS model_plates (
+    model_id TEXT NOT NULL REFERENCES models(id) ON DELETE CASCADE,
+    plate_index INTEGER NOT NULL,
+    file_path TEXT NOT NULL,
+    face_count INTEGER NOT NULL,
+    bounds_x REAL, bounds_y REAL, bounds_z REAL,
+    face_colors BLOB,
+    PRIMARY KEY (model_id, plate_index)
+  )`,
+
   `CREATE INDEX IF NOT EXISTS idx_jobs_model_id ON jobs(model_id)`,
   `CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status)`,
   `CREATE INDEX IF NOT EXISTS idx_jobs_created ON jobs(created_at)`,
@@ -71,6 +81,35 @@ export function runSchemaMigrations(db: Database.Database) {
       db.exec(`INSERT OR IGNORE INTO profiles (engine, profile_type, name, settings, created_at, updated_at)
                SELECT engine, 'process', name, settings, created_at, updated_at FROM profiles_old`);
       db.exec('DROP TABLE profiles_old');
+    }
+  } catch {
+    // Migration not needed or already applied
+  }
+
+  // Add estimate columns to jobs table
+  try {
+    const cols = db.prepare("PRAGMA table_info(jobs)").all() as { name: string }[];
+    if (!cols.some(c => c.name === 'model_name')) {
+      db.exec("ALTER TABLE jobs ADD COLUMN model_name TEXT");
+    }
+    if (!cols.some(c => c.name === 'estimated_time')) {
+      db.exec("ALTER TABLE jobs ADD COLUMN estimated_time TEXT");
+    }
+    if (!cols.some(c => c.name === 'filament_used_g')) {
+      db.exec("ALTER TABLE jobs ADD COLUMN filament_used_g REAL");
+    }
+    if (!cols.some(c => c.name === 'filament_cost')) {
+      db.exec("ALTER TABLE jobs ADD COLUMN filament_cost REAL");
+    }
+  } catch {
+    // Migration not needed or already applied
+  }
+
+  // Add plate_count column to models table
+  try {
+    const cols = db.prepare("PRAGMA table_info(models)").all() as { name: string }[];
+    if (!cols.some(c => c.name === 'plate_count')) {
+      db.exec("ALTER TABLE models ADD COLUMN plate_count INTEGER NOT NULL DEFAULT 1");
     }
   } catch {
     // Migration not needed or already applied
