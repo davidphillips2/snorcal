@@ -26,6 +26,8 @@ interface SettingsPanelProps {
   settings: Record<string, string>;
   onSettingsChange: (settings: Record<string, string>) => void;
   onSlice: () => void;
+  onSliceAll?: () => void;
+  plateCount?: number;
   isSlicing?: boolean;
   selectedProfiles: SelectedProfiles;
   onProfilesChange: (profiles: SelectedProfiles) => void;
@@ -78,8 +80,8 @@ const SETTING_GROUPS = [
 ];
 
 export function SettingsPanel({
-  engine, onEngineChange, settings, onSettingsChange, onSlice, isSlicing,
-  selectedProfiles, onProfilesChange,
+  engine, onEngineChange, settings, onSettingsChange, onSlice, onSliceAll, plateCount,
+  isSlicing, selectedProfiles, onProfilesChange,
 }: SettingsPanelProps) {
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   const [profiles, setProfiles] = useState<ProfileInfo[]>([]);
@@ -264,6 +266,21 @@ export function SettingsPanel({
       >
         {isSlicing ? 'Slicing...' : 'Slice'}
       </button>
+
+      {/* Slice all plates button */}
+      {plateCount && plateCount > 1 && (
+        <button
+          onClick={onSliceAll}
+          disabled={isSlicing}
+          className={`w-full py-3 rounded-lg font-medium text-sm transition ${
+            isSlicing
+              ? 'bg-gray-600 text-gray-400 cursor-not-allowed'
+              : 'bg-emerald-600 text-white hover:bg-emerald-500'
+          }`}
+        >
+          {isSlicing ? 'Slicing...' : `Slice All ${plateCount} Plates`}
+        </button>
+      )}
     </div>
   );
 }

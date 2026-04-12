@@ -10,9 +10,12 @@ import { ModelUploader } from './components/ModelUploader';
 import { JobList } from './components/Jobs/JobList';
 import { SettingsPanel } from './components/Settings/SettingsPanel';
 import { PrinterSelect } from './components/PrinterSelect';
+import { GcodeViewer } from './components/Viewer/GcodeViewer';
+import { GcodeLayerSlider } from './components/Viewer/GcodeLayerSlider';
 import { PRINTERS, getSavedPrinter, savePrinter } from './config/printers';
 import { useSSE } from './hooks/useSSE';
 import * as api from './api/client';
+import type { ParsedGcode } from './lib/gcode-parser';
 
 interface Model {
   id: string;
@@ -36,6 +39,7 @@ interface Job {
   filamentUsedG?: number;
   filamentCost?: number;
   errorMessage?: string;
+  plateIndex?: number;
   createdAt: string;
 }
 
@@ -47,6 +51,7 @@ export default function App() {
   // Three.js refs — only set once Scene reports ready
   const [sceneRefs, setSceneRefs] = useState<SceneRefs | null>(null);
   const meshRef = useRef<THREE.Mesh | null>(null);
+  const uploadInputRef = useRef<HTMLInputElement>(null);
   const [paintMode, setPaintMode] = useState<PaintMode>('orbit');
   const [activeColor, setActiveColor] = useState('#FF0000');
   const [faceColors, setFaceColors] = useState<Uint8Array | null>(null);
@@ -75,12 +80,35 @@ export default function App() {
   const [showRightPanel, setShowRightPanel] = useState(false);
   const [showJobsPanel, setShowJobsPanel] = useState(false);
 
+  // Gcode preview state
+  const [previewJobId, setPreviewJobId] = useState<string | null>(null);
+  const [parsedGcode, setParsedGcode] = useState<ParsedGcode | null>(null);
+  const [currentPreviewLayer, setCurrentPreviewLayer] = useState(0);
+  const [showAllLayers, setShowAllLayers] = useState(true);
+  const [isParsingGcode, setIsParsingGcode] = useState(false);
+
   // SSE
   const { messages: sseMsgs } = useSSE('/api/events');
 
-  // Load models on mount
+  // Load models and jobs on mount
   useEffect(() => {
     api.listModels().then(setModels).catch(console.error);
+    api.listJobs().then((data: any[]) => {
+      setJobs(data.map(j => ({
+        id: j.id,
+        modelName: j.modelName,
+        engine: j.engine,
+        status: j.status,
+        progress: j.progress,
+        currentStep: j.currentStep,
+        gcodeSize: j.gcodeSize,
+        estimatedTime: j.estimatedTime,
+        filamentUsedG: j.filamentUsedG,
+        filamentCost: j.filamentCost,
+        errorMessage: j.errorMessage,
+        createdAt: j.createdAt,
+      })));
+    }).catch(console.error);
   }, []);
 
   // Fetch face colors when selecting a model or plate
@@ -228,6 +256,38 @@ export default function App() {
     }
   }, [selectedModelId, engine, settings, printer, selectedProfiles, selectedPlate]);
 
+  const handleSliceAll = useCallback(async () => {
+    if (!selectedModelId || plateCount <= 1) return;
+    try {
+      const processSettings: Record<string, string> = {};
+      if (printer) {
+        for (const [key, val] of Object.entries(printer.settings)) {
+          if (typeof val === 'string') processSettings[key] = val;
+        }
+      }
+      Object.assign(processSettings, settings);
+
+      const newJobs: Job[] = [];
+      for (let p = 1; p <= plateCount; p++) {
+        const result = await api.submitSliceJob({
+          modelId: selectedModelId,
+          engine,
+          plateIndex: p,
+          settings: { process: processSettings, machine: {}, filaments: [{}] },
+          profiles: selectedProfiles,
+        });
+        newJobs.push({ id: result.jobId, engine, status: 'queued', progress: 0, plateIndex: p, createdAt: new Date().toISOString() });
+      }
+      setJobs((prev) => [...newJobs, ...prev]);
+      setShowLeftPanel(false);
+      setShowRightPanel(false);
+      setShowJobsPanel(true);
+    } catch (err) {
+      console.error('Slice all failed:', err);
+      alert(`Slice all failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }, [selectedModelId, engine, settings, printer, selectedProfiles, plateCount]);
+
   const handleSaveColors = useCallback(async () => {
     if (!selectedModelId || !meshRef.current) return;
     try {
@@ -250,6 +310,55 @@ export default function App() {
 
   const handleDownloadGcode = useCallback((jobId: string) => {
     window.open(api.getGcodeUrl(jobId), '_blank');
+  }, []);
+
+  const handlePreviewJob = useCallback(async (jobId: string) => {
+    setIsParsingGcode(true);
+    setPreviewJobId(jobId);
+    setParsedGcode(null);
+    // Close sidebars
+    setShowLeftPanel(false);
+    setShowRightPanel(false);
+    setShowJobsPanel(false);
+    // Hide STL mesh from scene
+    if (meshRef.current && sceneRefs) {
+      meshRef.current.visible = false;
+    }
+    try {
+      const response = await fetch(api.getGcodeUrl(jobId));
+      const text = await response.text();
+      const worker = new Worker(
+        new URL('./lib/gcode-parser.worker.ts', import.meta.url),
+        { type: 'module' },
+      );
+      worker.onmessage = (e) => {
+        const data = e.data as ParsedGcode;
+        setParsedGcode(data);
+        setCurrentPreviewLayer(Math.max(0, data.layers.length - 1));
+        setShowAllLayers(true);
+        setIsParsingGcode(false);
+        worker.terminate();
+      };
+      worker.onerror = () => {
+        setIsParsingGcode(false);
+        setPreviewJobId(null);
+        worker.terminate();
+      };
+      worker.postMessage(text);
+    } catch {
+      setIsParsingGcode(false);
+      setPreviewJobId(null);
+    }
+  }, [sceneRefs]);
+
+  const handleExitPreview = useCallback(() => {
+    setPreviewJobId(null);
+    setParsedGcode(null);
+    setCurrentPreviewLayer(0);
+    // Restore STL mesh visibility
+    if (meshRef.current) {
+      meshRef.current.visible = true;
+    }
   }, []);
 
   const handleGeometryReady = useCallback((geometry: THREE.BufferGeometry, mesh: THREE.Mesh) => {
@@ -368,7 +477,7 @@ export default function App() {
             {/* Jobs — desktop only (mobile uses slide-in panel) */}
             <div className="hidden md:block">
               <h3 className="text-xs font-medium text-gray-400 uppercase tracking-wider mb-2">Jobs</h3>
-              <JobList jobs={jobs} onCancel={handleCancelJob} onDownload={handleDownloadGcode} />
+              <JobList jobs={jobs} onCancel={handleCancelJob} onDownload={handleDownloadGcode} onPreview={handlePreviewJob} />
             </div>
           </div>
         </div>
@@ -394,7 +503,7 @@ export default function App() {
               ))}
             </div>
           )}
-          {sceneRefs && modelUrl && (
+          {sceneRefs && modelUrl && !previewJobId && (
             <>
               <AxisIndicator sceneRefs={sceneRefs} />
               <STLViewer
@@ -431,12 +540,54 @@ export default function App() {
               />
             </>
           )}
-          {!modelUrl && (
-            <div className="absolute inset-0 flex items-center justify-center text-gray-500 pointer-events-none z-10">
+          {/* Gcode preview mode */}
+          {sceneRefs && parsedGcode && previewJobId && (
+            <>
+              <GcodeViewer
+                sceneRef={{ current: sceneRefs }}
+                parsedGcode={parsedGcode}
+                currentLayer={currentPreviewLayer}
+                showAllLayers={showAllLayers}
+              />
+              <GcodeLayerSlider
+                currentLayer={currentPreviewLayer}
+                totalLayers={parsedGcode.layers.length}
+                currentZ={parsedGcode.layers[currentPreviewLayer]?.zIndex ?? 0}
+                maxZ={parsedGcode.maxZ}
+                showAllLayers={showAllLayers}
+                onLayerChange={setCurrentPreviewLayer}
+                onShowAllLayersChange={setShowAllLayers}
+                onExit={handleExitPreview}
+              />
+            </>
+          )}
+          {previewJobId && isParsingGcode && (
+            <div className="absolute inset-0 flex items-center justify-center z-10 bg-gray-900/50">
+              <div className="text-gray-300 text-sm">Parsing gcode...</div>
+            </div>
+          )}
+          {!modelUrl && !previewJobId && (
+            <div
+              className="absolute inset-0 flex items-center justify-center text-gray-500 z-10 cursor-pointer"
+              onClick={() => uploadInputRef.current?.click()}
+              onDrop={(e) => {
+                e.preventDefault();
+                const file = e.dataTransfer.files[0];
+                if (file && /\.(stl|step|stp|3mf)$/i.test(file.name)) handleUpload(file);
+              }}
+              onDragOver={(e) => e.preventDefault()}
+            >
+              <input
+                ref={uploadInputRef}
+                type="file"
+                accept=".stl,.step,.stp,.3mf"
+                onChange={(e) => { const f = e.target.files?.[0]; if (f) handleUpload(f); }}
+                className="hidden"
+              />
               <div className="text-center px-4">
                 <div className="text-6xl mb-4">&#9881;</div>
-                <p className="text-lg">Upload an STL model to get started</p>
-                <p className="text-sm mt-1">Tap <strong>Models</strong> to upload an STL file</p>
+                <p className="text-lg">Click or drop a file to upload</p>
+                <p className="text-sm mt-1">Supports .stl, .step, .3mf</p>
               </div>
             </div>
           )}
@@ -451,7 +602,7 @@ export default function App() {
         `}>
           <div className="p-4">
             <h3 className="text-sm font-medium text-gray-400 uppercase tracking-wider mb-3">Jobs</h3>
-            <JobList jobs={jobs} onCancel={handleCancelJob} onDownload={handleDownloadGcode} />
+            <JobList jobs={jobs} onCancel={handleCancelJob} onDownload={handleDownloadGcode} onPreview={handlePreviewJob} />
           </div>
         </div>
 
@@ -468,6 +619,8 @@ export default function App() {
             settings={settings}
             onSettingsChange={setSettings}
             onSlice={handleSlice}
+            onSliceAll={handleSliceAll}
+            plateCount={plateCount}
             isSlicing={jobs.some((j) => j.status === 'running' || j.status === 'queued')}
             selectedProfiles={selectedProfiles}
             onProfilesChange={setSelectedProfiles}

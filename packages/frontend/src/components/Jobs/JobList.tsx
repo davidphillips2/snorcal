@@ -11,10 +11,12 @@ interface JobCardProps {
     filamentUsedG?: number;
     filamentCost?: number;
     errorMessage?: string;
+    plateIndex?: number;
     createdAt: string;
   };
   onCancel?: (jobId: string) => void;
   onDownload?: (jobId: string) => void;
+  onPreview?: (jobId: string) => void;
 }
 
 const STATUS_COLORS: Record<string, string> = {
@@ -31,7 +33,7 @@ const ENGINE_LABELS: Record<string, string> = {
   snapmaker_orca: 'Snapmaker Orca',
 };
 
-export function JobCard({ job, onCancel, onDownload }: JobCardProps) {
+export function JobCard({ job, onCancel, onDownload, onPreview }: JobCardProps) {
   return (
     <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
       <div className="flex items-center justify-between mb-2">
@@ -40,6 +42,9 @@ export function JobCard({ job, onCancel, onDownload }: JobCardProps) {
             {job.status}
           </span>
           <span className="text-sm text-white truncate">{job.modelName || ENGINE_LABELS[job.engine] || job.engine}</span>
+          {job.plateIndex != null && (
+            <span className="shrink-0 px-1.5 py-0.5 rounded text-xs font-medium bg-gray-700 text-gray-300">P{job.plateIndex}</span>
+          )}
         </div>
         <span className="text-xs text-gray-500 shrink-0 ml-2">{new Date(job.createdAt).toLocaleString()}</span>
       </div>
@@ -120,6 +125,14 @@ export function JobCard({ job, onCancel, onDownload }: JobCardProps) {
             Download G-code
           </button>
         )}
+        {job.status === 'completed' && onPreview && (
+          <button
+            onClick={() => onPreview(job.id)}
+            className="px-3 py-1 text-xs rounded bg-purple-600/20 text-purple-400 hover:bg-purple-600/30 transition"
+          >
+            Preview
+          </button>
+        )}
       </div>
     </div>
   );
@@ -129,9 +142,10 @@ interface JobListProps {
   jobs: Array<JobCardProps['job']>;
   onCancel?: (jobId: string) => void;
   onDownload?: (jobId: string) => void;
+  onPreview?: (jobId: string) => void;
 }
 
-export function JobList({ jobs, onCancel, onDownload }: JobListProps) {
+export function JobList({ jobs, onCancel, onDownload, onPreview }: JobListProps) {
   if (jobs.length === 0) {
     return (
       <div className="text-center py-8 text-gray-500">
@@ -143,7 +157,7 @@ export function JobList({ jobs, onCancel, onDownload }: JobListProps) {
   return (
     <div className="space-y-3">
       {jobs.map((job) => (
-        <JobCard key={job.id} job={job} onCancel={onCancel} onDownload={onDownload} />
+        <JobCard key={job.id} job={job} onCancel={onCancel} onDownload={onDownload} onPreview={onPreview} />
       ))}
     </div>
   );
