@@ -5,7 +5,7 @@ import { build3MF } from '../services/threemf-builder.js';
 import { SlicerExecutor } from '../services/slicer-executor.js';
 import { PROJECT_SETTING_OVERRIDES } from '@slorca/shared';
 import { Db } from '../db/index.js';
-import type { SliceJobData } from '@slorca/shared';
+import type { SliceJobData, MultiMaterialConfig } from '@slorca/shared';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -92,8 +92,39 @@ export function setupQueue(db: Db): { queue: Queue; worker: Worker } | null {
   return null;
 }
 
+function mergeFilamentProfiles(
+  projectSettings: Record<string, unknown>,
+  profile0: Record<string, unknown> | null,
+  profile1: Record<string, unknown> | null,
+  config: MultiMaterialConfig,
+): void {
+  projectSettings['support_filament'] = config.supportFilament;
+  projectSettings['support_interface_filament'] = config.supportInterfaceFilament;
+
+  const filamentKeys = new Set<string>();
+  if (profile0) for (const key of Object.keys(profile0)) { if (key.startsWith('filament_')) filamentKeys.add(key); }
+  if (profile1) for (const key of Object.keys(profile1)) { if (key.startsWith('filament_')) filamentKeys.add(key); }
+
+  for (const key of filamentKeys) {
+    const val0 = profile0?.[key];
+    const val1 = profile1?.[key];
+    projectSettings[key] = [
+      val0 !== undefined ? String(val0) : (projectSettings[key] as any)?.[0] ?? '',
+      val1 !== undefined ? String(val1) : (projectSettings[key] as any)?.[1] ?? '',
+    ];
+  }
+
+  const defaultFlush = 280;
+  const existing = projectSettings['flush_volumes_matrix'] as string[] | undefined;
+  const f00 = existing?.[0] ?? '0';
+  const f01 = existing?.[1] ?? String(defaultFlush);
+  const f10 = existing?.[2] ?? String(defaultFlush);
+  const f11 = existing?.[3] ?? '0';
+  projectSettings['flush_volumes_matrix'] = [f00, f01, f10, f11];
+}
+
 async function processSliceJob(job: Job<SliceJobData>, db: Db): Promise<void> {
-  const { jobId, modelId, engine, plateIndex, settings, workDir } = job.data;
+  const { jobId, modelId, engine, plateIndex, settings, workDir, profiles, multiMaterial } = job.data;
 
   db.updateJobStatus(jobId, 'running');
   const executor = new SlicerExecutor();
@@ -129,6 +160,25 @@ async function processSliceJob(job: Job<SliceJobData>, db: Db): Promise<void> {
       for (const [key, val] of Object.entries(settings.process)) {
         projectSettings[key] = String(val);
       }
+    }
+
+    // Multi-material: load second filament profile and expand arrays
+    if (multiMaterial?.enabled) {
+      const profile0Name = profiles?.filament;
+      const profile1Name = profiles?.filament2;
+      let profile0Settings: Record<string, unknown> | null = null;
+      let profile1Settings: Record<string, unknown> | null = null;
+
+      if (profile0Name) {
+        const p = db.getProfile(engine, 'filament', profile0Name);
+        if (p) try { profile0Settings = JSON.parse(p.settings); } catch {}
+      }
+      if (profile1Name) {
+        const p = db.getProfile(engine, 'filament', profile1Name);
+        if (p) try { profile1Settings = JSON.parse(p.settings); } catch {}
+      }
+
+      mergeFilamentProfiles(projectSettings, profile0Settings, profile1Settings, multiMaterial);
     }
 
     // Rebuild 3MF with embedded project settings

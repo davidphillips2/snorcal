@@ -2,6 +2,12 @@ import type { SlicerEngine, SlicerSettings } from './slicer.js';
 
 export type JobStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
 
+export interface MultiMaterialConfig {
+  enabled: boolean;
+  supportFilament: '0' | '1';
+  supportInterfaceFilament: '0' | '1';
+}
+
 export interface SliceRequest {
   modelId: string;
   engine: SlicerEngine;
@@ -10,8 +16,10 @@ export interface SliceRequest {
   profiles?: {
     machine?: string;
     filament?: string;
+    filament2?: string;
     process?: string;
   };
+  multiMaterial?: MultiMaterialConfig;
 }
 
 export interface SliceJobData {
@@ -23,8 +31,10 @@ export interface SliceJobData {
   profiles?: {
     machine?: string;
     filament?: string;
+    filament2?: string;
     process?: string;
   };
+  multiMaterial?: MultiMaterialConfig;
   workDir: string;
 }
 

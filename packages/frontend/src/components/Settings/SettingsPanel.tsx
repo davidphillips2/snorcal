@@ -17,7 +17,14 @@ interface ProfileInfo {
 interface SelectedProfiles {
   machine?: string;
   filament?: string;
+  filament2?: string;
   process?: string;
+}
+
+interface MultiMaterialConfig {
+  enabled: boolean;
+  supportFilament: '0' | '1';
+  supportInterfaceFilament: '0' | '1';
 }
 
 interface SettingsPanelProps {
@@ -31,7 +38,29 @@ interface SettingsPanelProps {
   isSlicing?: boolean;
   selectedProfiles: SelectedProfiles;
   onProfilesChange: (profiles: SelectedProfiles) => void;
+  multiMaterial: MultiMaterialConfig;
+  onMultiMaterialChange: (config: MultiMaterialConfig) => void;
 }
+
+/** Optimal settings for multi-material supports (PETG supports for PLA, etc.) */
+const MULTI_MATERIAL_PRESET: Record<string, string> = {
+  enable_support: '1',
+  support_type: 'tree(normal)',
+  support_angle: '45',
+  // Z-distance gap — critical for clean separation with dissimilar materials
+  support_top_z_distance: '0.2',
+  support_bottom_z_distance: '0',
+  // Interface layers for clean top surface on support side
+  support_interface_top_layers: '3',
+  support_interface_bottom_layers: '0',
+  // Tree support params
+  tree_support_branch_angle: '45',
+  tree_support_branch_diameter: '2',
+  tree_support_tip_diameter: '0.8',
+  tree_support_branch_distance: '5',
+  // No support expansion — keep supports minimal
+  support_expansion: '0',
+};
 
 const SETTING_GROUPS = [
   {
@@ -81,7 +110,7 @@ const SETTING_GROUPS = [
 
 export function SettingsPanel({
   engine, onEngineChange, settings, onSettingsChange, onSlice, onSliceAll, plateCount,
-  isSlicing, selectedProfiles, onProfilesChange,
+  isSlicing, selectedProfiles, onProfilesChange, multiMaterial, onMultiMaterialChange,
 }: SettingsPanelProps) {
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   const [profiles, setProfiles] = useState<ProfileInfo[]>([]);
@@ -99,6 +128,20 @@ export function SettingsPanel({
 
   const updateSetting = (key: string, value: string) => {
     onSettingsChange({ ...settings, [key]: value });
+  };
+
+  const handleMultiMaterialToggle = (enabled: boolean) => {
+    if (enabled) {
+      const changes = Object.entries(MULTI_MATERIAL_PRESET)
+        .filter(([key]) => settings[key] !== MULTI_MATERIAL_PRESET[key])
+        .map(([key, val]) => `  ${key}: ${settings[key] || '(unset)'} → ${val}`);
+      if (changes.length > 0 && confirm(
+        `Apply multi-material support settings?\n\nChanges:\n${changes.join('\n')}`,
+      )) {
+        onSettingsChange({ ...settings, ...MULTI_MATERIAL_PRESET });
+      }
+    }
+    onMultiMaterialChange({ ...multiMaterial, enabled });
   };
 
   const toggleGroup = (label: string) => {
@@ -208,8 +251,48 @@ export function SettingsPanel({
           </div>
         </div>
         {renderProfileSelect('Machine', 'machine', machineProfiles)}
-        {renderProfileSelect('Filament', 'filament', filamentProfiles)}
+        {renderProfileSelect(multiMaterial.enabled ? 'Model Filament' : 'Filament', 'filament', filamentProfiles)}
+        {multiMaterial.enabled && renderProfileSelect('Support Filament', 'filament2', filamentProfiles)}
         {renderProfileSelect('Process', 'process', processProfiles)}
+      </div>
+
+      {/* Multi-Material Support */}
+      <div className="space-y-2">
+        <label className="flex items-center gap-2 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={multiMaterial.enabled}
+            onChange={(e) => handleMultiMaterialToggle(e.target.checked)}
+            className="rounded border-gray-600 bg-gray-700"
+          />
+          <span className="text-sm font-medium text-gray-300">Multi-Material Supports</span>
+        </label>
+        {multiMaterial.enabled && (
+          <div className="space-y-2 pl-2 border-l-2 border-gray-700">
+            <div className="space-y-1">
+              <label className="block text-xs font-medium text-gray-400">Support Base Filament</label>
+              <select
+                value={multiMaterial.supportFilament}
+                onChange={(e) => onMultiMaterialChange({ ...multiMaterial, supportFilament: e.target.value as '0' | '1' })}
+                className="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-xs text-white"
+              >
+                <option value="0">Filament 1 (Model)</option>
+                <option value="1">Filament 2 (Support)</option>
+              </select>
+            </div>
+            <div className="space-y-1">
+              <label className="block text-xs font-medium text-gray-400">Support Interface Filament</label>
+              <select
+                value={multiMaterial.supportInterfaceFilament}
+                onChange={(e) => onMultiMaterialChange({ ...multiMaterial, supportInterfaceFilament: e.target.value as '0' | '1' })}
+                className="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-xs text-white"
+              >
+                <option value="0">Filament 1 (Model)</option>
+                <option value="1">Filament 2 (Support)</option>
+              </select>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Setting groups */}

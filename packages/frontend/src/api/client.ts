@@ -65,7 +65,8 @@ export async function getModelColors(id: string, plate?: number): Promise<Uint8A
 
 export async function submitSliceJob(data: {
   modelId: string; engine: string; plateIndex?: number; settings: Record<string, unknown>;
-  profiles?: { machine?: string; filament?: string; process?: string };
+  profiles?: { machine?: string; filament?: string; filament2?: string; process?: string };
+  multiMaterial?: { enabled: boolean; supportFilament: '0' | '1'; supportInterfaceFilament: '0' | '1' };
 }) {
   return apiFetch('/slice', {
     method: 'POST',

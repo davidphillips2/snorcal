@@ -72,8 +72,16 @@ export default function App() {
   }, []);
   const [settings, setSettings] = useState<Record<string, string>>({});
   const [selectedProfiles, setSelectedProfiles] = useState<{
-    machine?: string; filament?: string; process?: string;
+    machine?: string; filament?: string; filament2?: string; process?: string;
   }>({});
+  const [multiMaterial, setMultiMaterial] = useState<{
+    enabled: boolean; supportFilament: '0' | '1'; supportInterfaceFilament: '0' | '1';
+  }>(() => {
+    try {
+      const saved = localStorage.getItem('slorca_multi_material');
+      return saved ? JSON.parse(saved) : { enabled: false, supportFilament: '1', supportInterfaceFilament: '1' };
+    } catch { return { enabled: false, supportFilament: '1', supportInterfaceFilament: '1' }; }
+  });
 
   // Mobile panel toggles
   const [showLeftPanel, setShowLeftPanel] = useState(false);
@@ -241,6 +249,7 @@ export default function App() {
         plateIndex: selectedPlate,
         settings: { process: processSettings, machine: {}, filaments: [{}] },
         profiles: selectedProfiles,
+        multiMaterial: multiMaterial.enabled ? multiMaterial : undefined,
       });
       setJobs((prev) => [
         { id: result.jobId, engine, status: 'queued', progress: 0, createdAt: new Date().toISOString() },
@@ -254,7 +263,7 @@ export default function App() {
       console.error('Slice failed:', err);
       alert(`Slice failed: ${err instanceof Error ? err.message : String(err)}`);
     }
-  }, [selectedModelId, engine, settings, printer, selectedProfiles, selectedPlate]);
+  }, [selectedModelId, engine, settings, printer, selectedProfiles, selectedPlate, multiMaterial]);
 
   const handleSliceAll = useCallback(async () => {
     if (!selectedModelId || plateCount <= 1) return;
@@ -275,6 +284,7 @@ export default function App() {
           plateIndex: p,
           settings: { process: processSettings, machine: {}, filaments: [{}] },
           profiles: selectedProfiles,
+          multiMaterial: multiMaterial.enabled ? multiMaterial : undefined,
         });
         newJobs.push({ id: result.jobId, engine, status: 'queued', progress: 0, plateIndex: p, createdAt: new Date().toISOString() });
       }
@@ -286,7 +296,7 @@ export default function App() {
       console.error('Slice all failed:', err);
       alert(`Slice all failed: ${err instanceof Error ? err.message : String(err)}`);
     }
-  }, [selectedModelId, engine, settings, printer, selectedProfiles, plateCount]);
+  }, [selectedModelId, engine, settings, printer, selectedProfiles, plateCount, multiMaterial]);
 
   const handleSaveColors = useCallback(async () => {
     if (!selectedModelId || !meshRef.current) return;
@@ -358,8 +368,10 @@ export default function App() {
     // Restore STL mesh visibility
     if (meshRef.current) {
       meshRef.current.visible = true;
+    } else if (sceneRefs) {
+      sceneRefs.scene.traverse((obj: any) => { if (obj.isMesh) obj.visible = true; });
     }
-  }, []);
+  }, [sceneRefs]);
 
   const handleGeometryReady = useCallback((geometry: THREE.BufferGeometry, mesh: THREE.Mesh) => {
     meshRef.current = mesh;
@@ -624,6 +636,11 @@ export default function App() {
             isSlicing={jobs.some((j) => j.status === 'running' || j.status === 'queued')}
             selectedProfiles={selectedProfiles}
             onProfilesChange={setSelectedProfiles}
+            multiMaterial={multiMaterial}
+            onMultiMaterialChange={(mm) => {
+              setMultiMaterial(mm);
+              localStorage.setItem('slorca_multi_material', JSON.stringify(mm));
+            }}
           />
         </div>
       </div>
