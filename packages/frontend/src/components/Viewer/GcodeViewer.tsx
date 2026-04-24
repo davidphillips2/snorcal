@@ -22,122 +22,137 @@ interface GcodeViewerProps {
   parsedGcode: ParsedGcode;
   currentLayer: number;
   showAllLayers: boolean;
+  hiddenTypes: Set<MoveType>;
+  currentStep: number;
 }
 
-export function GcodeViewer({ sceneRef, parsedGcode, currentLayer, showAllLayers }: GcodeViewerProps) {
-  const extrusionRef = useRef<THREE.LineSegments | null>(null);
-  const centeredRef = useRef(false);
+export function GcodeViewer({ sceneRef, parsedGcode, currentLayer, showAllLayers, hiddenTypes, currentStep }: GcodeViewerProps) {
+  const groupRef = useRef<THREE.Group | null>(null);
+  const linesRef = useRef<THREE.LineSegments | null>(null);
+  const sceneRefs = sceneRef.current;
+
+  // Create group — no rotation, gcode coordinates map directly to Three.js
+  // The slicer uses the same coordinate system as the STL, so the gcode
+  // preview orientation matches the STL viewer automatically.
+  useEffect(() => {
+    if (!sceneRefs) return;
+    const { scene } = sceneRefs;
+
+    const group = new THREE.Group();
+    scene.add(group);
+    groupRef.current = group;
+
+    return () => {
+      scene.remove(group);
+      if (linesRef.current) {
+        group.remove(linesRef.current);
+        linesRef.current.geometry.dispose();
+        (linesRef.current.material as THREE.Material).dispose();
+        linesRef.current = null;
+      }
+      groupRef.current = null;
+    };
+  }, [sceneRefs]);
 
   // Build geometry when layers change
   useEffect(() => {
-    if (!sceneRef.current) return;
-    const { scene } = sceneRef.current;
+    if (!groupRef.current) return;
+    const group = groupRef.current;
+
+    // Force-hide any STL mesh in the scene
+    if (sceneRefs) {
+      sceneRefs.scene.traverse((obj: any) => {
+        if (obj.isMesh) obj.visible = false;
+      });
+    }
 
     const { layers, bounds } = parsedGcode;
     if (layers.length === 0) return;
 
-    // Determine which layers to render
     const endLayer = Math.min(currentLayer + 1, layers.length);
     const startLayer = showAllLayers ? 0 : currentLayer;
+    const maxVisible = currentStep >= 0 ? currentStep + 1 : -1;
 
     let extrusionCount = 0;
     for (let i = startLayer; i < endLayer; i++) {
       for (const seg of layers[i].segments) {
-        if (seg.type !== 'travel') extrusionCount++;
+        if (seg.type !== 'travel' && !hiddenTypes.has(seg.type)) {
+          if (maxVisible < 0 || extrusionCount < maxVisible) extrusionCount++;
+        }
       }
     }
 
-    // Center offset
+    // Center like STL viewer: center X and Z, shift Y so bottom is at 0
     const cx = (bounds.minX + bounds.maxX) / 2;
     const cz = (bounds.minZ + bounds.maxZ) / 2;
 
-    // Build extrusion geometry
-    const exPositions = new Float32Array(extrusionCount * 6);
-    const exColors = new Float32Array(extrusionCount * 6);
+    const positions = new Float32Array(extrusionCount * 6);
+    const colors = new Float32Array(extrusionCount * 6);
 
     let ei = 0;
     for (let i = startLayer; i < endLayer; i++) {
       for (const seg of layers[i].segments) {
-        if (seg.type === 'travel') continue;
+        if (seg.type === 'travel' || hiddenTypes.has(seg.type)) continue;
+        if (maxVisible >= 0 && ei >= maxVisible) break;
+        // Direct mapping: gcode X→Three X, gcode Y→Three Y (up), gcode Z→Three Z
+        // Same as STL viewer convention — model orientation matches automatically
+        positions[ei * 6]     = seg.from.x - cx;
+        positions[ei * 6 + 1] = seg.from.y - bounds.minY;
+        positions[ei * 6 + 2] = seg.from.z - cz;
+        positions[ei * 6 + 3] = seg.to.x - cx;
+        positions[ei * 6 + 4] = seg.to.y - bounds.minY;
+        positions[ei * 6 + 5] = seg.to.z - cz;
 
-        const fx = seg.from.x - cx, fy = seg.from.y, fz = seg.from.z - cz;
-        const tx = seg.to.x - cx, ty = seg.to.y, tz = seg.to.z - cz;
-
-        exPositions[ei * 6] = fx;
-        exPositions[ei * 6 + 1] = fy;
-        exPositions[ei * 6 + 2] = fz;
-        exPositions[ei * 6 + 3] = tx;
-        exPositions[ei * 6 + 4] = ty;
-        exPositions[ei * 6 + 5] = tz;
         const c = MOVE_COLORS[seg.type];
-        exColors[ei * 6] = c[0]; exColors[ei * 6 + 1] = c[1]; exColors[ei * 6 + 2] = c[2];
-        exColors[ei * 6 + 3] = c[0]; exColors[ei * 6 + 4] = c[1]; exColors[ei * 6 + 5] = c[2];
+        colors[ei * 6] = c[0]; colors[ei * 6 + 1] = c[1]; colors[ei * 6 + 2] = c[2];
+        colors[ei * 6 + 3] = c[0]; colors[ei * 6 + 4] = c[1]; colors[ei * 6 + 5] = c[2];
         ei++;
       }
+      if (maxVisible >= 0 && ei >= maxVisible) break;
     }
 
-    // Remove old objects
-    if (extrusionRef.current) {
-      scene.remove(extrusionRef.current);
-      extrusionRef.current.geometry.dispose();
-      (extrusionRef.current.material as THREE.Material).dispose();
-      extrusionRef.current = null;
+    if (linesRef.current) {
+      group.remove(linesRef.current);
+      linesRef.current.geometry.dispose();
+      (linesRef.current.material as THREE.Material).dispose();
+      linesRef.current = null;
     }
 
-    // Create extrusion lines
     if (extrusionCount > 0) {
-      const exGeo = new THREE.BufferGeometry();
-      exGeo.setAttribute('position', new THREE.BufferAttribute(exPositions, 3));
-      exGeo.setAttribute('color', new THREE.BufferAttribute(exColors, 3));
-      const exMat = new THREE.LineBasicMaterial({ vertexColors: true, linewidth: 1 });
-      const exLines = new THREE.LineSegments(exGeo, exMat);
-      scene.add(exLines);
-      extrusionRef.current = exLines;
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+      geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+      const mat = new THREE.LineBasicMaterial({ vertexColors: true, linewidth: 1 });
+      const lines = new THREE.LineSegments(geo, mat);
+      group.add(lines);
+      linesRef.current = lines;
     }
-  }, [sceneRef, parsedGcode, currentLayer, showAllLayers]);
+  }, [groupRef.current, parsedGcode, currentLayer, showAllLayers, hiddenTypes, currentStep]);
 
-  // Camera framing on first render
+  // Frame camera — match STL viewer exactly
   useEffect(() => {
-    if (!sceneRef.current || centeredRef.current) return;
+    if (!sceneRefs) return;
     if (parsedGcode.layers.length === 0) return;
 
-    const { camera, controls } = sceneRef.current;
+    const { camera, controls } = sceneRefs;
     const { bounds } = parsedGcode;
-
     const sizeX = bounds.maxX - bounds.minX;
-    const sizeY = bounds.maxY - bounds.minY;
+    const sizeY = bounds.maxY - bounds.minY; // Y is vertical (matches STL)
     const sizeZ = bounds.maxZ - bounds.minZ;
+
     const maxDim = Math.max(sizeX, sizeY, sizeZ);
+    const distance = maxDim * 2;
+    const centerY = sizeY / 2;
 
-    const cx = (bounds.minX + bounds.maxX) / 2;
-    const cy = (bounds.minY + bounds.maxY) / 2;
-    const cz = (bounds.minZ + bounds.maxZ) / 2;
-
-    camera.position.set(cx, cy + maxDim * 1.2, cz + maxDim * 1.2);
-    camera.lookAt(cx, cy, cz);
+    // Same camera as STL viewer: isometric from (d, d, d) looking at center
+    camera.position.set(distance, distance, distance);
+    camera.lookAt(0, centerY, 0);
     camera.updateProjectionMatrix();
-
-    if (controls) {
-      controls.target.set(cx, cy, cz);
-      controls.update();
-    }
-
-    centeredRef.current = true;
-  }, [sceneRef, parsedGcode]);
-
-  // Cleanup on unmount
-  useEffect(() => {
-    return () => {
-      if (sceneRef.current) {
-        const { scene } = sceneRef.current;
-        if (extrusionRef.current) {
-          scene.remove(extrusionRef.current);
-          extrusionRef.current.geometry.dispose();
-          (extrusionRef.current.material as THREE.Material).dispose();
-        }
-      }
-    };
-  }, [sceneRef]);
+    controls.target.set(0, centerY, 0);
+    controls.update();
+    (controls as any).target0.set(0, centerY, 0);
+    (controls as any).position0.copy(camera.position);
+  }, [parsedGcode, sceneRefs]);
 
   return null;
 }

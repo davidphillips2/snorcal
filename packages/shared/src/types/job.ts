@@ -8,6 +8,12 @@ export interface MultiMaterialConfig {
   supportInterfaceFilament: '0' | '1';
 }
 
+export interface FilamentSlot {
+  color: string;
+  type: string;
+  profile?: string;
+}
+
 export interface SliceRequest {
   modelId: string;
   engine: SlicerEngine;
@@ -20,6 +26,7 @@ export interface SliceRequest {
     process?: string;
   };
   multiMaterial?: MultiMaterialConfig;
+  filamentSlots?: FilamentSlot[];
 }
 
 export interface SliceJobData {
@@ -35,6 +42,7 @@ export interface SliceJobData {
     process?: string;
   };
   multiMaterial?: MultiMaterialConfig;
+  filamentSlots?: FilamentSlot[];
   workDir: string;
 }
 

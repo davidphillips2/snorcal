@@ -57,7 +57,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     wget \
     curl \
     ca-certificates \
-    fuse \
+    unzip \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Node.js 20
@@ -65,33 +65,32 @@ RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y nodejs \
     && rm -rf /var/lib/apt/lists/*
 
-# Install OrcaSlicer (Phase 1 — only engine for now)
-# Note: Update the version URL to the latest release
+# ---- Slicers from SimplyPrint/slicer-builds ----
+# These are custom Linux builds with bundled .so files — no AppImage/FUSE needed.
+# Structure: bin/<binary> + bin/*.so + resources/
+
+ARG ORCASLICER_VERSION=OrcaSlicer_v2.3.2
+ARG BAMBUSTUDIO_VERSION=BambuStudio_v02.05.00.67
+
+# Install OrcaSlicer
 RUN mkdir -p /opt/orcaslicer && \
-    wget -qO /tmp/orcaslicer.AppImage \
-      "https://github.com/SoftFever/OrcaSlicer/releases/download/v2.3.0/OrcaSlicer_Linux_Ubuntu_V2.3.0.AppImage" && \
-    chmod +x /tmp/orcaslicer.AppImage && \
-    cd /opt/orcaslicer && \
-    /tmp/orcaslicer.AppImage --appimage-extract && \
-    mv squashfs-root/* . 2>/dev/null || true && \
-    rm -rf squashfs-root /tmp/orcaslicer.AppImage && \
-    ln -sf /opt/orcaslicer/OrcaSlicer /usr/local/bin/orca-slicer
+    wget -qO /tmp/orcaslicer.zip \
+      "https://github.com/SimplyPrint/slicer-builds/releases/download/${ORCASLICER_VERSION}/OrcaSlicer-v2.3.2.zip" && \
+    cd /tmp && unzip -q orcaslicer.zip -d /opt/orcaslicer && \
+    chmod +x /opt/orcaslicer/bin/orca-slicer && \
+    rm /tmp/orcaslicer.zip
 
-# Install BambuStudio (Phase 3)
-# RUN mkdir -p /opt/bambustudio && \
-#     wget -qO /tmp/bambustudio.AppImage \
-#       "https://github.com/bambulab/BambuStudio/releases/download/v01.10.00/BambuStudio_linux_ubuntu_v01.10.00.AppImage" && \
-#     chmod +x /tmp/bambustudio.AppImage && \
-#     cd /opt/bambustudio && \
-#     /tmp/bambustudio.AppImage --appimage-extract && \
-#     mv squashfs-root/* . 2>/dev/null || true && \
-#     rm -rf squashfs-root /tmp/bambustudio.AppImage && \
-#     ln -sf /opt/bambustudio/BambuStudio /usr/local/bin/bambu-studio
+# Install BambuStudio
+RUN mkdir -p /opt/bambustudio && \
+    wget -qO /tmp/bambustudio.zip \
+      "https://github.com/SimplyPrint/slicer-builds/releases/download/${BAMBUSTUDIO_VERSION}/BambuStudio-v02.05.00.67.zip" && \
+    cd /tmp && unzip -q bambustudio.zip -d /opt/bambustudio && \
+    chmod +x /opt/bambustudio/bin/bambu-studio && \
+    rm /tmp/bambustudio.zip
 
-# Install Snapmaker OrcaSlicer (Phase 3)
-# RUN mkdir -p /opt/snapmaker-orca && \
-#     wget -qO /tmp/snapmaker-orca.AppImage "..." && \
-#     ...
+# Snapmaker Orca uses the OrcaSlicer binary with a different datadir
+# (set via SLICER_DATADIR env or --datadir flag)
+RUN ln -sf /opt/orcaslicer /opt/snapmaker-orca
 
 # Copy application
 COPY --from=frontend-builder /build/packages/frontend/dist /app/frontend/dist
@@ -112,6 +111,9 @@ ENV NODE_ENV=production
 ENV DATA_DIR=/data
 ENV FRONTEND_DIR=/app/frontend/dist
 ENV PORT=3000
+
+# Set LD_LIBRARY_PATH so slicers find their bundled .so files
+ENV LD_LIBRARY_PATH=/opt/orcaslicer/bin:/opt/bambustudio/bin
 
 EXPOSE 3000
 

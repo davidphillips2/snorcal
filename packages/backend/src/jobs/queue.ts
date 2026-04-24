@@ -5,7 +5,7 @@ import { build3MF } from '../services/threemf-builder.js';
 import { SlicerExecutor } from '../services/slicer-executor.js';
 import { PROJECT_SETTING_OVERRIDES } from '@slorca/shared';
 import { Db } from '../db/index.js';
-import type { SliceJobData, MultiMaterialConfig } from '@slorca/shared';
+import type { SliceJobData, MultiMaterialConfig, FilamentSlot } from '@slorca/shared';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -92,6 +92,55 @@ export function setupQueue(db: Db): { queue: Queue; worker: Worker } | null {
   return null;
 }
 
+function expandFilamentSlots(
+  projectSettings: Record<string, unknown>,
+  slots: FilamentSlot[],
+  profileSettings: (Record<string, unknown> | null)[],
+  db: Db,
+  engine: string,
+): void {
+  const n = slots.length;
+  projectSettings['filament_colour'] = slots.map(s => s.color);
+  projectSettings['filament_type'] = slots.map(s => s.type);
+
+  // Reload profile settings from DB if not provided
+  const resolved = slots.map((slot, i) => {
+    if (profileSettings[i]) return profileSettings[i];
+    if (!slot.profile) return null;
+    const p = db.getProfile(engine, 'filament', slot.profile);
+    if (!p) return null;
+    try { return JSON.parse(p.settings) as Record<string, unknown>; } catch { return null; }
+  });
+
+  const filamentKeys = new Set<string>();
+  for (const p of resolved) {
+    if (p) for (const key of Object.keys(p)) { if (key.startsWith('filament_')) filamentKeys.add(key); }
+  }
+
+  for (const key of filamentKeys) {
+    if (key === 'filament_colour' || key === 'filament_type') continue;
+    const existing = projectSettings[key] as any[] | undefined;
+    projectSettings[key] = resolved.map((p, i) => {
+      if (p && p[key] !== undefined) return String(p[key]);
+      return existing?.[i] ?? existing?.[0] ?? '';
+    });
+  }
+
+  const defaultFlush = 280;
+  const existingMatrix = projectSettings['flush_volumes_matrix'] as string[] | undefined;
+  const matrix: string[] = [];
+  for (let r = 0; r < n; r++) {
+    for (let c = 0; c < n; c++) {
+      if (r === c) { matrix.push('0'); }
+      else {
+        const idx = r * n + c;
+        matrix.push(existingMatrix && idx < existingMatrix.length ? existingMatrix[idx] : String(defaultFlush));
+      }
+    }
+  }
+  projectSettings['flush_volumes_matrix'] = matrix;
+}
+
 function mergeFilamentProfiles(
   projectSettings: Record<string, unknown>,
   profile0: Record<string, unknown> | null,
@@ -124,7 +173,7 @@ function mergeFilamentProfiles(
 }
 
 async function processSliceJob(job: Job<SliceJobData>, db: Db): Promise<void> {
-  const { jobId, modelId, engine, plateIndex, settings, workDir, profiles, multiMaterial } = job.data;
+  const { jobId, modelId, engine, plateIndex, settings, workDir, profiles, multiMaterial, filamentSlots } = job.data;
 
   db.updateJobStatus(jobId, 'running');
   const executor = new SlicerExecutor();
@@ -179,6 +228,11 @@ async function processSliceJob(job: Job<SliceJobData>, db: Db): Promise<void> {
       }
 
       mergeFilamentProfiles(projectSettings, profile0Settings, profile1Settings, multiMaterial);
+    }
+
+    // Multi-color filament slots: expand all filament_* arrays to N elements
+    if (filamentSlots && filamentSlots.length > 1) {
+      expandFilamentSlots(projectSettings, filamentSlots, [], db, engine);
     }
 
     // Rebuild 3MF with embedded project settings

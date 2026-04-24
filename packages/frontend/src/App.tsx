@@ -15,7 +15,7 @@ import { GcodeLayerSlider } from './components/Viewer/GcodeLayerSlider';
 import { PRINTERS, getSavedPrinter, savePrinter } from './config/printers';
 import { useSSE } from './hooks/useSSE';
 import * as api from './api/client';
-import type { ParsedGcode } from './lib/gcode-parser';
+import type { ParsedGcode, MoveType } from './lib/gcode-parser';
 
 interface Model {
   id: string;
@@ -74,6 +74,14 @@ export default function App() {
   const [selectedProfiles, setSelectedProfiles] = useState<{
     machine?: string; filament?: string; filament2?: string; process?: string;
   }>({});
+  const [filamentSlots, setFilamentSlots] = useState<Array<{ color: string; type: string; profile?: string }>>(() => {
+    try {
+      const saved = localStorage.getItem('slorca_filament_slots');
+      if (saved) return JSON.parse(saved);
+    } catch {}
+    return [{ color: '#FF0000', type: 'PLA' }];
+  });
+  const [printerIp, setPrinterIp] = useState(() => localStorage.getItem('slorca_printer_ip') || '');
   const [multiMaterial, setMultiMaterial] = useState<{
     enabled: boolean; supportFilament: '0' | '1'; supportInterfaceFilament: '0' | '1';
   }>(() => {
@@ -93,7 +101,23 @@ export default function App() {
   const [parsedGcode, setParsedGcode] = useState<ParsedGcode | null>(null);
   const [currentPreviewLayer, setCurrentPreviewLayer] = useState(0);
   const [showAllLayers, setShowAllLayers] = useState(true);
+  const [hiddenTypes, setHiddenTypes] = useState<Set<MoveType>>(() => new Set(['infill', 'bottom_surface', 'solid_infill', 'bridge', 'support', 'skirt', 'travel', 'other']));
   const [isParsingGcode, setIsParsingGcode] = useState(false);
+  const [currentStep, setCurrentStep] = useState(-1);
+
+  // Visible segment count for horizontal slider (all layers up to current, or single layer)
+  const totalSegmentsInLayer = (() => {
+    if (!parsedGcode) return 0;
+    const endLayer = Math.min(currentPreviewLayer + 1, parsedGcode.layers.length);
+    const startLayer = showAllLayers ? 0 : currentPreviewLayer;
+    let count = 0;
+    for (let i = startLayer; i < endLayer; i++) {
+      for (const s of parsedGcode.layers[i].segments) {
+        if (s.type !== 'travel' && !hiddenTypes.has(s.type)) count++;
+      }
+    }
+    return count;
+  })();
 
   // SSE
   const { messages: sseMsgs } = useSSE('/api/events');
@@ -250,6 +274,7 @@ export default function App() {
         settings: { process: processSettings, machine: {}, filaments: [{}] },
         profiles: selectedProfiles,
         multiMaterial: multiMaterial.enabled ? multiMaterial : undefined,
+        filamentSlots: filamentSlots.length > 1 ? filamentSlots : undefined,
       });
       setJobs((prev) => [
         { id: result.jobId, engine, status: 'queued', progress: 0, createdAt: new Date().toISOString() },
@@ -263,7 +288,7 @@ export default function App() {
       console.error('Slice failed:', err);
       alert(`Slice failed: ${err instanceof Error ? err.message : String(err)}`);
     }
-  }, [selectedModelId, engine, settings, printer, selectedProfiles, selectedPlate, multiMaterial]);
+  }, [selectedModelId, engine, settings, printer, selectedProfiles, selectedPlate, multiMaterial, filamentSlots]);
 
   const handleSliceAll = useCallback(async () => {
     if (!selectedModelId || plateCount <= 1) return;
@@ -285,6 +310,7 @@ export default function App() {
           settings: { process: processSettings, machine: {}, filaments: [{}] },
           profiles: selectedProfiles,
           multiMaterial: multiMaterial.enabled ? multiMaterial : undefined,
+          filamentSlots: filamentSlots.length > 1 ? filamentSlots : undefined,
         });
         newJobs.push({ id: result.jobId, engine, status: 'queued', progress: 0, plateIndex: p, createdAt: new Date().toISOString() });
       }
@@ -296,7 +322,7 @@ export default function App() {
       console.error('Slice all failed:', err);
       alert(`Slice all failed: ${err instanceof Error ? err.message : String(err)}`);
     }
-  }, [selectedModelId, engine, settings, printer, selectedProfiles, plateCount, multiMaterial]);
+  }, [selectedModelId, engine, settings, printer, selectedProfiles, plateCount, multiMaterial, filamentSlots]);
 
   const handleSaveColors = useCallback(async () => {
     if (!selectedModelId || !meshRef.current) return;
@@ -346,6 +372,7 @@ export default function App() {
         setParsedGcode(data);
         setCurrentPreviewLayer(Math.max(0, data.layers.length - 1));
         setShowAllLayers(true);
+        setCurrentStep(-1);
         setIsParsingGcode(false);
         worker.terminate();
       };
@@ -361,10 +388,26 @@ export default function App() {
     }
   }, [sceneRefs]);
 
+  const handleSendToPrinter = useCallback(async (jobId: string) => {
+    const ip = printerIp || prompt('Enter your printer IP address:');
+    if (!ip) return;
+    try {
+      const result = await api.sendToPrinter(jobId, ip);
+      alert(result?.message || 'Gcode sent to printer!');
+      if (!printerIp) {
+        setPrinterIp(ip);
+        localStorage.setItem('slorca_printer_ip', ip);
+      }
+    } catch (err) {
+      alert(`Send failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }, [printerIp]);
+
   const handleExitPreview = useCallback(() => {
     setPreviewJobId(null);
     setParsedGcode(null);
     setCurrentPreviewLayer(0);
+    setCurrentStep(-1);
     // Restore STL mesh visibility
     if (meshRef.current) {
       meshRef.current.visible = true;
@@ -398,13 +441,21 @@ export default function App() {
     setShowJobsPanel(false);
   }, []);
 
+  // Disable orbit controls when painting
+  useEffect(() => {
+    if (sceneRefs && (paintMode === 'paint' || paintMode === 'fill' || paintMode === 'lay')) {
+      sceneRefs.controls.enabled = false;
+      return () => { sceneRefs.controls.enabled = true; };
+    }
+  }, [sceneRefs, paintMode]);
+
   // Show printer selection on first visit
   if (!printerId) {
     return <PrinterSelect onSelect={handleSelectPrinter} />;
   }
 
   return (
-    <div className="h-screen flex flex-col bg-gray-900 text-white">
+    <div className="h-dvh flex flex-col bg-gray-900 text-white overflow-hidden">
       <header className="flex items-center justify-between px-4 py-2 bg-gray-800 border-b border-gray-700 shrink-0">
         <div className="flex items-center gap-3">
           <h1 className="text-lg font-bold tracking-tight">Slorca</h1>
@@ -419,8 +470,8 @@ export default function App() {
           )}
         </div>
         <span className="text-xs text-gray-500 hidden sm:inline">Self-Hosted 3D Slicing Hub</span>
-        {/* Mobile panel toggles */}
-        <div className="flex md:hidden gap-2">
+        {/* Panel toggles */}
+        <div className="flex gap-2">
           <button
             onClick={() => { setShowLeftPanel(!showLeftPanel); setShowRightPanel(false); setShowJobsPanel(false); }}
             className={`px-3 py-1.5 rounded-lg text-xs font-medium ${showLeftPanel ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-300'}`}
@@ -443,10 +494,10 @@ export default function App() {
       </header>
 
       <div className="flex flex-1 overflow-hidden relative">
-        {/* Backdrop for mobile panels */}
+        {/* Backdrop */}
         {(showLeftPanel || showRightPanel || showJobsPanel) && (
           <div
-            className="md:hidden fixed inset-0 bg-black/50 z-10"
+            className="fixed inset-0 bg-black/50 z-10"
             onClick={closeMobilePanels}
           />
         )}
@@ -454,9 +505,9 @@ export default function App() {
         {/* Left sidebar */}
         <div className={`
           w-72 bg-gray-800 border-r border-gray-700 flex flex-col overflow-hidden shrink-0
-          absolute md:relative z-20 top-0 left-0 h-full
+          absolute z-20 top-0 left-0 h-full
           transition-transform duration-200 ease-in-out
-          ${showLeftPanel ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}
+          ${showLeftPanel ? 'translate-x-0' : '-translate-x-full'}
         `}>
           <div className="p-3 space-y-3 overflow-y-auto flex-1">
             <ModelUploader onUpload={handleUpload} isUploading={isUploading} />
@@ -485,12 +536,6 @@ export default function App() {
                 ))}
               </div>
             )}
-
-            {/* Jobs — desktop only (mobile uses slide-in panel) */}
-            <div className="hidden md:block">
-              <h3 className="text-xs font-medium text-gray-400 uppercase tracking-wider mb-2">Jobs</h3>
-              <JobList jobs={jobs} onCancel={handleCancelJob} onDownload={handleDownloadGcode} onPreview={handlePreviewJob} />
-            </div>
           </div>
         </div>
 
@@ -549,6 +594,7 @@ export default function App() {
                 rotation={rotation}
                 onRotationChange={setRotation}
                 onAutoOrient={handleAutoOrient}
+                filamentColors={filamentSlots.map(s => s.color)}
               />
             </>
           )}
@@ -560,6 +606,8 @@ export default function App() {
                 parsedGcode={parsedGcode}
                 currentLayer={currentPreviewLayer}
                 showAllLayers={showAllLayers}
+                hiddenTypes={hiddenTypes}
+                currentStep={currentStep}
               />
               <GcodeLayerSlider
                 currentLayer={currentPreviewLayer}
@@ -567,9 +615,14 @@ export default function App() {
                 currentZ={parsedGcode.layers[currentPreviewLayer]?.zIndex ?? 0}
                 maxZ={parsedGcode.maxZ}
                 showAllLayers={showAllLayers}
-                onLayerChange={setCurrentPreviewLayer}
+                onLayerChange={(layer) => { setCurrentPreviewLayer(layer); setCurrentStep(-1); }}
                 onShowAllLayersChange={setShowAllLayers}
                 onExit={handleExitPreview}
+                hiddenTypes={hiddenTypes}
+                onHiddenTypesChange={setHiddenTypes}
+                currentStep={currentStep}
+                totalSegmentsInLayer={totalSegmentsInLayer}
+                onStepChange={setCurrentStep}
               />
             </>
           )}
@@ -605,25 +658,25 @@ export default function App() {
           )}
         </div>
 
-        {/* Jobs panel (mobile slide-in) */}
+        {/* Jobs slide-in panel */}
         <div className={`
           w-80 bg-gray-800 border-l border-gray-700 overflow-y-auto shrink-0
-          absolute md:hidden z-20 top-0 right-0 h-full
+          absolute z-20 top-0 right-0 h-full
           transition-transform duration-200 ease-in-out
           ${showJobsPanel ? 'translate-x-0' : 'translate-x-full'}
         `}>
           <div className="p-4">
             <h3 className="text-sm font-medium text-gray-400 uppercase tracking-wider mb-3">Jobs</h3>
-            <JobList jobs={jobs} onCancel={handleCancelJob} onDownload={handleDownloadGcode} onPreview={handlePreviewJob} />
+            <JobList jobs={jobs} onCancel={handleCancelJob} onDownload={handleDownloadGcode} onPreview={handlePreviewJob} onSendToPrinter={handleSendToPrinter} />
           </div>
         </div>
 
         {/* Right sidebar */}
         <div className={`
           w-80 bg-gray-800 border-l border-gray-700 overflow-y-auto shrink-0
-          absolute md:relative z-20 top-0 right-0 h-full
+          absolute z-20 top-0 right-0 h-full
           transition-transform duration-200 ease-in-out
-          ${showRightPanel ? 'translate-x-0' : 'translate-x-full md:translate-x-0'}
+          ${showRightPanel ? 'translate-x-0' : 'translate-x-full'}
         `}>
           <SettingsPanel
             engine={engine}
@@ -640,6 +693,16 @@ export default function App() {
             onMultiMaterialChange={(mm) => {
               setMultiMaterial(mm);
               localStorage.setItem('slorca_multi_material', JSON.stringify(mm));
+            }}
+            filamentSlots={filamentSlots}
+            onFilamentSlotsChange={(slots) => {
+              setFilamentSlots(slots);
+              localStorage.setItem('slorca_filament_slots', JSON.stringify(slots));
+            }}
+            printerIp={printerIp}
+            onPrinterIpChange={(ip) => {
+              setPrinterIp(ip);
+              localStorage.setItem('slorca_printer_ip', ip);
             }}
           />
         </div>

@@ -9,7 +9,7 @@ import { ensureDir, getJobsDir } from '../services/model-parser.js';
 import { build3MF } from '../services/threemf-builder.js';
 import { SlicerExecutor } from '../services/slicer-executor.js';
 import { PROJECT_SETTING_OVERRIDES } from '@slorca/shared';
-import type { SliceRequest, SliceJobData, MultiMaterialConfig } from '@slorca/shared';
+import type { SliceRequest, SliceJobData, MultiMaterialConfig, FilamentSlot } from '@slorca/shared';
 import os from 'node:os';
 
 // Load the full default project settings template (slicer-exported defaults)
@@ -39,9 +39,55 @@ function getDefaultDataDir(engine: string): string {
 }
 
 /**
- * Merge two filament profiles into project settings for multi-material slicing.
- * Expands all filament_* array keys to 2-element arrays, sets support_filament
- * and support_interface_filament, and builds a 2x2 flush_volumes_matrix.
+ * Expand all filament_* settings to N-element arrays based on configured slots.
+ * Sets filament_colour from slot colors (slicer maps 3MF face colors → filament indices).
+ * Builds NxN flush_volumes_matrix.
+ */
+function expandFilamentSlots(
+  projectSettings: Record<string, unknown>,
+  slots: FilamentSlot[],
+  profileSettings: (Record<string, unknown> | null)[],
+): void {
+  const n = slots.length;
+
+  // Set filament_colour from slot colors — critical for slicer color→index mapping
+  projectSettings['filament_colour'] = slots.map(s => s.color);
+  projectSettings['filament_type'] = slots.map(s => s.type);
+
+  // Collect all filament_* keys from all profiles
+  const filamentKeys = new Set<string>();
+  for (const p of profileSettings) {
+    if (p) for (const key of Object.keys(p)) { if (key.startsWith('filament_')) filamentKeys.add(key); }
+  }
+
+  // Expand each filament_* key to N-element array
+  for (const key of filamentKeys) {
+    if (key === 'filament_colour' || key === 'filament_type') continue; // already set
+    const existing = projectSettings[key] as any[] | undefined;
+    projectSettings[key] = profileSettings.map((p, i) => {
+      if (p && p[key] !== undefined) return String(p[key]);
+      return existing?.[i] ?? existing?.[0] ?? '';
+    });
+  }
+
+  // Build NxN flush_volumes_matrix (flattened row-major)
+  const defaultFlush = 280;
+  const existingMatrix = projectSettings['flush_volumes_matrix'] as string[] | undefined;
+  const matrix: string[] = [];
+  for (let r = 0; r < n; r++) {
+    for (let c = 0; c < n; c++) {
+      if (r === c) { matrix.push('0'); }
+      else {
+        const idx = r * n + c;
+        matrix.push(existingMatrix && idx < existingMatrix.length ? existingMatrix[idx] : String(defaultFlush));
+      }
+    }
+  }
+  projectSettings['flush_volumes_matrix'] = matrix;
+}
+
+/**
+ * Legacy 2-slot merge for multi-material support mode.
  */
 function mergeFilamentProfiles(
   projectSettings: Record<string, unknown>,
@@ -49,16 +95,13 @@ function mergeFilamentProfiles(
   profile1: Record<string, unknown> | null,
   config: MultiMaterialConfig,
 ): void {
-  // Ensure support_filament and support_interface_filament are set
   projectSettings['support_filament'] = config.supportFilament;
   projectSettings['support_interface_filament'] = config.supportInterfaceFilament;
 
-  // Collect all filament_* keys from both profiles
   const filamentKeys = new Set<string>();
   if (profile0) for (const key of Object.keys(profile0)) { if (key.startsWith('filament_')) filamentKeys.add(key); }
   if (profile1) for (const key of Object.keys(profile1)) { if (key.startsWith('filament_')) filamentKeys.add(key); }
 
-  // Expand each filament_* key to a 2-element array
   for (const key of filamentKeys) {
     const val0 = profile0?.[key];
     const val1 = profile1?.[key];
@@ -68,15 +111,12 @@ function mergeFilamentProfiles(
     ];
   }
 
-  // Build 2x2 flush_volumes_matrix (flattened: [00, 01, 10, 11])
-  // Default flush volume ~280mm³ between different filaments
   const defaultFlush = 280;
   const existing = projectSettings['flush_volumes_matrix'] as string[] | undefined;
-  const f00 = existing?.[0] ?? '0';
-  const f01 = existing?.[1] ?? String(defaultFlush);
-  const f10 = existing?.[2] ?? String(defaultFlush);
-  const f11 = existing?.[3] ?? '0';
-  projectSettings['flush_volumes_matrix'] = [f00, f01, f10, f11];
+  projectSettings['flush_volumes_matrix'] = [
+    existing?.[0] ?? '0', existing?.[1] ?? String(defaultFlush),
+    existing?.[2] ?? String(defaultFlush), existing?.[3] ?? '0',
+  ];
 }
 
 export async function sliceRoutes(app: FastifyInstance, options: { db: Db }) {
@@ -131,6 +171,7 @@ export async function sliceRoutes(app: FastifyInstance, options: { db: Db }) {
         settings: body.settings,
         profiles: body.profiles,
         multiMaterial: body.multiMaterial,
+        filamentSlots: body.filamentSlots,
         workDir,
       };
       await queue.add('slice', jobData, { jobId });
@@ -300,6 +341,17 @@ function runSliceDirect(
         }
 
         mergeFilamentProfiles(projectSettings, profile0Settings, profile1Settings, body.multiMaterial);
+      }
+
+      // Multi-color filament slots: expand all filament_* arrays to N elements
+      if (body.filamentSlots && body.filamentSlots.length > 1) {
+        const profileSettings: (Record<string, unknown> | null)[] = body.filamentSlots.map((slot) => {
+          if (!slot.profile) return null;
+          const p = db.getProfile(body.engine, 'filament', slot.profile);
+          if (!p) return null;
+          try { return JSON.parse(p.settings) as Record<string, unknown>; } catch { return null; }
+        });
+        expandFilamentSlots(projectSettings, body.filamentSlots, profileSettings);
       }
 
       if (body.settings?.process) {

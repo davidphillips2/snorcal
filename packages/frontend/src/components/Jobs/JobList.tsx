@@ -17,6 +17,7 @@ interface JobCardProps {
   onCancel?: (jobId: string) => void;
   onDownload?: (jobId: string) => void;
   onPreview?: (jobId: string) => void;
+  onSendToPrinter?: (jobId: string) => void;
 }
 
 const STATUS_COLORS: Record<string, string> = {
@@ -33,7 +34,7 @@ const ENGINE_LABELS: Record<string, string> = {
   snapmaker_orca: 'Snapmaker Orca',
 };
 
-export function JobCard({ job, onCancel, onDownload, onPreview }: JobCardProps) {
+export function JobCard({ job, onCancel, onDownload, onPreview, onSendToPrinter }: JobCardProps) {
   return (
     <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
       <div className="flex items-center justify-between mb-2">
@@ -133,6 +134,14 @@ export function JobCard({ job, onCancel, onDownload, onPreview }: JobCardProps) 
             Preview
           </button>
         )}
+        {job.status === 'completed' && onSendToPrinter && (
+          <button
+            onClick={() => onSendToPrinter(job.id)}
+            className="px-3 py-1 text-xs rounded bg-orange-600/20 text-orange-400 hover:bg-orange-600/30 transition"
+          >
+            Send to Printer
+          </button>
+        )}
       </div>
     </div>
   );
@@ -143,9 +152,10 @@ interface JobListProps {
   onCancel?: (jobId: string) => void;
   onDownload?: (jobId: string) => void;
   onPreview?: (jobId: string) => void;
+  onSendToPrinter?: (jobId: string) => void;
 }
 
-export function JobList({ jobs, onCancel, onDownload, onPreview }: JobListProps) {
+export function JobList({ jobs, onCancel, onDownload, onPreview, onSendToPrinter }: JobListProps) {
   if (jobs.length === 0) {
     return (
       <div className="text-center py-8 text-gray-500">
@@ -157,7 +167,7 @@ export function JobList({ jobs, onCancel, onDownload, onPreview }: JobListProps)
   return (
     <div className="space-y-3">
       {jobs.map((job) => (
-        <JobCard key={job.id} job={job} onCancel={onCancel} onDownload={onDownload} onPreview={onPreview} />
+        <JobCard key={job.id} job={job} onCancel={onCancel} onDownload={onDownload} onPreview={onPreview} onSendToPrinter={onSendToPrinter} />
       ))}
     </div>
   );

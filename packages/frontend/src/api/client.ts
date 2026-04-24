@@ -67,6 +67,7 @@ export async function submitSliceJob(data: {
   modelId: string; engine: string; plateIndex?: number; settings: Record<string, unknown>;
   profiles?: { machine?: string; filament?: string; filament2?: string; process?: string };
   multiMaterial?: { enabled: boolean; supportFilament: '0' | '1'; supportInterfaceFilament: '0' | '1' };
+  filamentSlots?: { color: string; type: string; profile?: string }[];
 }) {
   return apiFetch('/slice', {
     method: 'POST',
@@ -120,6 +121,22 @@ export async function getProfileSettings(engine: string, type: string, name: str
 
 export async function deleteProfile(engine: string, type: string, name: string) {
   return apiFetch(`/settings/${engine}/profiles/${type}/${encodeURIComponent(name)}`, { method: 'DELETE' });
+}
+
+export async function testPrinterConnection(printerIp: string, printerPort?: number) {
+  return apiFetch('/printers/test', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ printerIp, printerPort }),
+  }) as Promise<{ ok: boolean; info?: string; error?: string }>;
+}
+
+export async function sendToPrinter(jobId: string, printerIp: string, printerPort?: number) {
+  return apiFetch('/printers/send', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ jobId, printerIp, printerPort }),
+  }) as Promise<{ ok: boolean; message?: string; error?: string; warning?: string }>;
 }
 
 export async function importProfiles(engine: string, file: File) {

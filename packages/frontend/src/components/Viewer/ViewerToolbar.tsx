@@ -11,6 +11,7 @@ interface ViewerToolbarProps {
   rotation: Rotation3D;
   onRotationChange: (rotation: Rotation3D) => void;
   onAutoOrient: () => void;
+  filamentColors?: string[];
 }
 
 const PALETTE = [
@@ -29,8 +30,9 @@ const MODES: { key: PaintMode; label: string }[] = [
 
 export function ViewerToolbar({
   paintMode, onModeChange, activeColor, onColorChange, onUndo, onSave,
-  rotation, onRotationChange, onAutoOrient,
+  rotation, onRotationChange, onAutoOrient, filamentColors,
 }: ViewerToolbarProps) {
+  const palette = filamentColors && filamentColors.length > 0 ? filamentColors : PALETTE;
   return (
     <>
       {/* Rotation panel — shown above toolbar when rotate mode is active */}
@@ -92,18 +94,26 @@ export function ViewerToolbar({
           {/* Paint controls — only shown in paint/fill modes */}
           {(paintMode === 'paint' || paintMode === 'fill') && (
             <>
-              {/* Active color indicator (mobile) */}
-              <div
-                className="w-7 h-7 rounded-full border-2 border-white sm:hidden shrink-0"
-                style={{ backgroundColor: activeColor }}
-              />
+              {/* Mobile: clickable color indicator opens color picker */}
+              <label className="sm:hidden shrink-0 relative">
+                <div
+                  className="w-7 h-7 rounded-full border-2 border-white"
+                  style={{ backgroundColor: activeColor }}
+                />
+                <input
+                  type="color"
+                  value={activeColor}
+                  onChange={(e) => onColorChange(e.target.value)}
+                  className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                />
+              </label>
 
               {/* Divider (desktop) */}
               <div className="hidden sm:block w-px h-8 bg-gray-600" />
 
-              {/* Color palette (desktop only) */}
+              {/* Color palette (desktop) */}
               <div className="hidden sm:flex gap-1">
-                {PALETTE.map((color) => (
+                {palette.map((color) => (
                   <button
                     key={color}
                     onClick={() => onColorChange(color)}

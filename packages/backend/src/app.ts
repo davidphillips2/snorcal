@@ -8,6 +8,7 @@ import { sliceRoutes } from './routes/slice.js';
 import { settingsRoutes } from './routes/settings.js';
 import { fileRoutes } from './routes/files.js';
 import { eventRoutes } from './routes/events.js';
+import { printerRoutes } from './routes/printers.js';
 import { setupQueue } from './jobs/queue.js';
 import { ensureDir, getDataDir } from './services/model-parser.js';
 
@@ -40,6 +41,7 @@ export async function buildApp() {
   app.register(settingsRoutes, { db });
   app.register(fileRoutes, { db });
   app.register(eventRoutes);
+  app.register(printerRoutes, { db });
 
   // Health check
   app.get('/api/health', async () => ({ ok: true, timestamp: new Date().toISOString() }));

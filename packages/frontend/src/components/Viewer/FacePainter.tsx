@@ -119,6 +119,37 @@ export function FacePainter({ mesh, renderer, activeColor, paintMode, onPaint, o
     const raycaster = new THREE.Raycaster();
     const mouse = new THREE.Vector2();
     let isPainting = false;
+    let lastClientX = 0;
+    let lastClientY = 0;
+
+    const paintAtPoint = (clientX: number, clientY: number) => {
+      const geometry = mesh.geometry;
+      const canvas = renderer.domElement;
+      const rect = canvas.getBoundingClientRect();
+      mouse.x = ((clientX - rect.left) / rect.width) * 2 - 1;
+      mouse.y = -((clientY - rect.top) / rect.height) * 2 + 1;
+
+      const camera = (renderer as any).__slorca_camera as THREE.Camera | undefined;
+      if (!camera) return;
+
+      raycaster.setFromCamera(mouse, camera);
+      const intersects = raycaster.intersectObject(mesh);
+      if (intersects.length === 0) return;
+
+      const faceIndex = intersects[0].faceIndex;
+      if (faceIndex == null) return;
+
+      paintFace(geometry, faceIndex, activeColor);
+      // Also paint adjacent faces for a thicker brush
+      const adjacency = getAdjacency(geometry);
+      const neighbors = adjacency.get(faceIndex);
+      if (neighbors) {
+        for (const n of neighbors) {
+          paintFace(geometry, n, activeColor);
+        }
+      }
+      if (onPaint) onPaint(faceIndex, activeColor);
+    };
 
     const handlePointerDown = (event: PointerEvent) => {
       if (event.button !== 0) return;
@@ -172,7 +203,17 @@ export function FacePainter({ mesh, renderer, activeColor, paintMode, onPaint, o
         floodFill(geometry, faceIndex, activeColor);
       } else {
         paintFace(geometry, faceIndex, activeColor);
+        // Paint adjacent faces for brush width
+        const adjacency = getAdjacency(geometry);
+        const neighbors = adjacency.get(faceIndex);
+        if (neighbors) {
+          for (const n of neighbors) {
+            paintFace(geometry, n, activeColor);
+          }
+        }
         isPainting = true;
+        lastClientX = event.clientX;
+        lastClientY = event.clientY;
       }
 
       if (onPaint) onPaint(faceIndex, activeColor);
@@ -181,24 +222,19 @@ export function FacePainter({ mesh, renderer, activeColor, paintMode, onPaint, o
     const handlePointerMove = (event: PointerEvent) => {
       if (!isPainting || paintMode !== 'paint') return;
 
-      const geometry = mesh.geometry;
-      const canvas = renderer.domElement;
-      const rect = canvas.getBoundingClientRect();
-      mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
-      mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+      // Interpolate between last and current position to fill gaps
+      const dx = event.clientX - lastClientX;
+      const dy = event.clientY - lastClientY;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      const steps = Math.max(1, Math.ceil(dist / 4)); // sample every 4px
 
-      const camera = (renderer as any).__slorca_camera as THREE.Camera | undefined;
-      if (!camera) return;
+      for (let i = 1; i <= steps; i++) {
+        const t = i / steps;
+        paintAtPoint(lastClientX + dx * t, lastClientY + dy * t);
+      }
 
-      raycaster.setFromCamera(mouse, camera);
-      const intersects = raycaster.intersectObject(mesh);
-      if (intersects.length === 0) return;
-
-      const faceIndex = intersects[0].faceIndex;
-      if (faceIndex == null) return;
-
-      paintFace(geometry, faceIndex, activeColor);
-      if (onPaint) onPaint(faceIndex, activeColor);
+      lastClientX = event.clientX;
+      lastClientY = event.clientY;
     };
 
     const handlePointerUp = () => { isPainting = false; };
@@ -208,12 +244,14 @@ export function FacePainter({ mesh, renderer, activeColor, paintMode, onPaint, o
     canvas.addEventListener('pointermove', handlePointerMove);
     canvas.addEventListener('pointerup', handlePointerUp);
     canvas.style.cursor = paintMode === 'lay' ? 'pointer' : 'crosshair';
+    canvas.style.touchAction = 'none';
 
     return () => {
       canvas.removeEventListener('pointerdown', handlePointerDown);
       canvas.removeEventListener('pointermove', handlePointerMove);
       canvas.removeEventListener('pointerup', handlePointerUp);
       canvas.style.cursor = 'grab';
+      canvas.style.touchAction = '';
     };
   }, [mesh, renderer, paintMode, activeColor, onPaint, onLayOnFace, pushUndo, floodFill, paintFace]);
 

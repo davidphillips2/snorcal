@@ -27,6 +27,12 @@ interface MultiMaterialConfig {
   supportInterfaceFilament: '0' | '1';
 }
 
+interface FilamentSlotConfig {
+  color: string;
+  type: string;
+  profile?: string;
+}
+
 interface SettingsPanelProps {
   engine: string;
   onEngineChange: (engine: string) => void;
@@ -40,7 +46,13 @@ interface SettingsPanelProps {
   onProfilesChange: (profiles: SelectedProfiles) => void;
   multiMaterial: MultiMaterialConfig;
   onMultiMaterialChange: (config: MultiMaterialConfig) => void;
+  filamentSlots: FilamentSlotConfig[];
+  onFilamentSlotsChange: (slots: FilamentSlotConfig[]) => void;
+  printerIp: string;
+  onPrinterIpChange: (ip: string) => void;
 }
+
+const MATERIAL_TYPES = ['PLA', 'PETG', 'ABS', 'ASA', 'TPU', 'PA (Nylon)', 'PC', 'PVA', 'HIPS', 'CF (Carbon Fiber)'];
 
 /** Optimal settings for multi-material supports (PETG supports for PLA, etc.) */
 const MULTI_MATERIAL_PRESET: Record<string, string> = {
@@ -77,7 +89,7 @@ const SETTING_GROUPS = [
     label: 'Infill',
     settings: [
       { key: 'sparse_infill_density', label: 'Infill Density', type: 'text' },
-      { key: 'infill_pattern', label: 'Infill Pattern', type: 'select',
+      { key: 'sparse_infill_pattern', label: 'Infill Pattern', type: 'select',
         options: ['gyroid', 'grid', 'honeycomb', 'lines', 'rectilinear', 'tri-hexagon', 'cubic'] },
     ],
   },
@@ -111,6 +123,8 @@ const SETTING_GROUPS = [
 export function SettingsPanel({
   engine, onEngineChange, settings, onSettingsChange, onSlice, onSliceAll, plateCount,
   isSlicing, selectedProfiles, onProfilesChange, multiMaterial, onMultiMaterialChange,
+  filamentSlots, onFilamentSlotsChange,
+  printerIp, onPrinterIpChange,
 }: SettingsPanelProps) {
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   const [profiles, setProfiles] = useState<ProfileInfo[]>([]);
@@ -251,9 +265,109 @@ export function SettingsPanel({
           </div>
         </div>
         {renderProfileSelect('Machine', 'machine', machineProfiles)}
-        {renderProfileSelect(multiMaterial.enabled ? 'Model Filament' : 'Filament', 'filament', filamentProfiles)}
-        {multiMaterial.enabled && renderProfileSelect('Support Filament', 'filament2', filamentProfiles)}
         {renderProfileSelect('Process', 'process', processProfiles)}
+      </div>
+
+      {/* Filament Slots */}
+      <div className="space-y-2">
+        <div className="flex items-center justify-between">
+          <span className="text-sm font-medium text-gray-300">Filaments</span>
+          {filamentSlots.length < 4 && (
+            <button
+              onClick={() => {
+                const colors = ['#0099FF', '#33CC33', '#FFCC00', '#6633CC', '#CC3399'];
+                onFilamentSlotsChange([
+                  ...filamentSlots,
+                  { color: colors[filamentSlots.length % colors.length], type: 'PLA' },
+                ]);
+              }}
+              className="px-2 py-0.5 rounded text-xs bg-gray-700 text-gray-300 hover:bg-gray-600"
+            >
+              + Add Slot
+            </button>
+          )}
+        </div>
+        {filamentSlots.map((slot, i) => (
+          <div key={i} className="space-y-1 p-2 bg-gray-750 rounded border border-gray-600" style={{ backgroundColor: 'rgba(55,65,81,0.5)' }}>
+            <div className="flex items-center gap-2">
+              <label className="relative shrink-0">
+                <div
+                  className="w-6 h-6 rounded-full border border-gray-500"
+                  style={{ backgroundColor: slot.color }}
+                />
+                <input
+                  type="color"
+                  value={slot.color}
+                  onChange={(e) => {
+                    const next = [...filamentSlots];
+                    next[i] = { ...next[i], color: e.target.value };
+                    onFilamentSlotsChange(next);
+                  }}
+                  className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                />
+              </label>
+              <select
+                value={slot.type}
+                onChange={(e) => {
+                  const next = [...filamentSlots];
+                  next[i] = { ...next[i], type: e.target.value };
+                  onFilamentSlotsChange(next);
+                }}
+                className="flex-1 bg-gray-700 border border-gray-600 rounded px-2 py-1 text-xs text-white min-w-0"
+              >
+                {MATERIAL_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+              </select>
+              {filamentSlots.length > 1 && (
+                <button
+                  onClick={() => onFilamentSlotsChange(filamentSlots.filter((_, j) => j !== i))}
+                  className="px-1.5 py-1 text-xs text-red-400 hover:text-red-300 hover:bg-gray-700 rounded"
+                >
+                  &times;
+                </button>
+              )}
+            </div>
+            <select
+              value={slot.profile || ''}
+              onChange={(e) => {
+                const next = [...filamentSlots];
+                next[i] = { ...next[i], profile: e.target.value || undefined };
+                onFilamentSlotsChange(next);
+              }}
+              className="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1 text-xs text-white"
+            >
+              <option value="">Default profile</option>
+              {filamentProfiles.map(p => <option key={p.name} value={p.name}>{p.name}</option>)}
+            </select>
+          </div>
+        ))}
+      </div>
+
+      {/* Printer Connection */}
+      <div className="space-y-2">
+        <span className="text-sm font-medium text-gray-300">Printer Connection</span>
+        <div className="flex gap-2">
+          <input
+            type="text"
+            placeholder="Printer IP (e.g. 192.168.1.100)"
+            value={printerIp}
+            onChange={(e) => onPrinterIpChange(e.target.value)}
+            className="flex-1 bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-xs text-white min-w-0"
+          />
+          <button
+            onClick={async () => {
+              if (!printerIp) { alert('Enter printer IP first'); return; }
+              try {
+                const result = await api.testPrinterConnection(printerIp);
+                alert(result?.info ? `Connected: ${result.info}` : 'Connection failed');
+              } catch (err) {
+                alert(`Connection failed: ${err instanceof Error ? err.message : String(err)}`);
+              }
+            }}
+            className="px-3 py-1.5 rounded text-xs bg-gray-700 text-gray-300 hover:bg-gray-600 whitespace-nowrap"
+          >
+            Test
+          </button>
+        </div>
       </div>
 
       {/* Multi-Material Support */}

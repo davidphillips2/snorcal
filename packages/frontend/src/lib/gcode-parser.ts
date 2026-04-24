@@ -76,10 +76,14 @@ function parseG1Params(line: string): { x?: number; y?: number; z?: number; e?: 
     let dec = -1;
     while (i < len) {
       const c = line.charCodeAt(i);
-      if (c >= 48 && c <= 57) { num = num * 10 + (c - 48); hasNum = true; i++; }
+      if (c >= 48 && c <= 57) {
+        num = num * 10 + (c - 48);
+        hasNum = true;
+        i++;
+        if (dec >= 0) dec++;
+      }
       else if (c === 46) { dec = 0; i++; }
       else break;
-      if (dec >= 0) dec++;
     }
     if (dec > 0) num /= Math.pow(10, dec);
     if (neg) num = -num;
@@ -111,6 +115,7 @@ export function parseGcode(text: string): ParsedGcode {
 
   let minX = Infinity, minY = Infinity, minZ = Infinity;
   let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+  let hasExtrusion = false;
 
   function pushLayer() {
     if (currentSegments.length > 0 || hasFirstLayer) {
@@ -171,8 +176,8 @@ export function parseGcode(text: string): ParsedGcode {
       const newZ = params.z !== undefined ? params.z : curZ;
       if (params.x !== undefined || params.y !== undefined || params.z !== undefined) {
         currentSegments.push({
-          from: { x: curX, y: curZ, z: curY },
-          to: { x: newX, y: newZ, z: newY },
+          from: { x: curX, y: curY, z: curZ },
+          to: { x: newX, y: newY, z: newZ },
           type: 'travel',
         });
       }
@@ -204,9 +209,10 @@ export function parseGcode(text: string): ParsedGcode {
     }
 
     if (params.x !== undefined || params.y !== undefined || params.z !== undefined) {
-      // Remap: gcode (X, Y, Z) -> Three.js (X, Z, Y) so layers stack up on Y
-      const fromX = curX, fromY = curZ, fromZ = curY;
-      const toX = newX, toY = newZ, toZ = newY;
+      // Keep gcode coordinates as-is (X, Y, Z where Z=up)
+      // GcodeViewer rotates the group to display correctly in Three.js
+      const fromX = curX, fromY = curY, fromZ = curZ;
+      const toX = newX, toY = newY, toZ = newZ;
 
       const segType = isExtrusion ? currentType : 'travel';
       currentSegments.push({
@@ -215,12 +221,16 @@ export function parseGcode(text: string): ParsedGcode {
         type: segType,
       });
 
-      if (toX < minX) minX = toX;
-      if (toY < minY) minY = toY;
-      if (toZ < minZ) minZ = toZ;
-      if (toX > maxX) maxX = toX;
-      if (toY > maxY) maxY = toY;
-      if (toZ > maxZ) maxZ = toZ;
+      // Track bounds on extrusion moves only (avoid travel from origin skewing center)
+      if (isExtrusion) {
+        hasExtrusion = true;
+        if (toX < minX) minX = toX;
+        if (toY < minY) minY = toY;
+        if (toZ < minZ) minZ = toZ;
+        if (toX > maxX) maxX = toX;
+        if (toY > maxY) maxY = toY;
+        if (toZ > maxZ) maxZ = toZ;
+      }
     }
 
     curX = newX;
