@@ -23,8 +23,8 @@ interface SelectedProfiles {
 
 interface MultiMaterialConfig {
   enabled: boolean;
-  supportFilament: '0' | '1';
-  supportInterfaceFilament: '0' | '1';
+  supportFilament: string;
+  supportInterfaceFilament: string;
 }
 
 interface FilamentSlotConfig {
@@ -107,7 +107,9 @@ const SETTING_GROUPS = [
     settings: [
       { key: 'enable_support', label: 'Enable Support', type: 'select', options: ['0', '1'] },
       { key: 'support_type', label: 'Support Type', type: 'select',
-        options: ['tree(normal)', 'tree(hybrid)', 'normal', 'none'] },
+        options: ['tree(normal)', 'tree(hybrid)', 'tree(auto)', 'normal', 'none'] },
+      { key: 'support_on_build_plate_only', label: 'Support on Build Plate Only', type: 'select', options: ['0', '1'] },
+      { key: 'support_top_z_distance', label: 'Support Z Distance', type: 'number', step: '0.1' },
       { key: 'support_angle', label: 'Support Angle', type: 'number', step: '5' },
     ],
   },
@@ -390,8 +392,11 @@ export function SettingsPanel({
                 onChange={(e) => onMultiMaterialChange({ ...multiMaterial, supportFilament: e.target.value as '0' | '1' })}
                 className="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-xs text-white"
               >
-                <option value="0">Filament 1 (Model)</option>
-                <option value="1">Filament 2 (Support)</option>
+                {filamentSlots.map((slot, i) => (
+                  <option key={i} value={String(i)}>
+                    Filament {i + 1} ({slot.type}{slot.color ? ` ${slot.color}` : ''})
+                  </option>
+                ))}
               </select>
             </div>
             <div className="space-y-1">
@@ -401,8 +406,11 @@ export function SettingsPanel({
                 onChange={(e) => onMultiMaterialChange({ ...multiMaterial, supportInterfaceFilament: e.target.value as '0' | '1' })}
                 className="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-xs text-white"
               >
-                <option value="0">Filament 1 (Model)</option>
-                <option value="1">Filament 2 (Support)</option>
+                {filamentSlots.map((slot, i) => (
+                  <option key={i} value={String(i)}>
+                    Filament {i + 1} ({slot.type}{slot.color ? ` ${slot.color}` : ''})
+                  </option>
+                ))}
               </select>
             </div>
           </div>

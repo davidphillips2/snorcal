@@ -55,6 +55,8 @@ export function STLViewer({ modelUrl, faceColors, rotation, positionOffset, scen
           colors[i * 3 + 2] = 0.7;
         }
         geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+        // Track which faces have been explicitly painted (not default gray)
+        geometry.userData.paintedFaces = new Set<number>();
 
         // Translate geometry so bottom is at Y=0 and X/Z centered on grid
         geometry.computeBoundingBox();
@@ -225,6 +227,8 @@ export function applyFaceColors(geometry: THREE.BufferGeometry, faceColors: Uint
   if (!colorAttr) return;
 
   const faceCount = Math.min(faceColors.length / 4, colorAttr.count / 3);
+  const painted = (geometry.userData.paintedFaces as Set<number>) || new Set<number>();
+  geometry.userData.paintedFaces = painted;
 
   for (let f = 0; f < faceCount; f++) {
     const a = faceColors[f * 4 + 3]; // alpha
@@ -238,6 +242,7 @@ export function applyFaceColors(geometry: THREE.BufferGeometry, faceColors: Uint
     colorAttr.setXYZ(f * 3, r, g, b);
     colorAttr.setXYZ(f * 3 + 1, r, g, b);
     colorAttr.setXYZ(f * 3 + 2, r, g, b);
+    painted.add(f);
   }
   colorAttr.needsUpdate = true;
 }
@@ -251,13 +256,14 @@ export function extractFaceColors(geometry: THREE.BufferGeometry): Uint8Array {
 
   const faceCount = colorAttr.count / 3;
   const faceColors = new Uint8Array(faceCount * 4);
+  const painted = geometry.userData.paintedFaces as Set<number> | undefined;
 
   for (let f = 0; f < faceCount; f++) {
     // Read first vertex color (all 3 of a face should be same)
     faceColors[f * 4] = Math.round(colorAttr.getX(f * 3) * 255);
     faceColors[f * 4 + 1] = Math.round(colorAttr.getY(f * 3) * 255);
     faceColors[f * 4 + 2] = Math.round(colorAttr.getZ(f * 3) * 255);
-    faceColors[f * 4 + 3] = 255; // alpha = painted
+    faceColors[f * 4 + 3] = painted?.has(f) ? 255 : 0;
   }
 
   return faceColors;

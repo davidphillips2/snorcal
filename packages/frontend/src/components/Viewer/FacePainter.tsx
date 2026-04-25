@@ -75,6 +75,9 @@ export function FacePainter({ mesh, renderer, activeColor, paintMode, onPaint, o
     colorAttr.setXYZ(faceIndex * 3 + 1, color.r, color.g, color.b);
     colorAttr.setXYZ(faceIndex * 3 + 2, color.r, color.g, color.b);
     colorAttr.needsUpdate = true;
+    // Track this face as explicitly painted
+    const painted = geometry.userData.paintedFaces as Set<number>;
+    if (painted) painted.add(faceIndex);
   }, []);
 
   const floodFill = useCallback((geometry: THREE.BufferGeometry, startFace: number, hexColor: string) => {

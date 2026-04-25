@@ -10,12 +10,11 @@ import { ModelUploader } from './components/ModelUploader';
 import { JobList } from './components/Jobs/JobList';
 import { SettingsPanel } from './components/Settings/SettingsPanel';
 import { PrinterSelect } from './components/PrinterSelect';
-import { GcodeViewer } from './components/Viewer/GcodeViewer';
+import { GcodePreviewCanvas } from './components/Viewer/GcodePreviewCanvas';
 import { GcodeLayerSlider } from './components/Viewer/GcodeLayerSlider';
 import { PRINTERS, getSavedPrinter, savePrinter } from './config/printers';
 import { useSSE } from './hooks/useSSE';
 import * as api from './api/client';
-import type { ParsedGcode, MoveType } from './lib/gcode-parser';
 
 interface Model {
   id: string;
@@ -83,7 +82,7 @@ export default function App() {
   });
   const [printerIp, setPrinterIp] = useState(() => localStorage.getItem('slorca_printer_ip') || '');
   const [multiMaterial, setMultiMaterial] = useState<{
-    enabled: boolean; supportFilament: '0' | '1'; supportInterfaceFilament: '0' | '1';
+    enabled: boolean; supportFilament: string; supportInterfaceFilament: string;
   }>(() => {
     try {
       const saved = localStorage.getItem('slorca_multi_material');
@@ -98,26 +97,17 @@ export default function App() {
 
   // Gcode preview state
   const [previewJobId, setPreviewJobId] = useState<string | null>(null);
-  const [parsedGcode, setParsedGcode] = useState<ParsedGcode | null>(null);
+  const [gcodeText, setGcodeText] = useState<string | null>(null);
   const [currentPreviewLayer, setCurrentPreviewLayer] = useState(0);
   const [showAllLayers, setShowAllLayers] = useState(true);
-  const [hiddenTypes, setHiddenTypes] = useState<Set<MoveType>>(() => new Set(['infill', 'bottom_surface', 'solid_infill', 'bridge', 'support', 'skirt', 'travel', 'other']));
   const [isParsingGcode, setIsParsingGcode] = useState(false);
-  const [currentStep, setCurrentStep] = useState(-1);
+  const [layerCount, setLayerCount] = useState(0);
 
-  // Visible segment count for horizontal slider (all layers up to current, or single layer)
-  const totalSegmentsInLayer = (() => {
-    if (!parsedGcode) return 0;
-    const endLayer = Math.min(currentPreviewLayer + 1, parsedGcode.layers.length);
-    const startLayer = showAllLayers ? 0 : currentPreviewLayer;
-    let count = 0;
-    for (let i = startLayer; i < endLayer; i++) {
-      for (const s of parsedGcode.layers[i].segments) {
-        if (s.type !== 'travel' && !hiddenTypes.has(s.type)) count++;
-      }
-    }
-    return count;
-  })();
+  const handleLayerCountReady = useCallback((count: number) => {
+    setLayerCount(count);
+    setCurrentPreviewLayer(count - 1);
+    setShowAllLayers(true);
+  }, []);
 
   // SSE
   const { messages: sseMsgs } = useSSE('/api/events');
@@ -147,7 +137,46 @@ export default function App() {
   useEffect(() => {
     if (!selectedModelId) { setFaceColors(null); return; }
     setFaceColors(null);
-    api.getModelColors(selectedModelId, selectedPlate).then(setFaceColors).catch(() => setFaceColors(null));
+    api.getModelColors(selectedModelId, selectedPlate).then(colors => {
+      setFaceColors(colors);
+      // Auto-import unique painted colors into filament slots
+      if (colors) {
+        const uniqueColors: string[] = [];
+        const seen = new Set<string>();
+        let hasUnpainted = false;
+        for (let i = 0; i < colors.length; i += 4) {
+          if (colors[i + 3] === 0) { hasUnpainted = true; continue; }
+          const hex = '#' + [colors[i], colors[i + 1], colors[i + 2]]
+            .map(c => c.toString(16).padStart(2, '0')).join('').toUpperCase();
+          if (!seen.has(hex)) {
+            seen.add(hex);
+            uniqueColors.push(hex);
+          }
+        }
+        const needsSlots = uniqueColors.length > 1 || (uniqueColors.length === 1 && hasUnpainted);
+        if (needsSlots) {
+          setFilamentSlots(prev => {
+            let newSlots: Array<{ color: string; type: string; profile?: string }>;
+            if (hasUnpainted) {
+              // Slot 0 = default/unpainted extruder, painted colors fill remaining slots
+              newSlots = [{ color: prev[0]?.color ?? '#FFFFFF', type: prev[0]?.type ?? 'PLA', profile: prev[0]?.profile }];
+              for (const color of uniqueColors) {
+                newSlots.push({ color, type: 'PLA', profile: undefined });
+              }
+            } else {
+              // All faces painted — map colors directly to slots
+              newSlots = uniqueColors.map((color, idx) => ({
+                color,
+                type: prev[idx]?.type ?? 'PLA',
+                profile: prev[idx]?.profile,
+              }));
+            }
+            localStorage.setItem('slorca_filament_slots', JSON.stringify(newSlots));
+            return newSlots;
+          });
+        }
+      }
+    }).catch(() => setFaceColors(null));
   }, [selectedModelId, selectedPlate]);
 
   // Load default settings when engine or printer changes
@@ -275,6 +304,9 @@ export default function App() {
         profiles: selectedProfiles,
         multiMaterial: multiMaterial.enabled ? multiMaterial : undefined,
         filamentSlots: filamentSlots.length > 1 ? filamentSlots : undefined,
+        rotation,
+        positionOffset: positionOffset ? { x: positionOffset.x, y: positionOffset.y, z: positionOffset.z } : undefined,
+        buildVolume: printer?.buildVolume,
       });
       setJobs((prev) => [
         { id: result.jobId, engine, status: 'queued', progress: 0, createdAt: new Date().toISOString() },
@@ -288,7 +320,7 @@ export default function App() {
       console.error('Slice failed:', err);
       alert(`Slice failed: ${err instanceof Error ? err.message : String(err)}`);
     }
-  }, [selectedModelId, engine, settings, printer, selectedProfiles, selectedPlate, multiMaterial, filamentSlots]);
+  }, [selectedModelId, engine, settings, printer, selectedProfiles, selectedPlate, multiMaterial, filamentSlots, rotation, positionOffset]);
 
   const handleSliceAll = useCallback(async () => {
     if (!selectedModelId || plateCount <= 1) return;
@@ -311,6 +343,9 @@ export default function App() {
           profiles: selectedProfiles,
           multiMaterial: multiMaterial.enabled ? multiMaterial : undefined,
           filamentSlots: filamentSlots.length > 1 ? filamentSlots : undefined,
+          rotation,
+          positionOffset: positionOffset ? { x: positionOffset.x, y: positionOffset.y, z: positionOffset.z } : undefined,
+          buildVolume: printer?.buildVolume,
         });
         newJobs.push({ id: result.jobId, engine, status: 'queued', progress: 0, plateIndex: p, createdAt: new Date().toISOString() });
       }
@@ -322,7 +357,7 @@ export default function App() {
       console.error('Slice all failed:', err);
       alert(`Slice all failed: ${err instanceof Error ? err.message : String(err)}`);
     }
-  }, [selectedModelId, engine, settings, printer, selectedProfiles, plateCount, multiMaterial, filamentSlots]);
+  }, [selectedModelId, engine, settings, printer, selectedProfiles, plateCount, multiMaterial, filamentSlots, rotation, positionOffset]);
 
   const handleSaveColors = useCallback(async () => {
     if (!selectedModelId || !meshRef.current) return;
@@ -351,37 +386,17 @@ export default function App() {
   const handlePreviewJob = useCallback(async (jobId: string) => {
     setIsParsingGcode(true);
     setPreviewJobId(jobId);
-    setParsedGcode(null);
+    setGcodeText(null);
+    setLayerCount(0);
     // Close sidebars
     setShowLeftPanel(false);
     setShowRightPanel(false);
     setShowJobsPanel(false);
-    // Hide STL mesh from scene
-    if (meshRef.current && sceneRefs) {
-      meshRef.current.visible = false;
-    }
     try {
       const response = await fetch(api.getGcodeUrl(jobId));
       const text = await response.text();
-      const worker = new Worker(
-        new URL('./lib/gcode-parser.worker.ts', import.meta.url),
-        { type: 'module' },
-      );
-      worker.onmessage = (e) => {
-        const data = e.data as ParsedGcode;
-        setParsedGcode(data);
-        setCurrentPreviewLayer(Math.max(0, data.layers.length - 1));
-        setShowAllLayers(true);
-        setCurrentStep(-1);
-        setIsParsingGcode(false);
-        worker.terminate();
-      };
-      worker.onerror = () => {
-        setIsParsingGcode(false);
-        setPreviewJobId(null);
-        worker.terminate();
-      };
-      worker.postMessage(text);
+      setGcodeText(text);
+      setIsParsingGcode(false);
     } catch {
       setIsParsingGcode(false);
       setPreviewJobId(null);
@@ -405,16 +420,10 @@ export default function App() {
 
   const handleExitPreview = useCallback(() => {
     setPreviewJobId(null);
-    setParsedGcode(null);
+    setGcodeText(null);
     setCurrentPreviewLayer(0);
-    setCurrentStep(-1);
-    // Restore STL mesh visibility
-    if (meshRef.current) {
-      meshRef.current.visible = true;
-    } else if (sceneRefs) {
-      sceneRefs.scene.traverse((obj: any) => { if (obj.isMesh) obj.visible = true; });
-    }
-  }, [sceneRefs]);
+    setLayerCount(0);
+  }, []);
 
   const handleGeometryReady = useCallback((geometry: THREE.BufferGeometry, mesh: THREE.Mesh) => {
     meshRef.current = mesh;
@@ -507,7 +516,7 @@ export default function App() {
           w-72 bg-gray-800 border-r border-gray-700 flex flex-col overflow-hidden shrink-0
           absolute z-20 top-0 left-0 h-full
           transition-transform duration-200 ease-in-out
-          ${showLeftPanel ? 'translate-x-0' : '-translate-x-full'}
+          ${showLeftPanel ? 'translate-x-0' : '-translate-x-full pointer-events-none'}
         `}>
           <div className="p-3 space-y-3 overflow-y-auto flex-1">
             <ModelUploader onUpload={handleUpload} isUploading={isUploading} />
@@ -599,31 +608,26 @@ export default function App() {
             </>
           )}
           {/* Gcode preview mode */}
-          {sceneRefs && parsedGcode && previewJobId && (
+          {previewJobId && gcodeText && (
             <>
-              <GcodeViewer
-                sceneRef={{ current: sceneRefs }}
-                parsedGcode={parsedGcode}
-                currentLayer={currentPreviewLayer}
-                showAllLayers={showAllLayers}
-                hiddenTypes={hiddenTypes}
-                currentStep={currentStep}
+              <GcodePreviewCanvas
+                gcode={gcodeText}
+                layer={currentPreviewLayer}
+                singleLayerMode={!showAllLayers}
+                extrusionColors={filamentSlots.map(s => s.color)}
+                buildVolume={printer?.buildVolume}
+                onLayerCountReady={handleLayerCountReady}
               />
-              <GcodeLayerSlider
-                currentLayer={currentPreviewLayer}
-                totalLayers={parsedGcode.layers.length}
-                currentZ={parsedGcode.layers[currentPreviewLayer]?.zIndex ?? 0}
-                maxZ={parsedGcode.maxZ}
-                showAllLayers={showAllLayers}
-                onLayerChange={(layer) => { setCurrentPreviewLayer(layer); setCurrentStep(-1); }}
-                onShowAllLayersChange={setShowAllLayers}
-                onExit={handleExitPreview}
-                hiddenTypes={hiddenTypes}
-                onHiddenTypesChange={setHiddenTypes}
-                currentStep={currentStep}
-                totalSegmentsInLayer={totalSegmentsInLayer}
-                onStepChange={setCurrentStep}
-              />
+              {layerCount > 0 && (
+                <GcodeLayerSlider
+                  currentLayer={currentPreviewLayer}
+                  totalLayers={layerCount}
+                  showAllLayers={showAllLayers}
+                  onLayerChange={setCurrentPreviewLayer}
+                  onShowAllLayersChange={setShowAllLayers}
+                  onExit={handleExitPreview}
+                />
+              )}
             </>
           )}
           {previewJobId && isParsingGcode && (
@@ -663,7 +667,7 @@ export default function App() {
           w-80 bg-gray-800 border-l border-gray-700 overflow-y-auto shrink-0
           absolute z-20 top-0 right-0 h-full
           transition-transform duration-200 ease-in-out
-          ${showJobsPanel ? 'translate-x-0' : 'translate-x-full'}
+          ${showJobsPanel ? 'translate-x-0' : 'translate-x-full pointer-events-none'}
         `}>
           <div className="p-4">
             <h3 className="text-sm font-medium text-gray-400 uppercase tracking-wider mb-3">Jobs</h3>
@@ -676,7 +680,7 @@ export default function App() {
           w-80 bg-gray-800 border-l border-gray-700 overflow-y-auto shrink-0
           absolute z-20 top-0 right-0 h-full
           transition-transform duration-200 ease-in-out
-          ${showRightPanel ? 'translate-x-0' : 'translate-x-full'}
+          ${showRightPanel ? 'translate-x-0' : 'translate-x-full pointer-events-none'}
         `}>
           <SettingsPanel
             engine={engine}

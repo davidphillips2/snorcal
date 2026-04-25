@@ -84,6 +84,24 @@ function expandFilamentSlots(
     }
   }
   projectSettings['flush_volumes_matrix'] = matrix;
+
+  // Enable prime tower and multi-material settings for multi-filament slicing
+  if (n > 1) {
+    projectSettings['single_extruder_multi_material'] = '1';
+    projectSettings['enable_prime_tower'] = '1';
+    // Critical: extruder_colour must match filament_colour or slicer ignores multi-extruder
+    projectSettings['extruder_colour'] = slots.map(s => s.color);
+    projectSettings['default_filament_colour'] = slots.map(s => s.color);
+    projectSettings['extruder_offset'] = slots.map(() => '0x0');
+    // Wiping volumes NxN (flat row-major, 70ml default)
+    const wv: string[] = [];
+    for (let r = 0; r < n; r++) {
+      for (let c = 0; c < n; c++) {
+        wv.push(r === c ? '0' : '70');
+      }
+    }
+    projectSettings['wiping_volumes_extruders'] = wv;
+  }
 }
 
 /**
@@ -378,10 +396,22 @@ function runSliceDirect(
         faceColors = modelRecord?.face_colors ? new Uint8Array(modelRecord.face_colors) : undefined;
       }
 
+      // Debug: log multi-material settings
+      console.log(`[slice] filament_colour=${JSON.stringify(projectSettings['filament_colour'])}`);
+      console.log(`[slice] filament_type=${JSON.stringify(projectSettings['filament_type'])}`);
+      console.log(`[slice] enable_prime_tower=${projectSettings['enable_prime_tower']}`);
+      console.log(`[slice] single_extruder_multi_material=${projectSettings['single_extruder_multi_material']}`);
+      console.log(`[slice] printer_model=${projectSettings['printer_model']}`);
+      console.log(`[slice] faceColors length=${faceColors?.length ?? 0}`);
+      console.log(`[slice] filamentSlots=${JSON.stringify(body.filamentSlots)}`);
+
       const threemfBuffer = await build3MF({
         stlPath,
         faceColors,
         projectSettings,
+        rotation: body.rotation,
+        positionOffset: body.positionOffset,
+        buildVolume: body.buildVolume,
       });
 
       const input3mfPath = path.join(workDir, 'input.3mf');

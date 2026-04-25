@@ -14,6 +14,12 @@ export interface FilamentSlot {
   profile?: string;
 }
 
+export interface Rotation3D {
+  x: number;
+  y: number;
+  z: number;
+}
+
 export interface SliceRequest {
   modelId: string;
   engine: SlicerEngine;
@@ -27,6 +33,9 @@ export interface SliceRequest {
   };
   multiMaterial?: MultiMaterialConfig;
   filamentSlots?: FilamentSlot[];
+  rotation?: Rotation3D;
+  positionOffset?: { x: number; y: number; z: number };
+  buildVolume?: { x: number; y: number; z: number };
 }
 
 export interface SliceJobData {
