@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { init, type WebGLPreview } from 'gcode-preview';
 
 interface GcodePreviewCanvasProps {
@@ -8,6 +8,18 @@ interface GcodePreviewCanvasProps {
   extrusionColors?: string[];
   buildVolume?: { x: number; y: number; z: number };
   onLayerCountReady?: (count: number) => void;
+}
+
+// Tubes create ~100 vertices per segment; 100K segments ≈ 10M vertices ≈ OOM threshold
+const TUBE_SEGMENT_LIMIT = 100_000;
+
+function countExtrusionMoves(gcode: string): number {
+  let count = 0;
+  for (const line of gcode.split('\n')) {
+    // G1 with E parameter = extrusion move
+    if (line.match(/^G1\s/)?.input && /E-?\d/.test(line)) count++;
+  }
+  return count;
 }
 
 export function GcodePreviewCanvas({
@@ -20,8 +32,8 @@ export function GcodePreviewCanvas({
 }: GcodePreviewCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const previewRef = useRef<WebGLPreview | null>(null);
+  const [usingTubes, setUsingTubes] = useState(true);
 
-  // Create preview instance when canvas mounts
   useEffect(() => {
     if (!canvasRef.current) return;
 
@@ -29,20 +41,27 @@ export function GcodePreviewCanvas({
       ? extrusionColors
       : ['#ff3333', '#ffcc00', '#33cc33', '#00cccc', '#6699ff'];
 
+    // Auto-disable tubes for large gcode to prevent OOM
+    let useTubes = true;
+    if (gcode) {
+      const moves = countExtrusionMoves(gcode);
+      useTubes = moves < TUBE_SEGMENT_LIMIT;
+      setUsingTubes(useTubes);
+    }
+
     const preview = init({
       canvas: canvasRef.current,
       extrusionColor: colors,
       backgroundColor: '#1a1a2e',
       renderTravel: false,
       buildVolume: buildVolume ?? { x: 200, y: 200, z: 200 },
-      renderTubes: true,
+      renderTubes: useTubes,
       extrusionWidth: 0.45,
       lineHeight: 0.2,
     });
 
     previewRef.current = preview;
 
-    // Resize observer
     const observer = new ResizeObserver(() => {
       if (previewRef.current) previewRef.current.resize();
     });
@@ -53,9 +72,8 @@ export function GcodePreviewCanvas({
       preview.dispose();
       previewRef.current = null;
     };
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [gcode, extrusionColors, buildVolume]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Process gcode when it changes
   useEffect(() => {
     const preview = previewRef.current;
     if (!preview || !gcode) return;
@@ -68,26 +86,28 @@ export function GcodePreviewCanvas({
     onLayerCountReady?.(preview.layers.length);
   }, [gcode, onLayerCountReady]);
 
-  // Update layer when slider changes
   useEffect(() => {
     const preview = previewRef.current;
     if (!preview || preview.layers.length === 0) return;
 
     preview.singleLayerMode = singleLayerMode;
-    preview.endLayer = layer + 1; // library uses 1-based layers
-
-    if (!singleLayerMode) {
-      preview.startLayer = undefined;
-    }
-
+    preview.endLayer = layer + 1;
+    if (!singleLayerMode) preview.startLayer = undefined;
     preview.render();
   }, [layer, singleLayerMode]);
 
   return (
-    <canvas
-      ref={canvasRef}
-      className="absolute inset-0 w-full h-full"
-      style={{ display: gcode ? 'block' : 'none' }}
-    />
+    <>
+      <canvas
+        ref={canvasRef}
+        className="absolute inset-0 w-full h-full"
+        style={{ display: gcode ? 'block' : 'none' }}
+      />
+      {!usingTubes && gcode && (
+        <div className="absolute bottom-2 left-1/2 -translate-x-1/2 bg-gray-900/80 text-gray-400 text-xs px-3 py-1 rounded pointer-events-none">
+          Line mode (large gcode)
+        </div>
+      )}
+    </>
   );
 }

@@ -7,9 +7,10 @@ interface ModelMoverProps {
   sceneRefs: SceneRefs;
   active: boolean;
   onPositionChange: (position: THREE.Vector3) => void;
+  onDragEnd?: (position: THREE.Vector3) => void;
 }
 
-export function ModelMover({ mesh, sceneRefs, active, onPositionChange }: ModelMoverProps) {
+export function ModelMover({ mesh, sceneRefs, active, onPositionChange, onDragEnd }: ModelMoverProps) {
   const isDraggingRef = useRef(false);
 
   useEffect(() => {
@@ -70,7 +71,6 @@ export function ModelMover({ mesh, sceneRefs, active, onPositionChange }: ModelM
         const newPos = planeHits[0].point.add(dragOffset);
         mesh.position.x = newPos.x;
         mesh.position.z = newPos.z;
-        onPositionChange(mesh.position.clone());
       }
     };
 
@@ -78,6 +78,9 @@ export function ModelMover({ mesh, sceneRefs, active, onPositionChange }: ModelM
       if (!isDraggingRef.current) return;
       isDraggingRef.current = false;
       orbitControls.enabled = true;
+      // Sync final position to state only on drag end
+      const cb = onDragEnd || onPositionChange;
+      cb(mesh.position.clone());
     };
 
     const canvas = renderer.domElement;

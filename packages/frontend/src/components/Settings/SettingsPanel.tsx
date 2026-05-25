@@ -1,5 +1,8 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import * as api from '../../api/client';
+import { SETTING_GROUPS, DEFAULT_VALUES, isSettingVisible } from './settings-definitions';
+import type { SettingGroup } from './settings-definitions';
+import { SettingRow } from './SettingRow';
 
 const ENGINES = [
   { value: 'orcaslicer', label: 'OrcaSlicer' },
@@ -38,10 +41,6 @@ interface SettingsPanelProps {
   onEngineChange: (engine: string) => void;
   settings: Record<string, string>;
   onSettingsChange: (settings: Record<string, string>) => void;
-  onSlice: () => void;
-  onSliceAll?: () => void;
-  plateCount?: number;
-  isSlicing?: boolean;
   selectedProfiles: SelectedProfiles;
   onProfilesChange: (profiles: SelectedProfiles) => void;
   multiMaterial: MultiMaterialConfig;
@@ -54,86 +53,38 @@ interface SettingsPanelProps {
 
 const MATERIAL_TYPES = ['PLA', 'PETG', 'ABS', 'ASA', 'TPU', 'PA (Nylon)', 'PC', 'PVA', 'HIPS', 'CF (Carbon Fiber)'];
 
-/** Optimal settings for multi-material supports (PETG supports for PLA, etc.) */
 const MULTI_MATERIAL_PRESET: Record<string, string> = {
   enable_support: '1',
   support_type: 'tree(normal)',
   support_angle: '45',
-  // Z-distance gap — critical for clean separation with dissimilar materials
   support_top_z_distance: '0.2',
   support_bottom_z_distance: '0',
-  // Interface layers for clean top surface on support side
   support_interface_top_layers: '3',
   support_interface_bottom_layers: '0',
-  // Tree support params
   tree_support_branch_angle: '45',
   tree_support_branch_diameter: '2',
   tree_support_tip_diameter: '0.8',
   tree_support_branch_distance: '5',
-  // No support expansion — keep supports minimal
   support_expansion: '0',
 };
 
-const SETTING_GROUPS = [
-  {
-    label: 'Layer & Shell',
-    settings: [
-      { key: 'layer_height', label: 'Layer Height', type: 'number', step: '0.05' },
-      { key: 'initial_layer_height', label: 'First Layer Height', type: 'number', step: '0.05' },
-      { key: 'wall_loops', label: 'Wall Loops', type: 'number', step: '1' },
-      { key: 'top_shell_layers', label: 'Top Layers', type: 'number', step: '1' },
-      { key: 'bottom_shell_layers', label: 'Bottom Layers', type: 'number', step: '1' },
-    ],
-  },
-  {
-    label: 'Infill',
-    settings: [
-      { key: 'sparse_infill_density', label: 'Infill Density', type: 'text' },
-      { key: 'sparse_infill_pattern', label: 'Infill Pattern', type: 'select',
-        options: ['gyroid', 'grid', 'honeycomb', 'lines', 'rectilinear', 'tri-hexagon', 'cubic'] },
-    ],
-  },
-  {
-    label: 'Speed',
-    settings: [
-      { key: 'outer_wall_speed', label: 'Outer Wall', type: 'number', step: '10' },
-      { key: 'inner_wall_speed', label: 'Inner Wall', type: 'number', step: '10' },
-      { key: 'sparse_infill_speed', label: 'Infill', type: 'number', step: '10' },
-      { key: 'travel_speed', label: 'Travel', type: 'number', step: '10' },
-    ],
-  },
-  {
-    label: 'Support',
-    settings: [
-      { key: 'enable_support', label: 'Enable Support', type: 'select', options: ['0', '1'] },
-      { key: 'support_type', label: 'Support Type', type: 'select',
-        options: ['tree(normal)', 'tree(hybrid)', 'tree(auto)', 'normal', 'none'] },
-      { key: 'support_on_build_plate_only', label: 'Support on Build Plate Only', type: 'select', options: ['0', '1'] },
-      { key: 'support_top_z_distance', label: 'Support Z Distance', type: 'number', step: '0.1' },
-      { key: 'support_angle', label: 'Support Angle', type: 'number', step: '5' },
-    ],
-  },
-  {
-    label: 'Brim',
-    settings: [
-      { key: 'brim_type', label: 'Brim Type', type: 'select', options: ['auto', 'outer', 'all', 'none'] },
-      { key: 'brim_width', label: 'Brim Width', type: 'number', step: '1' },
-    ],
-  },
-];
-
 export function SettingsPanel({
-  engine, onEngineChange, settings, onSettingsChange, onSlice, onSliceAll, plateCount,
-  isSlicing, selectedProfiles, onProfilesChange, multiMaterial, onMultiMaterialChange,
+  engine, onEngineChange, settings, onSettingsChange,
+  selectedProfiles, onProfilesChange, multiMaterial, onMultiMaterialChange,
   filamentSlots, onFilamentSlotsChange,
   printerIp, onPrinterIpChange,
 }: SettingsPanelProps) {
-  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+  // Initialize collapsed state from group defaults
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>(() => {
+    const initial: Record<string, boolean> = {};
+    SETTING_GROUPS.forEach(g => { initial[g.id] = g.defaultCollapsed; });
+    return initial;
+  });
+  const [search, setSearch] = useState('');
   const [profiles, setProfiles] = useState<ProfileInfo[]>([]);
   const [importing, setImporting] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Load profiles when engine changes
   useEffect(() => {
     api.getProfiles(engine).then(setProfiles).catch(() => setProfiles([]));
   }, [engine]);
@@ -142,9 +93,9 @@ export function SettingsPanel({
   const filamentProfiles = profiles.filter(p => p.profile_type === 'filament');
   const processProfiles = profiles.filter(p => p.profile_type === 'process');
 
-  const updateSetting = (key: string, value: string) => {
+  const updateSetting = useCallback((key: string, value: string) => {
     onSettingsChange({ ...settings, [key]: value });
-  };
+  }, [settings, onSettingsChange]);
 
   const handleMultiMaterialToggle = (enabled: boolean) => {
     if (enabled) {
@@ -160,14 +111,13 @@ export function SettingsPanel({
     onMultiMaterialChange({ ...multiMaterial, enabled });
   };
 
-  const toggleGroup = (label: string) => {
-    setCollapsed((prev) => ({ ...prev, [label]: !prev[label] }));
+  const toggleGroup = (id: string) => {
+    setCollapsed((prev) => ({ ...prev, [id]: !prev[id] }));
   };
 
   const handleImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files || files.length === 0) return;
-
     setImporting(true);
     try {
       for (let i = 0; i < files.length; i++) {
@@ -179,7 +129,6 @@ export function SettingsPanel({
       alert(`Import failed: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
       setImporting(false);
-      // Reset file input
       if (fileInputRef.current) fileInputRef.current.value = '';
     }
   };
@@ -187,7 +136,6 @@ export function SettingsPanel({
   const handleDeleteProfile = async (type: string, name: string) => {
     await api.deleteProfile(engine, type, name);
     setProfiles(prev => prev.filter(p => !(p.profile_type === type && p.name === name)));
-    // Clear selection if deleted profile was selected
     if (selectedProfiles[type as keyof SelectedProfiles] === name) {
       onProfilesChange({ ...selectedProfiles, [type]: undefined });
     }
@@ -224,8 +172,34 @@ export function SettingsPanel({
     </div>
   );
 
+  // Filter groups by search
+  const searchLower = search.toLowerCase();
+  const filteredGroups = search
+    ? SETTING_GROUPS.map(g => ({
+        ...g,
+        settings: g.settings.filter(s =>
+          s.label.toLowerCase().includes(searchLower) || s.key.toLowerCase().includes(searchLower)
+        ),
+      })).filter(g => g.settings.length > 0)
+    : SETTING_GROUPS;
+
+  // Auto-expand groups when searching
+  const isGroupCollapsed = (group: SettingGroup) => {
+    if (search) return false;
+    return collapsed[group.id] ?? group.defaultCollapsed;
+  };
+
+  // Count modified values per group
+  const countModified = (group: SettingGroup) => {
+    return group.settings.filter(s => {
+      const current = settings[s.key];
+      const def = DEFAULT_VALUES[s.key];
+      return current !== undefined && current !== def;
+    }).length;
+  };
+
   return (
-    <div className="w-80 bg-gray-800 border-l border-gray-700 overflow-y-auto p-4 space-y-4">
+    <div className="space-y-3">
       {/* Engine selector */}
       <div>
         <label className="block text-sm font-medium text-gray-300 mb-1">Slicer Engine</label>
@@ -389,12 +363,12 @@ export function SettingsPanel({
               <label className="block text-xs font-medium text-gray-400">Support Base Filament</label>
               <select
                 value={multiMaterial.supportFilament}
-                onChange={(e) => onMultiMaterialChange({ ...multiMaterial, supportFilament: e.target.value as '0' | '1' })}
+                onChange={(e) => onMultiMaterialChange({ ...multiMaterial, supportFilament: e.target.value })}
                 className="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-xs text-white"
               >
                 {filamentSlots.map((slot, i) => (
                   <option key={i} value={String(i)}>
-                    Filament {i + 1} ({slot.type}{slot.color ? ` ${slot.color}` : ''})
+                    Filament {i + 1} ({slot.type})
                   </option>
                 ))}
               </select>
@@ -403,12 +377,12 @@ export function SettingsPanel({
               <label className="block text-xs font-medium text-gray-400">Support Interface Filament</label>
               <select
                 value={multiMaterial.supportInterfaceFilament}
-                onChange={(e) => onMultiMaterialChange({ ...multiMaterial, supportInterfaceFilament: e.target.value as '0' | '1' })}
+                onChange={(e) => onMultiMaterialChange({ ...multiMaterial, supportInterfaceFilament: e.target.value })}
                 className="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-xs text-white"
               >
                 {filamentSlots.map((slot, i) => (
                   <option key={i} value={String(i)}>
-                    Filament {i + 1} ({slot.type}{slot.color ? ` ${slot.color}` : ''})
+                    Filament {i + 1} ({slot.type})
                   </option>
                 ))}
               </select>
@@ -417,75 +391,58 @@ export function SettingsPanel({
         )}
       </div>
 
+      {/* Search */}
+      <div>
+        <input
+          type="text"
+          placeholder="Search settings..."
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          className="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-xs text-white placeholder-gray-500"
+        />
+      </div>
+
       {/* Setting groups */}
-      {SETTING_GROUPS.map((group) => (
-        <div key={group.label}>
-          <button
-            onClick={() => toggleGroup(group.label)}
-            className="w-full flex items-center justify-between text-sm font-medium text-gray-300 py-1"
-          >
-            {group.label}
-            <span className="text-gray-500">{collapsed[group.label] ? '+' : '-'}</span>
-          </button>
+      {filteredGroups.map((group) => {
+        const visibleSettings = group.settings.filter(s => isSettingVisible(s, settings));
+        if (visibleSettings.length === 0) return null;
 
-          {!collapsed[group.label] && (
-            <div className="space-y-2 mt-1">
-              {group.settings.map((s) => (
-                <div key={s.key} className="flex items-center justify-between gap-2">
-                  <label className="text-xs text-gray-400 whitespace-nowrap">{s.label}</label>
-                  {s.type === 'select' ? (
-                    <select
-                      value={settings[s.key] || ''}
-                      onChange={(e) => updateSetting(s.key, e.target.value)}
-                      className="bg-gray-700 border border-gray-600 rounded px-2 py-1 text-xs text-white w-28"
-                    >
-                      {s.options?.map((o) => (
-                        <option key={o} value={o}>{o}</option>
-                      ))}
-                    </select>
-                  ) : (
-                    <input
-                      type={s.type}
-                      step={(s as any).step}
-                      value={settings[s.key] || ''}
-                      onChange={(e) => updateSetting(s.key, e.target.value)}
-                      className="bg-gray-700 border border-gray-600 rounded px-2 py-1 text-xs text-white w-28"
-                    />
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      ))}
+        const modified = countModified(group);
+        const collapsed_ = isGroupCollapsed(group);
 
-      {/* Slice button */}
-      <button
-        onClick={onSlice}
-        disabled={isSlicing}
-        className={`w-full py-3 rounded-lg font-medium text-sm transition ${
-          isSlicing
-            ? 'bg-gray-600 text-gray-400 cursor-not-allowed'
-            : 'bg-blue-600 text-white hover:bg-blue-500'
-        }`}
-      >
-        {isSlicing ? 'Slicing...' : 'Slice'}
-      </button>
+        return (
+          <div key={group.id}>
+            <button
+              onClick={() => toggleGroup(group.id)}
+              className="w-full flex items-center justify-between text-sm font-medium text-gray-300 py-1"
+            >
+              <span className="flex items-center gap-1.5">
+                {group.label}
+                {modified > 0 && (
+                  <span className="inline-flex items-center justify-center w-4 h-4 rounded-full bg-blue-600 text-white text-[10px] leading-none">
+                    {modified}
+                  </span>
+                )}
+              </span>
+              <span className="text-gray-500 text-xs">{collapsed_ ? '+' : '\u2212'}</span>
+            </button>
 
-      {/* Slice all plates button */}
-      {plateCount && plateCount > 1 && (
-        <button
-          onClick={onSliceAll}
-          disabled={isSlicing}
-          className={`w-full py-3 rounded-lg font-medium text-sm transition ${
-            isSlicing
-              ? 'bg-gray-600 text-gray-400 cursor-not-allowed'
-              : 'bg-emerald-600 text-white hover:bg-emerald-500'
-          }`}
-        >
-          {isSlicing ? 'Slicing...' : `Slice All ${plateCount} Plates`}
-        </button>
-      )}
+            {!collapsed_ && (
+              <div className="space-y-0.5 mt-1">
+                {visibleSettings.map((s) => (
+                  <SettingRow
+                    key={s.key}
+                    def={s}
+                    value={settings[s.key] ?? DEFAULT_VALUES[s.key] ?? ''}
+                    onChange={(v) => updateSetting(s.key, v)}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
+        );
+      })}
+
     </div>
   );
 }

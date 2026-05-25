@@ -64,7 +64,8 @@ export async function getModelColors(id: string, plate?: number): Promise<Uint8A
 }
 
 export async function submitSliceJob(data: {
-  modelId: string; engine: string; plateIndex?: number; settings: Record<string, unknown>;
+  modelId?: string; models?: { modelId: string; rotation?: { x: number; y: number; z: number }; positionOffset?: { x: number; y: number; z: number } }[];
+  engine: string; plateIndex?: number; settings: Record<string, unknown>;
   profiles?: { machine?: string; filament?: string; filament2?: string; process?: string };
   multiMaterial?: { enabled: boolean; supportFilament: string; supportInterfaceFilament: string };
   filamentSlots?: { color: string; type: string; profile?: string }[];
@@ -96,6 +97,10 @@ export async function cancelJob(id: string) {
 
 export function getGcodeUrl(jobId: string) {
   return `${API_BASE}/files/gcode/${jobId}`;
+}
+
+export function getThreemfUrl(jobId: string) {
+  return `${API_BASE}/files/threemf/${jobId}`;
 }
 
 export function getModelUrl(modelId: string, plate?: number) {

@@ -100,17 +100,6 @@ export function STLViewer({ modelUrl, faceColors, rotation, positionOffset, scen
           applyFaceColors(geometry, faceColorsRef.current);
         }
 
-        // Fit camera to model
-        geometry.computeBoundingBox();
-        if (geometry.boundingBox) {
-          const size = new THREE.Vector3();
-          geometry.boundingBox.getSize(size);
-          const maxDim = Math.max(size.x, size.y, size.z);
-          const distance = maxDim * 2;
-          camera.position.set(distance, distance, distance);
-          camera.lookAt(0, size.y / 2, 0);
-        }
-
         if (onGeometryReady) {
           onGeometryReady(geometry, mesh);
         }
@@ -148,7 +137,12 @@ export function STLViewer({ modelUrl, faceColors, rotation, positionOffset, scen
     const ox = positionOffset ? positionOffset.x : 0;
     const oy = positionOffset ? positionOffset.y : 0;
     const oz = positionOffset ? positionOffset.z : 0;
-    mesh.position.set(-center.x + ox, -box.min.y + oy, -center.z + oz);
+    const restX = -center.x;
+    const restY = -box.min.y;
+    const restZ = -center.z;
+    mesh.position.set(restX + ox, restY + oy, restZ + oz);
+    // Store rest position so parent can compute user offset from absolute drag position
+    mesh.userData.restPosition = { x: restX, y: restY, z: restZ };
   }, [rotation, positionOffset]);
 
   return null; // This is a logic-only component, rendering happens in Scene

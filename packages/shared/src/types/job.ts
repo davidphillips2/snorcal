@@ -20,8 +20,15 @@ export interface Rotation3D {
   z: number;
 }
 
-export interface SliceRequest {
+export interface SliceModelEntry {
   modelId: string;
+  rotation?: Rotation3D;
+  positionOffset?: { x: number; y: number; z: number };
+}
+
+export interface SliceRequest {
+  modelId?: string; // single model (backwards compat)
+  models?: SliceModelEntry[]; // multi-model (preferred)
   engine: SlicerEngine;
   plateIndex?: number;
   settings: SlicerSettings;

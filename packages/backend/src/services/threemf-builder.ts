@@ -2,122 +2,195 @@ import JSZip from 'jszip';
 import { readSTLPositions, deduplicateVertices } from './model-parser.js';
 import fs from 'node:fs';
 
-export interface ThreeMFBuildInput {
+// --- Types ---
+
+export interface ThreeMFModelInput {
   stlPath: string;
   faceColors?: Uint8Array; // RGBA per face (4 bytes * faceCount)
-  projectSettings?: Record<string, unknown>; // Embedded slicer settings
-  rotation?: { x: number; y: number; z: number }; // Euler angles in degrees
+  rotation?: { x: number; y: number; z: number }; // Euler angles in degrees (Three.js Y-up)
+  positionOffset?: { x: number; y: number; z: number }; // Three.js Y-up offset
+}
+
+export interface ThreeMFBuildInput {
+  // Single model (backwards compat)
+  stlPath?: string;
+  faceColors?: Uint8Array;
+  rotation?: { x: number; y: number; z: number };
   positionOffset?: { x: number; y: number; z: number };
+  // Multi-model
+  models?: ThreeMFModelInput[];
+  // Common
+  projectSettings?: Record<string, unknown>;
   buildVolume?: { x: number; y: number; z: number };
 }
 
-/**
- * Build a 3MF file from an STL with optional per-face color data.
- *
- * 3MF structure:
- *   [Content_Types].xml
- *   _rels/.rels
- *   3D/3dmodel.model  (XML with geometry + material/color extensions)
- */
+interface ProcessedGeometry {
+  vertices: Float32Array;
+  indices: Uint32Array;
+  faceCount: number;
+}
+
+interface ObjectDef {
+  id: number;
+  name: string;
+  extruder: number;
+  vertices: Float32Array;
+  indices: Uint32Array;
+}
+
+// --- Main builder ---
+
 export async function build3MF(input: ThreeMFBuildInput): Promise<Buffer> {
-  // 1. Read and deduplicate STL vertices
-  const rawPositions = readSTLPositions(input.stlPath);
-  const { vertices, indices } = deduplicateVertices(rawPositions);
-  const faceCount = indices.length / 3;
+  // Normalize to model array
+  const models: ThreeMFModelInput[] = input.models ?? [{
+    stlPath: input.stlPath!,
+    faceColors: input.faceColors,
+    rotation: input.rotation,
+    positionOffset: input.positionOffset,
+  }];
 
-  // 2. Build color group (unique colors) and paint_color extruder mapping
-  const colorGroup: string[] = [];
-  const colorIndexMap = new Map<string, number>();
-
-  // Default color for unpainted faces: use first filament colour if available, else white
   const filamentColours = input.projectSettings?.filament_colour as string[] | undefined;
   const defaultColor = filamentColours?.[0]?.toUpperCase() ?? '#FFFFFF';
+  const colorToExtruder = buildColorToExtruderMap(filamentColours);
+  const buildVolume = input.buildVolume ?? { x: 270, y: 270, z: 200 };
 
-  // Build a map: face hex color → OrcaSlicer extruder index (1-based)
-  const colorToExtruder = new Map<string, number>();
-  if (filamentColours) {
-    for (let i = 0; i < filamentColours.length; i++) {
-      colorToExtruder.set(filamentColours[i].toUpperCase(), i + 1); // 1-based
+  // Process each model into 3MF objects (may split by extruder for painted models)
+  const allObjects: ObjectDef[] = [];
+  let nextId = 1;
+
+  for (let mi = 0; mi < models.length; mi++) {
+    const model = models[mi];
+    const geo = processModelGeometry(model, buildVolume);
+    const paintData = processPaintColors(model.faceColors, geo.faceCount, colorToExtruder, defaultColor);
+
+    const hasPaint = model.faceColors && model.faceColors.length > 0 && paintData.some(pc => pc !== null);
+
+    if (hasPaint) {
+      // Find unique extruders used
+      const extruderFaces = new Map<number, { verts: number[]; idxs: number[] }>();
+      for (let f = 0; f < geo.faceCount; f++) {
+        const extIdx = paintColorToExtruder(paintData[f]);
+        if (!extruderFaces.has(extIdx)) extruderFaces.set(extIdx, { verts: [], idxs: [] });
+        const sub = extruderFaces.get(extIdx)!;
+        const vMap = new Map<number, number>();
+        for (let v = 0; v < 3; v++) {
+          const oldIdx = geo.indices[f * 3 + v];
+          let newIdx = vMap.get(oldIdx);
+          if (newIdx === undefined) {
+            newIdx = sub.verts.length / 3;
+            vMap.set(oldIdx, newIdx);
+            sub.verts.push(
+              geo.vertices[oldIdx * 3],
+              geo.vertices[oldIdx * 3 + 1],
+              geo.vertices[oldIdx * 3 + 2],
+            );
+          }
+          sub.idxs.push(newIdx);
+        }
+      }
+
+      for (const [extIdx, sub] of extruderFaces) {
+        allObjects.push({
+          id: nextId++,
+          name: `model_${mi}_ext${extIdx}`,
+          extruder: extIdx + 1,
+          vertices: new Float32Array(sub.verts),
+          indices: new Uint32Array(sub.idxs),
+        });
+      }
+    } else {
+      allObjects.push({
+        id: nextId++,
+        name: `model_${mi}`,
+        extruder: 1,
+        vertices: geo.vertices,
+        indices: geo.indices,
+      });
     }
   }
 
-  // Triangle property indices (one per vertex, referencing colorGroup)
-  const triProps: number[] = []; // length = indices.length (one per vertex)
-  // paint_color per face: OrcaSlicer extruder index (1-based hex)
-  const paintColors: (string | null)[] = []; // length = faceCount
+  console.log(`[threemf] models=${models.length} objects=${allObjects.length} hasPaint=${allObjects.length > models.length}`);
 
-  if (input.faceColors && input.faceColors.length > 0) {
-    // Ensure default color is in the group first (for unpainted faces → extruder 0)
-    const defaultIdx = 0;
-    colorGroup.push(defaultColor);
-    colorIndexMap.set(defaultColor, defaultIdx);
+  // Build 3MF XML
+  const topId = nextId;
+  let modelXML = `<?xml version="1.0" encoding="UTF-8"?>
+<model unit="millimeter"
+  xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">
+  <resources>`;
 
-    for (let f = 0; f < faceCount; f++) {
-      const r = input.faceColors[f * 4];
-      const g = input.faceColors[f * 4 + 1];
-      const b = input.faceColors[f * 4 + 2];
-      const a = input.faceColors[f * 4 + 3];
-
-      // Unpainted faces (alpha = 0) → default to first filament/extruder 1
-      if (a === 0) {
-        triProps.push(defaultIdx, defaultIdx, defaultIdx);
-        paintColors.push(null); // no paint_color for unpainted → slicer uses default extruder
-        continue;
-      }
-
-      const hex = `#${toHex(r)}${toHex(g)}${toHex(b)}`.toUpperCase();
-      let idx = colorIndexMap.get(hex);
-      if (idx === undefined) {
-        idx = colorGroup.length;
-        colorIndexMap.set(hex, idx);
-        colorGroup.push(hex);
-      }
-      triProps.push(idx, idx, idx);
-
-      // Map to extruder index for paint_color
-      const extIdx = colorToExtruder.get(hex) ?? 1; // default to extruder 1 if no match
-      paintColors.push(extruderToPaintColor(extIdx));
-    }
-  } else {
-    // No colors — single default
-    colorGroup.push(defaultColor);
+  for (const obj of allObjects) {
+    modelXML += buildObjectXML(obj);
   }
 
-  // 3. Apply rotation and centering
+  // Top-level component object
+  modelXML += `\n    <object id="${topId}" type="model">
+      <components>`;
+  for (const obj of allObjects) {
+    modelXML += `\n        <component objectid="${obj.id}"/>`;
+  }
+  modelXML += `\n      </components>
+    </object>
+  </resources>
+  <build>
+    <item objectid="${topId}"/>
+  </build>
+</model>`;
+
+  // Build model_settings.config with per-object extruder assignments
+  let modelSettingsXML = '';
+  if (allObjects.some(o => o.extruder > 1) || allObjects.length > 1) {
+    modelSettingsXML = buildModelSettings(allObjects);
+  }
+
+  // Package into ZIP
+  const zip = new JSZip();
+  zip.file('[Content_Types].xml', contentTypesXML());
+  zip.folder('_rels')!.file('.rels', relsXML());
+  zip.folder('3D')!.file('3dmodel.model', modelXML);
+  if (modelSettingsXML) {
+    zip.folder('Metadata')!.file('model_settings.config', modelSettingsXML);
+  }
+  if (input.projectSettings) {
+    const settings = { ...input.projectSettings };
+    if (!settings.filament_colour || !Array.isArray(settings.filament_colour) || (settings.filament_colour as string[]).length === 0) {
+      settings.filament_colour = ['#FFFFFF'];
+    }
+    zip.folder('Metadata')!.file('project_settings.config', JSON.stringify(settings, null, 4));
+  }
+
+  return zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+}
+
+// --- Geometry processing ---
+
+function processModelGeometry(model: ThreeMFModelInput, buildVolume: { x: number; y: number; z: number }): ProcessedGeometry {
+  const rawPositions = readSTLPositions(model.stlPath);
+  const { vertices, indices } = deduplicateVertices(rawPositions);
+  const faceCount = indices.length / 3;
   const vertexCount = vertices.length / 3;
 
-  // Apply rotation if provided (Euler XYZ in degrees, from Three.js Y-up space)
-  const hasRotation = input.rotation && (input.rotation.x !== 0 || input.rotation.y !== 0 || input.rotation.z !== 0);
-  if (hasRotation) {
+  // Apply rotation (Euler XYZ in degrees, Three.js Y-up space)
+  if (model.rotation && (model.rotation.x !== 0 || model.rotation.y !== 0 || model.rotation.z !== 0)) {
     const deg2rad = Math.PI / 180;
-    const rx = input.rotation!.x * deg2rad;
-    const ry = input.rotation!.y * deg2rad;
-    const rz = input.rotation!.z * deg2rad;
-
+    const rx = model.rotation.x * deg2rad;
+    const ry = model.rotation.y * deg2rad;
+    const rz = model.rotation.z * deg2rad;
     const cx = Math.cos(rx), sx = Math.sin(rx);
     const cy = Math.cos(ry), sy = Math.sin(ry);
     const cz = Math.cos(rz), sz = Math.sin(rz);
 
-    // Rotation matrix: R = Rz * Ry * Rx (XYZ Euler order, matching Three.js default)
     for (let i = 0; i < vertexCount; i++) {
       const x = vertices[i * 3], y = vertices[i * 3 + 1], z = vertices[i * 3 + 2];
-      // Rx
-      const y1 = y * cx - z * sx;
-      const z1 = y * sx + z * cx;
-      // Ry
-      const x2 = x * cy + z1 * sy;
-      const z2 = -x * sy + z1 * cy;
-      // Rz
-      const x3 = x2 * cz - y1 * sz;
-      const y3 = x2 * sz + y1 * cz;
+      const y1 = y * cx - z * sx, z1 = y * sx + z * cx;
+      const x2 = x * cy + z1 * sy, z2 = -x * sy + z1 * cy;
+      const x3 = x2 * cz - y1 * sz, y3 = x2 * sz + y1 * cz;
       vertices[i * 3] = x3;
       vertices[i * 3 + 1] = y3;
       vertices[i * 3 + 2] = z2;
     }
   }
 
-  // Convert from Three.js Y-up to 3MF Z-up: (x, y, z) → (x, -z, y)
-  // This ensures the 3MF matches what the user sees in the viewer
+  // Convert Three.js Y-up to 3MF Z-up: (x, y, z) → (x, -z, y)
   for (let i = 0; i < vertexCount; i++) {
     const y = vertices[i * 3 + 1];
     const z = vertices[i * 3 + 2];
@@ -125,175 +198,139 @@ export async function build3MF(input: ThreeMFBuildInput): Promise<Buffer> {
     vertices[i * 3 + 2] = y;
   }
 
-  // Compute center offset so model sits centered on the build plate
-  const plateX = input.buildVolume?.x ?? 270;
-  const plateY = input.buildVolume?.y ?? 270;
+  // Compute bounding box and center on build plate
   let minX = Infinity, minY = Infinity, minZ = Infinity;
   let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
   for (let i = 0; i < vertexCount; i++) {
     const x = vertices[i * 3], y = vertices[i * 3 + 1], z = vertices[i * 3 + 2];
-    if (x < minX) minX = x;
-    if (y < minY) minY = y;
-    if (z < minZ) minZ = z;
-    if (x > maxX) maxX = x;
-    if (y > maxY) maxY = y;
-    if (z > maxZ) maxZ = z;
+    if (x < minX) minX = x; if (x > maxX) maxX = x;
+    if (y < minY) minY = y; if (y > maxY) maxY = y;
+    if (z < minZ) minZ = z; if (z > maxZ) maxZ = z;
   }
-  // Center XY on plate and shift Z so minimum is at 0
-  // Position offset from Three.js needs Y→Z conversion: (ox, oy, oz) → (ox, -oz, oy)
-  const rawOffset = input.positionOffset;
-  const offsetX = plateX / 2 - (minX + maxX) / 2 + (rawOffset?.x ?? 0);
-  const offsetY = plateY / 2 - (minY + maxY) / 2 - (rawOffset?.z ?? 0);
-  const offsetZ = -minZ + (rawOffset?.y ?? 0);
 
-  // Apply offsets to vertices
+  // Position: center XY on plate, bottom at Z=0, apply user offset
+  // Three.js offset (ox, oy, oz) → 3MF offset (ox, -oz, oy)
+  const raw = model.positionOffset;
+  const offsetX = buildVolume.x / 2 - (minX + maxX) / 2 + (raw?.x ?? 0);
+  const offsetY = buildVolume.y / 2 - (minY + maxY) / 2 - (raw?.z ?? 0);
+  const offsetZ = -minZ + (raw?.y ?? 0);
+
   for (let i = 0; i < vertexCount; i++) {
     vertices[i * 3] += offsetX;
     vertices[i * 3 + 1] += offsetY;
     vertices[i * 3 + 2] += offsetZ;
   }
 
-  const modelXML = buildModelXML(vertices, indices, colorGroup, triProps, paintColors);
+  return { vertices, indices, faceCount };
+}
 
-  // 4. Build supporting XML files
-  const contentTypesXML = `<?xml version="1.0" encoding="UTF-8"?>
-<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
-  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
-  <Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml"/>
-</Types>`;
+// --- Paint color processing ---
 
-  const relsXML = `<?xml version="1.0" encoding="UTF-8"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-  <Relationship Target="/3D/3dmodel.model" Id="rel0" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/>
-</Relationships>`;
+function buildColorToExtruderMap(filamentColours?: string[]): Map<string, number> {
+  const map = new Map<string, number>();
+  if (filamentColours) {
+    for (let i = 0; i < filamentColours.length; i++) {
+      map.set(filamentColours[i].toUpperCase(), i + 1);
+    }
+  }
+  return map;
+}
 
-  // 5. Build model_settings.config with paint data for multi-material
-  let modelSettingsXML = '';
-  if (input.faceColors && input.faceColors.length > 0 && paintColors.some(pc => pc !== null)) {
-    // Build paint_color string: one paint_color value per face, space-separated
-    // This is stored in model_settings.config as OrcaSlicer reads paint from here, not from 3D model XML
-    const paintStr = paintColors.map(pc => pc ?? '0').join(' ');
+function processPaintColors(
+  faceColors: Uint8Array | undefined,
+  faceCount: number,
+  colorToExtruder: Map<string, number>,
+  _defaultColor: string,
+): (string | null)[] {
+  if (!faceColors || faceColors.length === 0) return new Array(faceCount).fill(null);
 
-    modelSettingsXML = `<?xml version="1.0" encoding="UTF-8"?>
-<config>
-  <object id="1">
-    <metadata key="name" value="model"/>
-    <metadata key="extruder" value="0"/>
-    <metadata face_count="${faceCount}"/>
-    <part id="1" subtype="normal_part">
-      <metadata key="name" value="model"/>
+  const paintColors: (string | null)[] = [];
+  for (let f = 0; f < faceCount; f++) {
+    const a = faceColors[f * 4 + 3];
+    if (a === 0) {
+      paintColors.push(null);
+      continue;
+    }
+    const r = faceColors[f * 4], g = faceColors[f * 4 + 1], b = faceColors[f * 4 + 2];
+    const hex = `#${toHex(r)}${toHex(g)}${toHex(b)}`.toUpperCase();
+    const extIdx = colorToExtruder.get(hex) ?? 1;
+    paintColors.push(extruderToPaintColor(extIdx));
+  }
+  return paintColors;
+}
+
+/** Decode paint_color string to 0-based extruder index */
+function paintColorToExtruder(pc: string | null): number {
+  if (pc === '4') return 0;
+  if (pc === '8') return 1;
+  if (pc) return 0;
+  return 0; // unpainted → extruder 0
+}
+
+// --- XML builders ---
+
+function buildObjectXML(obj: ObjectDef): string {
+  const vc = obj.vertices.length / 3;
+  const fc = obj.indices.length / 3;
+  let xml = `\n    <object id="${obj.id}" type="model">
+      <mesh>
+        <vertices>`;
+  for (let i = 0; i < vc; i++) {
+    xml += `\n          <vertex x="${obj.vertices[i * 3]}" y="${obj.vertices[i * 3 + 1]}" z="${obj.vertices[i * 3 + 2]}"/>`;
+  }
+  xml += `\n        </vertices>
+        <triangles>`;
+  for (let f = 0; f < fc; f++) {
+    xml += `\n          <triangle v1="${obj.indices[f * 3]}" v2="${obj.indices[f * 3 + 1]}" v3="${obj.indices[f * 3 + 2]}"/>`;
+  }
+  xml += `\n        </triangles>
+      </mesh>
+    </object>`;
+  return xml;
+}
+
+function buildModelSettings(objects: ObjectDef[]): string {
+  let xml = `<?xml version="1.0" encoding="UTF-8"?>
+<config>`;
+  for (const obj of objects) {
+    const fc = obj.indices.length / 3;
+    xml += `
+  <object id="${obj.id}">
+    <metadata key="name" value="${obj.name}"/>
+    <metadata key="extruder" value="${obj.extruder}"/>
+    <metadata face_count="${fc}"/>
+    <part id="${obj.id}" subtype="normal_part">
+      <metadata key="name" value="${obj.name}"/>
       <metadata key="matrix" value="1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1"/>
       <metadata key="source_object_id" value="0"/>
       <metadata key="source_volume_id" value="0"/>
       <metadata key="source_offset_x" value="0"/>
       <metadata key="source_offset_y" value="0"/>
       <metadata key="source_offset_z" value="0"/>
-      <mesh_stat face_count="${faceCount}" edges_fixed="0" degenerate_facets="0" facets_removed="0" facets_reversed="0" backwards_edges="0"/>
-      <metadata key="paint_color" value="${paintStr}"/>
+      <mesh_stat face_count="${fc}" edges_fixed="0" degenerate_facets="0" facets_removed="0" facets_reversed="0" backwards_edges="0"/>
     </part>
-  </object>
-</config>`;
+  </object>`;
   }
-
-  // 6. Package into ZIP
-  const zip = new JSZip();
-  zip.file('[Content_Types].xml', contentTypesXML);
-  zip.folder('_rels')!.file('.rels', relsXML);
-  zip.folder('3D')!.file('3dmodel.model', modelXML);
-  if (modelSettingsXML) {
-    zip.folder('Metadata')!.file('model_settings.config', modelSettingsXML);
-  }
-
-  // 6. Embed project settings if provided (slicer reads these from 3MF)
-  if (input.projectSettings) {
-    // Ensure filament_colour is set (OrcaSlicer requires it)
-    const settings = { ...input.projectSettings };
-    if (!settings.filament_colour || !Array.isArray(settings.filament_colour) || (settings.filament_colour as string[]).length === 0) {
-      settings.filament_colour = ['#FFFFFF'];
-    }
-    zip.folder('Metadata')!.file(
-      'project_settings.config',
-      JSON.stringify(settings, null, 4),
-    );
-  }
-
-  return zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
-}
-
-function buildModelXML(
-  vertices: Float32Array,
-  indices: Uint32Array,
-  colorGroup: string[],
-  triProps: number[],
-  paintColors: (string | null)[],
-): string {
-  const vertexCount = vertices.length / 3;
-  const faceCount = indices.length / 3;
-
-  let xml = `<?xml version="1.0" encoding="UTF-8"?>
-<model unit="millimeter"
-  xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02"
-  xmlns:m="http://schemas.microsoft.com/3dmanufacturing/material/2015/02">
-  <resources>`;
-
-  // Color group
-  if (colorGroup.length > 0) {
-    xml += `\n    <m:colorgroup id="1">`;
-    for (const color of colorGroup) {
-      xml += `\n      <m:color color="${color}"/>`;
-    }
-    xml += `\n    </m:colorgroup>`;
-  }
-
-  // Object with mesh
-  xml += `\n    <object id="1" type="model">
-      <mesh>
-        <vertices>`;
-
-  for (let i = 0; i < vertexCount; i++) {
-    xml += `\n          <vertex x="${vertices[i * 3]}" y="${vertices[i * 3 + 1]}" z="${vertices[i * 3 + 2]}"/>`;
-  }
-
-  xml += `\n        </vertices>
-        <triangles>`;
-
-  const hasColors = triProps.length > 0 && colorGroup.length > 1;
-  const hasPaintColors = paintColors.length === faceCount && paintColors.some(pc => pc !== null);
-
-  for (let f = 0; f < faceCount; f++) {
-    const v1 = indices[f * 3];
-    const v2 = indices[f * 3 + 1];
-    const v3 = indices[f * 3 + 2];
-
-    const pc = paintColors[f];
-    if (hasColors && pc) {
-      const p1 = triProps[f * 3];
-      const p2 = triProps[f * 3 + 1];
-      const p3 = triProps[f * 3 + 2];
-      xml += `\n          <triangle v1="${v1}" v2="${v2}" v3="${v3}" p1="${p1}" p2="${p2}" p3="${p3}" paint_color="${pc}"/>`;
-    } else if (hasColors) {
-      const p1 = triProps[f * 3];
-      const p2 = triProps[f * 3 + 1];
-      const p3 = triProps[f * 3 + 2];
-      xml += `\n          <triangle v1="${v1}" v2="${v2}" v3="${v3}" p1="${p1}" p2="${p2}" p3="${p3}"/>`;
-    } else if (pc) {
-      xml += `\n          <triangle v1="${v1}" v2="${v2}" v3="${v3}" paint_color="${pc}"/>`;
-    } else {
-      xml += `\n          <triangle v1="${v1}" v2="${v2}" v3="${v3}"/>`;
-    }
-  }
-
-  xml += `\n        </triangles>
-      </mesh>
-    </object>
-  </resources>
-  <build>
-    <item objectid="1"/>
-  </build>
-</model>`;
-
+  xml += `\n</config>`;
   return xml;
 }
+
+function contentTypesXML(): string {
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml"/>
+</Types>`;
+}
+
+function relsXML(): string {
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Target="/3D/3dmodel.model" Id="rel0" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/>
+</Relationships>`;
+}
+
+// --- Helpers ---
 
 function toHex(n: number): string {
   return n.toString(16).padStart(2, '0').toUpperCase();
@@ -306,16 +343,10 @@ function extruderToPaintColor(extruderIndex: number): string {
   return (extruderIndex - 3).toString(16).toUpperCase() + 'C';
 }
 
-/**
- * Write face colors to a file for later retrieval.
- */
 export function writeFaceColors(filePath: string, colors: Uint8Array): void {
   fs.writeFileSync(filePath, Buffer.from(colors));
 }
 
-/**
- * Read face colors from a file.
- */
 export function readFaceColors(filePath: string): Uint8Array {
   const buf = fs.readFileSync(filePath);
   return new Uint8Array(buf);

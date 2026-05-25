@@ -40,8 +40,8 @@ function getDefaultDataDir(engine: string): string {
 
 /**
  * Expand all filament_* settings to N-element arrays based on configured slots.
- * Sets filament_colour from slot colors (slicer maps 3MF face colors → filament indices).
- * Builds NxN flush_volumes_matrix.
+ * Pads to machine extruder count (e.g., Snapmaker U1 has 4 toolheads).
+ * Builds NxN flush_volumes_matrix where N = machine extruder count.
  */
 function expandFilamentSlots(
   projectSettings: Record<string, unknown>,
@@ -50,35 +50,55 @@ function expandFilamentSlots(
 ): void {
   const n = slots.length;
 
-  // Set filament_colour from slot colors — critical for slicer color→index mapping
-  projectSettings['filament_colour'] = slots.map(s => s.color);
-  projectSettings['filament_type'] = slots.map(s => s.type);
+  // Detect machine extruder count — must match printer's actual toolhead count
+  const existingNozzle = projectSettings['nozzle_diameter'] as any[] | undefined;
+  const printerModel = projectSettings['printer_model'] as string | undefined;
+  let machineExtruderCount = existingNozzle?.length ?? 1;
+  // Snapmaker U1 always has 4 toolheads regardless of profile loading
+  if (printerModel?.includes('U1')) machineExtruderCount = 4;
+  const targetCount = Math.max(n, machineExtruderCount);
 
-  // Collect all filament_* keys from all profiles
+  // Set filament_colour/type from slots, pad to targetCount
+  const colours = slots.map(s => s.color);
+  while (colours.length < targetCount) colours.push(colours[colours.length - 1] || '#FFFFFF');
+  projectSettings['filament_colour'] = colours;
+
+  const types = slots.map(s => s.type);
+  while (types.length < targetCount) types.push(types[types.length - 1] || 'PLA');
+  projectSettings['filament_type'] = types;
+
+  // Collect all filament_* keys from profiles AND existing project settings
   const filamentKeys = new Set<string>();
   for (const p of profileSettings) {
     if (p) for (const key of Object.keys(p)) { if (key.startsWith('filament_')) filamentKeys.add(key); }
   }
+  // Also include filament_* keys already in projectSettings (from defaults/machine profile)
+  for (const key of Object.keys(projectSettings)) {
+    if (key.startsWith('filament_') && Array.isArray(projectSettings[key])) filamentKeys.add(key);
+  }
 
-  // Expand each filament_* key to N-element array
+  // Expand each filament_* key to targetCount-element array
   for (const key of filamentKeys) {
     if (key === 'filament_colour' || key === 'filament_type') continue; // already set
     const existing = projectSettings[key] as any[] | undefined;
-    projectSettings[key] = profileSettings.map((p, i) => {
+    const expanded = profileSettings.map((p, i) => {
       if (p && p[key] !== undefined) return String(p[key]);
       return existing?.[i] ?? existing?.[0] ?? '';
     });
+    // Pad to targetCount
+    while (expanded.length < targetCount) expanded.push(expanded[expanded.length - 1] || '');
+    projectSettings[key] = expanded;
   }
 
-  // Build NxN flush_volumes_matrix (flattened row-major)
+  // Build targetCount x targetCount flush_volumes_matrix (flattened row-major)
   const defaultFlush = 280;
   const existingMatrix = projectSettings['flush_volumes_matrix'] as string[] | undefined;
   const matrix: string[] = [];
-  for (let r = 0; r < n; r++) {
-    for (let c = 0; c < n; c++) {
+  for (let r = 0; r < targetCount; r++) {
+    for (let c = 0; c < targetCount; c++) {
       if (r === c) { matrix.push('0'); }
       else {
-        const idx = r * n + c;
+        const idx = r * targetCount + c;
         matrix.push(existingMatrix && idx < existingMatrix.length ? existingMatrix[idx] : String(defaultFlush));
       }
     }
@@ -89,18 +109,24 @@ function expandFilamentSlots(
   if (n > 1) {
     projectSettings['single_extruder_multi_material'] = '1';
     projectSettings['enable_prime_tower'] = '1';
-    // Critical: extruder_colour must match filament_colour or slicer ignores multi-extruder
-    projectSettings['extruder_colour'] = slots.map(s => s.color);
-    projectSettings['default_filament_colour'] = slots.map(s => s.color);
-    projectSettings['extruder_offset'] = slots.map(() => '0x0');
-    // Wiping volumes NxN (flat row-major, 70ml default)
+    // Critical: extruder_colour must match machine extruder count
+    projectSettings['extruder_colour'] = colours;
+    projectSettings['default_filament_colour'] = colours;
+    projectSettings['extruder_offset'] = Array.from({ length: targetCount }, () => '0x0');
+    // Wiping volumes targetCount x targetCount (flat row-major, 70ml default)
     const wv: string[] = [];
-    for (let r = 0; r < n; r++) {
-      for (let c = 0; c < n; c++) {
+    for (let r = 0; r < targetCount; r++) {
+      for (let c = 0; c < targetCount; c++) {
         wv.push(r === c ? '0' : '70');
       }
     }
     projectSettings['wiping_volumes_extruders'] = wv;
+    // Pad nozzle_diameter to targetCount
+    const nd = projectSettings['nozzle_diameter'] as any[] | undefined;
+    if (nd && nd.length < targetCount) {
+      while (nd.length < targetCount) nd.push(nd[0] || '0.4');
+      projectSettings['nozzle_diameter'] = nd;
+    }
   }
 }
 
@@ -378,39 +404,76 @@ function runSliceDirect(
         }
       }
 
-      // Resolve per-plate STL and face colors
-      let stlPath = modelFilePath;
-      let faceColors: Uint8Array | undefined;
-      const plateIndex = (body.plateIndex ?? 1);
-      const modelRecord = db.getModel(body.modelId);
+      // Re-apply multi-material overrides AFTER user settings (user may send enable_prime_tower=0)
+      if (body.filamentSlots && body.filamentSlots.length > 1) {
+        // Detect machine extruder count for padding
+        const nozzleArr = projectSettings['nozzle_diameter'] as any[] | undefined;
+        const pModel = projectSettings['printer_model'] as string | undefined;
+        let mExtCount = nozzleArr?.length ?? 1;
+        if (pModel?.includes('U1')) mExtCount = 4;
+        const tc = Math.max(body.filamentSlots.length, mExtCount);
 
-      console.log(`[slice] model=${body.modelId} plate=${plateIndex} plate_count=${modelRecord?.plate_count} stl=${stlPath}`);
-
-      if (modelRecord && modelRecord.plate_count > 1) {
-        const plate = db.getPlate(body.modelId, plateIndex);
-        if (plate) {
-          stlPath = plate.file_path;
-          faceColors = plate.face_colors ? new Uint8Array(plate.face_colors) : undefined;
+        projectSettings['single_extruder_multi_material'] = '1';
+        projectSettings['enable_prime_tower'] = '1';
+        const extColours = body.filamentSlots.map(s => s.color);
+        while (extColours.length < tc) extColours.push(extColours[extColours.length - 1] || '#FFFFFF');
+        projectSettings['extruder_colour'] = extColours;
+        projectSettings['default_filament_colour'] = extColours;
+        projectSettings['extruder_offset'] = Array.from({ length: tc }, () => '0x0');
+        // Pad nozzle_diameter to match machine extruder count
+        const nd = projectSettings['nozzle_diameter'] as any[] | undefined;
+        if (nd && nd.length < tc) {
+          while (nd.length < tc) nd.push(nd[0] || '0.4');
+          projectSettings['nozzle_diameter'] = nd;
         }
-      } else {
-        faceColors = modelRecord?.face_colors ? new Uint8Array(modelRecord.face_colors) : undefined;
       }
 
-      // Debug: log multi-material settings
-      console.log(`[slice] filament_colour=${JSON.stringify(projectSettings['filament_colour'])}`);
-      console.log(`[slice] filament_type=${JSON.stringify(projectSettings['filament_type'])}`);
-      console.log(`[slice] enable_prime_tower=${projectSettings['enable_prime_tower']}`);
-      console.log(`[slice] single_extruder_multi_material=${projectSettings['single_extruder_multi_material']}`);
-      console.log(`[slice] printer_model=${projectSettings['printer_model']}`);
-      console.log(`[slice] faceColors length=${faceColors?.length ?? 0}`);
-      console.log(`[slice] filamentSlots=${JSON.stringify(body.filamentSlots)}`);
+      // Resolve models — support multi-model or single-model requests
+      type ModelEntry = { stlPath: string; faceColors?: Uint8Array; rotation?: { x: number; y: number; z: number }; positionOffset?: { x: number; y: number; z: number } };
+      let buildModels: ModelEntry[];
+
+      if (body.models && body.models.length > 0) {
+        // Multi-model: resolve each model's STL path and face colors
+        buildModels = body.models.map(entry => {
+          const rec = db.getModel(entry.modelId);
+          const plateIndex = body.plateIndex ?? 1;
+          let stlPath = rec?.file_path ?? '';
+          let faceColors: Uint8Array | undefined;
+          if (rec && rec.plate_count > 1) {
+            const plate = db.getPlate(entry.modelId, plateIndex);
+            if (plate) {
+              stlPath = plate.file_path;
+              faceColors = plate.face_colors ? new Uint8Array(plate.face_colors) : undefined;
+            }
+          } else {
+            faceColors = rec?.face_colors ? new Uint8Array(rec.face_colors) : undefined;
+          }
+          return { stlPath, faceColors, rotation: entry.rotation, positionOffset: entry.positionOffset };
+        });
+      } else {
+        // Single model (backwards compat)
+        const modelRecord = db.getModel(body.modelId!);
+        const plateIndex = (body.plateIndex ?? 1);
+        let stlPath = modelFilePath;
+        let faceColors: Uint8Array | undefined;
+        if (modelRecord && modelRecord.plate_count > 1) {
+          const plate = db.getPlate(body.modelId!, plateIndex);
+          if (plate) {
+            stlPath = plate.file_path;
+            faceColors = plate.face_colors ? new Uint8Array(plate.face_colors) : undefined;
+          }
+        } else {
+          faceColors = modelRecord?.face_colors ? new Uint8Array(modelRecord.face_colors) : undefined;
+        }
+        buildModels = [{ stlPath, faceColors, rotation: body.rotation, positionOffset: body.positionOffset }];
+      }
+
+      console.log(`[slice] models=${buildModels.length} filament_colour=${JSON.stringify(projectSettings['filament_colour'])}`);
+      console.log(`[slice] faceColors lens=[${buildModels.map(m => m.faceColors?.length ?? 0)}]`);
 
       const threemfBuffer = await build3MF({
-        stlPath,
-        faceColors,
+        models: buildModels,
         projectSettings,
-        rotation: body.rotation,
-        positionOffset: body.positionOffset,
         buildVolume: body.buildVolume,
       });
 

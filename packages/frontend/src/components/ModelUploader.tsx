@@ -40,10 +40,10 @@ export function ModelUploader({ onUpload, isUploading }: ModelUploaderProps) {
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onClick={handleClick}
-      className={`border-2 border-dashed rounded-xl p-8 text-center cursor-pointer transition ${
+      className={`border-2 border-dashed rounded-lg p-4 text-center cursor-pointer transition ${
         isDragging
           ? 'border-blue-500 bg-blue-500/10'
-          : 'border-gray-600 hover:border-gray-500 bg-gray-800/50'
+          : 'border-gray-600 hover:border-gray-500 bg-gray-800/30'
       } ${isUploading ? 'opacity-50 pointer-events-none' : ''}`}
     >
       <input
@@ -53,11 +53,9 @@ export function ModelUploader({ onUpload, isUploading }: ModelUploaderProps) {
         onChange={handleFileSelect}
         className="hidden"
       />
-      <div className="text-4xl mb-3">&#128228;</div>
-      <p className="text-gray-300 text-lg font-medium">
-        {isUploading ? 'Uploading...' : 'Drop STL file here or click to browse'}
+      <p className="text-gray-400 text-xs">
+        {isUploading ? 'Uploading...' : 'Drop STL/3MF or click to browse'}
       </p>
-      <p className="text-gray-500 text-sm mt-1">Supports .stl, .step, .stp, .3mf files up to 500MB</p>
     </div>
   );
 }

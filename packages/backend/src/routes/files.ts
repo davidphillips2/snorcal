@@ -17,7 +17,6 @@ export async function fileRoutes(app: FastifyInstance, options: { db: Db }) {
       return reply.status(400).send({ ok: false, error: 'Job not completed' });
     }
 
-    // Find gcode file in output directory
     const outputDir = job.output_dir;
     if (!outputDir || !fs.existsSync(outputDir)) {
       return reply.status(404).send({ ok: false, error: 'Output directory not found' });
@@ -30,13 +29,10 @@ export async function fileRoutes(app: FastifyInstance, options: { db: Db }) {
 
     const stat = fs.statSync(gcodePath);
     const filename = path.basename(gcodePath);
-
     reply.header('Content-Type', 'application/octet-stream');
     reply.header('Content-Length', stat.size);
     reply.header('Content-Disposition', `attachment; filename="${filename}"`);
-
-    const stream = fs.createReadStream(gcodePath);
-    return reply.send(stream);
+    return reply.send(fs.createReadStream(gcodePath));
   });
 
   // GET /api/files/model/:modelId — Download original model (?plate=N for multi-plate)
@@ -62,9 +58,33 @@ export async function fileRoutes(app: FastifyInstance, options: { db: Db }) {
     reply.header('Content-Type', 'application/octet-stream');
     reply.header('Content-Length', stat.size);
     reply.header('Content-Disposition', `attachment; filename="${model.name}"`);
+    return reply.send(fs.createReadStream(filePath));
+  });
 
-    const stream = fs.createReadStream(filePath);
-    return reply.send(stream);
+  // GET /api/files/threemf/:jobId — Download input 3MF used for slicing
+  app.get<{ Params: { jobId: string } }>('/api/files/threemf/:jobId', async (req, reply) => {
+    const job = db.getJob(req.params.jobId);
+    if (!job) {
+      return reply.status(404).send({ ok: false, error: 'Job not found' });
+    }
+
+    if (!job.output_dir) {
+      return reply.status(404).send({ ok: false, error: 'No output directory' });
+    }
+
+    const workDir = path.dirname(job.output_dir);
+    const threemfPath = path.join(workDir, 'input.3mf');
+
+    if (!fs.existsSync(threemfPath)) {
+      return reply.status(404).send({ ok: false, error: '3MF file not found' });
+    }
+
+    const modelName = job.model_name || 'model';
+    const stat = fs.statSync(threemfPath);
+    reply.header('Content-Type', 'application/octet-stream');
+    reply.header('Content-Length', stat.size);
+    reply.header('Content-Disposition', `attachment; filename="${modelName}.3mf"`);
+    return reply.send(fs.createReadStream(threemfPath));
   });
 }
 
@@ -73,9 +93,7 @@ function findGcode(dir: string): string | null {
   for (const file of files) {
     const fullPath = path.join(dir, file);
     const stat = fs.statSync(fullPath);
-    if (stat.isFile() && file.endsWith('.gcode')) {
-      return fullPath;
-    }
+    if (stat.isFile() && file.endsWith('.gcode')) return fullPath;
     if (stat.isDirectory()) {
       const found = findGcode(fullPath);
       if (found) return found;
