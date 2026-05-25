@@ -27,6 +27,19 @@ export function STLViewer({ modelUrl, faceColors, rotation, positionOffset, scen
   const faceColorsRef = useRef<Uint8Array | undefined>(undefined);
   faceColorsRef.current = faceColors;
 
+  // Cleanup on unmount — remove mesh from scene
+  useEffect(() => {
+    return () => {
+      if (meshRef.current && sceneRef.current) {
+        sceneRef.current.scene.remove(meshRef.current);
+        meshRef.current.geometry.dispose();
+        (meshRef.current.material as THREE.Material).dispose();
+        meshRef.current = null;
+        geometryRef.current = null;
+      }
+    };
+  }, []);
+
   // Load geometry when model URL changes
   useEffect(() => {
     if (!sceneRef.current || !modelUrl) return;
