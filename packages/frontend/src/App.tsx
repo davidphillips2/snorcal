@@ -12,6 +12,7 @@ import { SettingsPanel } from './components/Settings/SettingsPanel';
 import { PrinterSelect } from './components/PrinterSelect';
 import { GcodePreviewCanvas } from './components/Viewer/GcodePreviewCanvas';
 import { GcodeLayerSlider } from './components/Viewer/GcodeLayerSlider';
+import { PrinterDashboard } from './components/PrinterMonitor/PrinterDashboard';
 import { PRINTERS, getSavedPrinter, savePrinter } from './config/printers';
 import { useSSE } from './hooks/useSSE';
 import * as api from './api/client';
@@ -131,6 +132,7 @@ export default function App() {
   const [showSidebar, setShowSidebar] = useState(false);
   const [showSettings, setShowSettings] = useState(true);
   const [showJobs, setShowJobs] = useState(false);
+  const [showPrinters, setShowPrinters] = useState(false);
 
   // Gcode preview
   const [previewJobId, setPreviewJobId] = useState<string | null>(null);
@@ -625,6 +627,14 @@ export default function App() {
           )}
         </div>
 
+        {/* Printers */}
+        <div>
+          <button onClick={() => setShowPrinters(true)}
+            className="w-full px-3 py-1.5 bg-emerald-700 hover:bg-emerald-600 rounded text-xs font-medium text-white uppercase tracking-wider">
+            Printers
+          </button>
+        </div>
+
         {/* Settings */}
         <div>
           <button onClick={() => setShowSettings(!showSettings)}
@@ -815,6 +825,8 @@ export default function App() {
           )}
         </div>
       </main>
+
+      {showPrinters && <PrinterDashboard onClose={() => setShowPrinters(false)} />}
     </div>
   );
 }

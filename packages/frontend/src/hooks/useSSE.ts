@@ -1,10 +1,16 @@
-import { useEffect, useRef, useCallback, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 interface SSEMessage {
   type: string;
   data: Record<string, unknown>;
 }
 
+const KNOWN_EVENTS = [
+  'job:progress', 'job:completed', 'job:failed',
+  'printer:status', 'printer:connected', 'printer:disconnected',
+];
+
+/** Subscribe to all SSE event types. Returns bounded message buffer (last 200). */
 export function useSSE(url: string) {
   const [messages, setMessages] = useState<SSEMessage[]>([]);
   const eventSourceRef = useRef<EventSource | null>(null);
@@ -16,15 +22,15 @@ export function useSSE(url: string) {
     const addMessage = (type: string, event: MessageEvent) => {
       try {
         const data = JSON.parse(event.data);
-        setMessages((prev) => [...prev.slice(-50), { type, data }]);
+        setMessages((prev) => [...prev.slice(-200), { type, data }]);
       } catch {
         // ignore malformed SSE data
       }
     };
 
-    es.addEventListener('job:progress', (e) => addMessage('job:progress', e as MessageEvent));
-    es.addEventListener('job:completed', (e) => addMessage('job:completed', e as MessageEvent));
-    es.addEventListener('job:failed', (e) => addMessage('job:failed', e as MessageEvent));
+    for (const type of KNOWN_EVENTS) {
+      es.addEventListener(type, (e) => addMessage(type, e as MessageEvent));
+    }
 
     return () => {
       es.close();

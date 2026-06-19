@@ -10,6 +10,7 @@ import { fileRoutes } from './routes/files.js';
 import { eventRoutes } from './routes/events.js';
 import { printerRoutes } from './routes/printers.js';
 import { setupQueue } from './jobs/queue.js';
+import { printerManager } from './services/printer-manager.js';
 import { ensureDir, getDataDir } from './services/model-parser.js';
 
 export async function buildApp() {
@@ -34,6 +35,9 @@ export async function buildApp() {
 
   // Job queue (graceful when Redis unavailable — queue connects async)
   setupQueue(db);
+
+  // Auto-connect persisted printers
+  printerManager.init(db);
 
   // Routes
   app.register(modelRoutes, { db });

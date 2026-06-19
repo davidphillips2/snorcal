@@ -123,6 +123,34 @@ export class Db {
     this.db.prepare('DELETE FROM profiles WHERE engine = ? AND profile_type = ? AND name = ?').run(engine, profileType, name);
   }
 
+  // --- Printers ---
+
+  listPrinters(): DbPrinter[] {
+    return this.db.prepare('SELECT * FROM printers ORDER BY created_at ASC').all() as DbPrinter[];
+  }
+
+  getPrinter(id: string): DbPrinter | undefined {
+    return this.db.prepare('SELECT * FROM printers WHERE id = ?').get(id) as DbPrinter | undefined;
+  }
+
+  insertPrinter(p: {
+    id: string; name: string; protocol: string; ip: string; port: number;
+    serial?: string | null; access_code?: string | null; api_key?: string | null;
+  }) {
+    this.db.prepare(`
+      INSERT INTO printers (id, name, protocol, ip, port, serial, access_code, api_key)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(p.id, p.name, p.protocol, p.ip, p.port, p.serial ?? null, p.access_code ?? null, p.api_key ?? null);
+  }
+
+  updatePrinterStatus(id: string, status: string | null) {
+    this.db.prepare('UPDATE printers SET last_status = ?, last_seen = datetime(\'now\') WHERE id = ?').run(status, id);
+  }
+
+  deletePrinter(id: string) {
+    this.db.prepare('DELETE FROM printers WHERE id = ?').run(id);
+  }
+
   // --- Plates ---
 
   insertPlate(plate: {
@@ -189,4 +217,18 @@ export interface DbPlate {
   model_id: string; plate_index: number; file_path: string;
   face_count: number; bounds_x: number; bounds_y: number; bounds_z: number;
   face_colors: Buffer | null;
+}
+
+export interface DbPrinter {
+  id: string;
+  name: string;
+  protocol: string;       // 'moonraker' | 'bambu'
+  ip: string;
+  port: number;
+  serial: string | null;
+  access_code: string | null;
+  api_key: string | null;
+  last_status: string | null;
+  last_seen: string | null;
+  created_at: string;
 }

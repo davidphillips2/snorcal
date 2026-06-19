@@ -1,8 +1,28 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import path from 'node:path';
 import fs from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import type { Db } from '../db/index.js';
 import { discoverDevices } from '../services/ssdp-discovery.js';
+import { printerManager } from '../services/printer-manager.js';
+import { BambuAdapter } from '../services/adapters/bambu-adapter.js';
+import type { PrinterCommand, PrinterProtocol } from '@slorca/shared';
+
+function toPrinterRecord(row: any) {
+  return {
+    id: row.id,
+    name: row.name,
+    protocol: row.protocol,
+    ip: row.ip,
+    port: row.port,
+    serial: row.serial,
+    accessCode: row.access_code,
+    apiKey: row.api_key,
+    lastStatus: row.last_status,
+    lastSeen: row.last_seen,
+    createdAt: row.created_at,
+  };
+}
 
 interface PrinterTestBody {
   printerIp: string;
@@ -98,67 +118,173 @@ export async function printerRoutes(app: FastifyInstance, options: { db: Db }) {
     return reply.send({ ok: true, data: { info: result.info } });
   });
 
-  // POST /api/printers/send — upload gcode to Moonraker and start print
-  app.post('/api/printers/send', async (req: FastifyRequest, reply: FastifyReply) => {
-    const { jobId, printerIp, printerPort } = req.body as PrinterSendBody;
-    if (!jobId || !printerIp) {
-      return reply.status(400).send({ ok: false, error: 'jobId and printerIp required' });
+  // --- Printer registry CRUD + monitoring ---
+
+  // GET /api/printers — list registered printers + cached status
+  app.get('/api/printers', async (_req, reply) => {
+    const rows = db.listPrinters();
+    const data = rows.map(row => ({
+      ...toPrinterRecord(row),
+      status: printerManager.getStatus(row.id) ?? null,
+    }));
+    return reply.send({ ok: true, data });
+  });
+
+  // GET /api/printers/:id — single printer + status
+  app.get<{ Params: { id: string } }>('/api/printers/:id', async (req, reply) => {
+    const row = db.getPrinter(req.params.id);
+    if (!row) return reply.status(404).send({ ok: false, error: 'Printer not found' });
+    return reply.send({
+      ok: true,
+      data: { ...toPrinterRecord(row), status: printerManager.getStatus(row.id) ?? null },
+    });
+  });
+
+  // POST /api/printers — register new printer (triggers adapter connect)
+  app.post('/api/printers', async (req: FastifyRequest, reply: FastifyReply) => {
+    const body = req.body as {
+      name: string;
+      protocol: PrinterProtocol;
+      ip: string;
+      port?: number;
+      serial?: string;
+      accessCode?: string;
+      apiKey?: string;
+    };
+    if (!body.name || !body.protocol || !body.ip) {
+      return reply.status(400).send({ ok: false, error: 'name, protocol, ip required' });
+    }
+    if (body.protocol === 'bambu' && (!body.serial || !body.accessCode)) {
+      return reply.status(400).send({ ok: false, error: 'serial and accessCode required for bambu' });
+    }
+    const id = randomUUID();
+    const port = body.port ?? (body.protocol === 'bambu' ? 8883 : 7125);
+    db.insertPrinter({
+      id, name: body.name, protocol: body.protocol, ip: body.ip, port,
+      serial: body.serial, access_code: body.accessCode, api_key: body.apiKey,
+    });
+    const row = db.getPrinter(id)!;
+    await printerManager.startAdapter(row).catch(err => {
+      console.error(`[printers] failed to connect ${id}:`, err);
+    });
+    return reply.send({ ok: true, data: toPrinterRecord(row) });
+  });
+
+  // DELETE /api/printers/:id
+  app.delete<{ Params: { id: string } }>('/api/printers/:id', async (req, reply) => {
+    await printerManager.stopAdapter(req.params.id).catch(() => {});
+    db.deletePrinter(req.params.id);
+    return reply.send({ ok: true });
+  });
+
+  // GET /api/printers/:id/status
+  app.get<{ Params: { id: string } }>('/api/printers/:id/status', async (req, reply) => {
+    const status = printerManager.getStatus(req.params.id);
+    if (!status) return reply.status(404).send({ ok: false, error: 'Printer not connected' });
+    return reply.send({ ok: true, data: status });
+  });
+
+  // POST /api/printers/:id/command
+  app.post<{ Params: { id: string } }>('/api/printers/:id/command', async (req, reply) => {
+    const body = req.body as { command: string; args?: Record<string, unknown> };
+    const cmd: PrinterCommand = {
+      printerId: req.params.id,
+      command: body.command as PrinterCommand['command'],
+      args: body.args,
+    };
+    try {
+      await printerManager.sendCommand(cmd);
+      return reply.send({ ok: true });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return reply.send({ ok: false, error: message });
+    }
+  });
+
+  // GET /api/printers/:id/camera — MJPEG proxy (Moonraker) or JPEG snapshot (Bambu)
+  app.get<{ Params: { id: string } }>('/api/printers/:id/camera', async (req, reply) => {
+    const row = db.getPrinter(req.params.id);
+    if (!row) return reply.status(404).send({ ok: false, error: 'Printer not found' });
+
+    if (row.protocol === 'bambu') {
+      // Snapshot poll: return single JPEG
+      const adapter = printerManager.getAdapter(req.params.id);
+      if (!(adapter instanceof BambuAdapter)) {
+        return reply.status(400).send({ ok: false, error: 'Adapter not bambu' });
+      }
+      try {
+        const jpeg = await adapter.fetchCameraSnapshot();
+        reply.raw.writeHead(200, {
+          'Content-Type': 'image/jpeg',
+          'Cache-Control': 'no-store',
+        });
+        reply.raw.end(jpeg);
+        reply.hijack();
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return reply.status(502).send({ ok: false, error: message });
+      }
+      return;
     }
 
-    const port = printerPort || MOONRAKER_PORT;
-    const job = db.getJob(jobId);
+    // Moonraker MJPEG passthrough
+    const adapter = printerManager.getAdapter(req.params.id);
+    const url = adapter?.cameraUrl();
+    if (!url) return reply.status(400).send({ ok: false, error: 'Camera not available' });
+
+    try {
+      const upstream = await fetch(url, { signal: AbortSignal.timeout(8000) });
+      reply.raw.writeHead(200, {
+        'Content-Type': upstream.headers.get('content-type') || 'multipart/x-mixed-replace; boundary=boundarydonotcross',
+        'Cache-Control': 'no-store',
+      });
+      // Pipe body through
+      const reader = upstream.body?.getReader();
+      if (!reader) throw new Error('no body');
+      const pump = async () => {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (!reply.raw.write(value)) {
+            await new Promise<void>(r => reply.raw.once('drain', () => r()));
+          }
+        }
+        reply.raw.end();
+      };
+      pump().catch(() => { try { reply.raw.end(); } catch {} });
+      reply.hijack();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return reply.status(502).send({ ok: false, error: message });
+    }
+  });
+
+  // POST /api/printers/:id/send — upload gcode + start print (unified across protocols)
+  app.post<{ Params: { id: string } }>('/api/printers/:id/send', async (req, reply) => {
+    const body = req.body as { jobId: string; startPrint?: boolean };
+    if (!body.jobId) return reply.status(400).send({ ok: false, error: 'jobId required' });
+    const job = db.getJob(body.jobId);
     if (!job) return reply.status(404).send({ ok: false, error: 'Job not found' });
     if (job.status !== 'completed') return reply.status(400).send({ ok: false, error: 'Job not completed' });
 
-    if (!job.output_dir) return reply.status(400).send({ ok: false, error: 'No output directory' });
-
-    const gcodeFile = findGcode(job.output_dir);
-    if (!gcodeFile) return reply.status(400).send({ ok: false, error: 'No gcode file found' });
-
     try {
-      const fileName = path.basename(gcodeFile);
-      const fileContent = fs.readFileSync(gcodeFile);
-      const baseUrl = `http://${printerIp}:${port}`;
-
-      // Upload via Moonraker multipart
-      const formData = new FormData();
-      formData.append('file', new Blob([fileContent]), fileName);
-      formData.append('root', 'gcodes');
-
-      console.log(`[printer] Uploading ${fileName} (${(fileContent.length / 1024).toFixed(0)}KB) to ${baseUrl}/server/files/upload`);
-
-      const uploadRes = await fetch(`${baseUrl}/server/files/upload`, {
-        method: 'POST',
-        body: formData,
-        signal: AbortSignal.timeout(120000),
-      });
-
-      if (!uploadRes.ok) {
-        const errText = await uploadRes.text().catch(() => '');
-        return reply.send({ ok: false, error: `Upload failed: HTTP ${uploadRes.status} ${errText}` });
+      const gcodePath = findGcode(job.output_dir!);
+      if (!gcodePath) return reply.status(400).send({ ok: false, error: 'No gcode file' });
+      const filename = path.basename(gcodePath);
+      const printerPath = await printerManager.uploadFile(req.params.id, gcodePath, filename);
+      if (body.startPrint !== false) {
+        await printerManager.startPrint(req.params.id, printerPath);
       }
-
-      const uploadResult = await uploadRes.json() as any;
-      console.log(`[printer] Upload response:`, uploadResult.item?.path || uploadResult);
-
-      // Start print via Moonraker
-      const startRes = await fetch(`${baseUrl}/printer/print/start`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ filename: uploadResult.item?.path || fileName }),
-        signal: AbortSignal.timeout(10000),
-      });
-
-      if (!startRes.ok) {
-        const errText = await startRes.text().catch(() => '');
-        return reply.send({ ok: false, error: `Uploaded but start failed: ${errText}` });
-      }
-
-      return reply.send({ ok: true, data: { message: 'Print started' } });
+      return reply.send({ ok: true, data: { printerPath } });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      return reply.send({ ok: false, error: `Send failed: ${message}` });
+      return reply.send({ ok: false, error: message });
     }
+  });
+
+  // POST /api/printers/send — legacy single-printer send (deprecated, use /:id/send)
+  app.post('/api/printers/send', async (req: FastifyRequest, reply: FastifyReply) => {
+    return reply.status(410).send({ ok: false, error: 'Use POST /api/printers/:id/send instead' });
   });
 }
 

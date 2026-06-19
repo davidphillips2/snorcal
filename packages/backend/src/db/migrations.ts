@@ -51,6 +51,20 @@ export const MIGRATIONS = [
     PRIMARY KEY (model_id, plate_index)
   )`,
 
+  `CREATE TABLE IF NOT EXISTS printers (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    protocol TEXT NOT NULL,
+    ip TEXT NOT NULL,
+    port INTEGER NOT NULL,
+    serial TEXT,
+    access_code TEXT,
+    api_key TEXT,
+    last_status TEXT,
+    last_seen TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`,
+
   `CREATE INDEX IF NOT EXISTS idx_jobs_model_id ON jobs(model_id)`,
   `CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status)`,
   `CREATE INDEX IF NOT EXISTS idx_jobs_created ON jobs(created_at)`,
@@ -110,6 +124,16 @@ export function runSchemaMigrations(db: Database.Database) {
     const cols = db.prepare("PRAGMA table_info(models)").all() as { name: string }[];
     if (!cols.some(c => c.name === 'plate_count')) {
       db.exec("ALTER TABLE models ADD COLUMN plate_count INTEGER NOT NULL DEFAULT 1");
+    }
+  } catch {
+    // Migration not needed or already applied
+  }
+
+  // Add printer_id column to jobs table
+  try {
+    const cols = db.prepare("PRAGMA table_info(jobs)").all() as { name: string }[];
+    if (!cols.some(c => c.name === 'printer_id')) {
+      db.exec("ALTER TABLE jobs ADD COLUMN printer_id TEXT REFERENCES printers(id) ON DELETE SET NULL");
     }
   } catch {
     // Migration not needed or already applied

@@ -145,11 +145,55 @@ export async function discoverPrinters(timeout: number = 10000) {
 }
 
 export async function sendToPrinter(jobId: string, printerIp: string, printerPort?: number) {
+  // Legacy — use sendToRegisteredPrinter
   return apiFetch('/printers/send', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ jobId, printerIp, printerPort }),
   }) as Promise<{ ok: boolean; message?: string; error?: string; warning?: string }>;
+}
+
+// --- Registered printers (monitoring + control) ---
+
+export async function listPrinters() {
+  return apiFetch('/printers') as Promise<Array<{
+    id: string; name: string; protocol: 'moonraker' | 'bambu';
+    ip: string; port: number; serial?: string | null; accessCode?: string | null;
+    apiKey?: string | null; lastStatus?: string | null; lastSeen?: string | null;
+    createdAt: string; status?: any;
+  }>>;
+}
+
+export async function createPrinter(p: {
+  name: string; protocol: 'moonraker' | 'bambu'; ip: string; port?: number;
+  serial?: string; accessCode?: string; apiKey?: string;
+}) {
+  return apiFetch('/printers', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(p),
+  });
+}
+
+export async function deletePrinter(id: string) {
+  return apiFetch(`/printers/${id}`, { method: 'DELETE' });
+}
+
+export async function sendPrinterCommand(printerId: string, command: string, args?: Record<string, unknown>) {
+  return apiFetch(`/printers/${printerId}/command`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ command, args }),
+  });
+}
+
+export async function sendToRegisteredPrinter(printerId: string, jobId: string, startPrint = true) {
+  return apiFetch(`/printers/${printerId}/send`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ jobId, startPrint }),
+  }) as Promise<{ printerPath: string }>;
+}
+
+export function cameraUrl(printerId: string): string {
+  return `${API_BASE}/printers/${printerId}/camera`;
 }
 
 export async function importProfiles(engine: string, file: File) {
