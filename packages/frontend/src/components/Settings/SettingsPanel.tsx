@@ -123,6 +123,7 @@ export function SettingsPanel({
   const [profiles, setProfiles] = useState<ProfileInfo[]>([]);
   const [printers, setPrinters] = useState<Array<{ name: string; model?: string | null }>>([]);
   const [importing, setImporting] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -136,15 +137,32 @@ export function SettingsPanel({
   const machineProfilesAll = profiles.filter(p => p.profile_type === 'machine');
   const filamentProfiles = profiles.filter(p => p.profile_type === 'filament');
 
-  // Filter machine dropdown to profiles matching a connected printer's `model` (exact name).
-  // Printers with model=null/'' are ignored (treated as "Other").
+  // Filter machine dropdown to profiles matching a connected printer's `model`.
+  // Model is stored as a family name (no nozzle suffix); match by prefix so all
+  // nozzle variants of that family show up. Printers with no model = ignored.
   const printerModels = Array.from(new Set(
     printers.map(p => p.model).filter((m): m is string => !!m && m.trim().length > 0)
   ));
   const machineFiltered = printerModels.length === 0
     ? machineProfilesAll
-    : machineProfilesAll.filter(p => printerModels.includes(p.name));
+    : machineProfilesAll.filter(p =>
+        printerModels.some(m => p.name === m || p.name.startsWith(m + ' ') || p.name.startsWith(m + '('))
+      );
   const machineProfiles = machineFiltered.length > 0 ? machineFiltered : machineProfilesAll;
+
+  // Auto-select: if no machine picked yet and exactly one printer has a model,
+  // default to that family's 0.4 nozzle variant (most common).
+  useEffect(() => {
+    if (selectedProfiles.machine) return;
+    if (printerModels.length !== 1) return;
+    const family = printerModels[0];
+    const candidates = machineProfilesAll.filter(p =>
+      p.name === family || p.name.startsWith(family + ' ') || p.name.startsWith(family + '(')
+    );
+    if (candidates.length === 0) return;
+    const prefer04 = candidates.find(p => /0\.4.*nozzle/i.test(p.name));
+    onProfilesChange({ ...selectedProfiles, machine: (prefer04 ?? candidates[0]).name });
+  }, [printerModels.join('|'), machineProfilesAll.length, selectedProfiles.machine]);
 
   // Process filter: key off the SELECTED machine profile, not all printers.
   // Extract distinctive tokens (drop brand words + pure numbers) and match process names.
@@ -280,6 +298,17 @@ export function SettingsPanel({
         </select>
       </div>
 
+      {/* Advanced toggle */}
+      <button
+        onClick={() => setShowAdvanced(s => !s)}
+        className="w-full flex items-center justify-between text-xs font-medium text-gray-400 uppercase tracking-wider py-1 hover:text-gray-200"
+      >
+        <span>Advanced</span>
+        <span className="text-gray-500 text-xs">{showAdvanced ? '\u2212' : '+'}</span>
+      </button>
+
+      {showAdvanced && (
+        <>
       {/* Profile selectors */}
       <div className="space-y-2">
         <div className="flex items-center justify-between">
@@ -490,6 +519,8 @@ export function SettingsPanel({
           </div>
         );
       })}
+        </>
+      )}
 
     </div>
   );

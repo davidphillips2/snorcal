@@ -138,6 +138,23 @@ export default function App() {
   const [showJobs, setShowJobs] = useState(false);
   const [showPrinters, setShowPrinters] = useState(false);
 
+  // Registered printers (for target picker + Send)
+  const [printers, setPrinters] = useState<Array<{ id: string; name: string; model?: string | null; protocol: string }>>([]);
+  const [targetPrinterId, setTargetPrinterId] = useState<string | null>(() => localStorage.getItem('slorca_target_printer'));
+  useEffect(() => {
+    api.listPrinters().then(list => {
+      setPrinters(list.map(p => ({ id: p.id, name: p.name, model: p.model, protocol: p.protocol })));
+      // Auto-pick first if none selected
+      if (list.length > 0) {
+        setTargetPrinterId(cur => {
+          const resolved = cur && list.some(p => p.id === cur) ? cur : list[0].id;
+          localStorage.setItem('slorca_target_printer', resolved);
+          return resolved;
+        });
+      }
+    }).catch(() => {});
+  }, []);
+
   // Gcode preview
   const [previewJobId, setPreviewJobId] = useState<string | null>(null);
   const [gcodeText, setGcodeText] = useState<string | null>(null);
@@ -414,14 +431,15 @@ export default function App() {
   }, []);
 
   const handleSendToPrinter = useCallback(async (jobId: string) => {
-    const ip = printerIp || prompt('Enter your printer IP address:');
-    if (!ip) return;
+    if (!targetPrinterId) {
+      alert('No target printer selected. Add a printer first.');
+      return;
+    }
     try {
-      const result = await api.sendToPrinter(jobId, ip);
-      alert(result?.message || 'Gcode sent to printer!');
-      if (!printerIp) { setPrinterIp(ip); localStorage.setItem('slorca_printer_ip', ip); }
+      const result = await api.sendToRegisteredPrinter(targetPrinterId, jobId, true);
+      alert(`Sent to printer. Path: ${result.printerPath}`);
     } catch (err) { alert(`Send failed: ${err instanceof Error ? err.message : String(err)}`); }
-  }, [printerIp]);
+  }, [targetPrinterId]);
 
   const handleExitPreview = useCallback(() => { setPreviewJobId(null); setGcodeText(null); setCurrentPreviewLayer(0); setLayerCount(0); }, []);
 
@@ -631,12 +649,34 @@ export default function App() {
           )}
         </div>
 
-        {/* Printers */}
-        <div>
-          <button onClick={() => setShowPrinters(true)}
-            className="w-full px-3 py-1.5 bg-emerald-700 hover:bg-emerald-600 rounded text-xs font-medium text-white uppercase tracking-wider">
-            Printers
-          </button>
+        {/* Target printer picker */}
+        <div className="space-y-1">
+          <div className="flex items-center justify-between">
+            <label className="text-xs font-medium text-gray-400 uppercase tracking-wider">Target</label>
+            <button onClick={() => setShowPrinters(true)}
+              className="text-[10px] text-gray-500 hover:text-gray-300">manage</button>
+          </div>
+          {printers.length === 0 ? (
+            <button onClick={() => setShowPrinters(true)}
+              className="w-full px-3 py-1.5 bg-emerald-700 hover:bg-emerald-600 rounded text-xs font-medium text-white">
+              + Add Printer
+            </button>
+          ) : (
+            <select
+              value={targetPrinterId ?? ''}
+              onChange={(e) => {
+                const v = e.target.value || null;
+                setTargetPrinterId(v);
+                if (v) localStorage.setItem('slorca_target_printer', v);
+              }}
+              className="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-xs text-white">
+              {printers.map(p => (
+                <option key={p.id} value={p.id}>
+                  {p.name}{p.model ? ` · ${p.model}` : ''}
+                </option>
+              ))}
+            </select>
+          )}
         </div>
 
         {/* Settings */}
@@ -755,7 +795,9 @@ export default function App() {
       {view === 'jobs' && (
         <div className="flex-1 overflow-y-auto p-6 max-w-4xl mx-auto w-full">
           <JobList jobs={jobs} onCancel={handleCancelJob} onDownload={handleDownloadGcode}
-            onPreview={(jid) => { setPreviewJobId(jid); setView('slice'); }} />
+            onDownloadThreemf={handleDownloadThreemf}
+            onPreview={(jid) => { setPreviewJobId(jid); setView('slice'); }}
+            onSendToPrinter={handleSendToPrinter} />
         </div>
       )}
 
