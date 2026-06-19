@@ -3,11 +3,99 @@
  * Each printer gets a machine, filament, and process profile.
  */
 
+import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
+
 interface DefaultProfile {
   engine: string;
   type: string;
   name: string;
   settings: Record<string, unknown>;
+}
+
+// Engines slorca supports — only seed from these dirs
+const SUPPORTED_ENGINES = new Set(['orcaslicer', 'bambustudio', 'snapmaker_orca']);
+const TYPE_MAP: Record<string, string> = {
+  machine: 'machine',
+  filament: 'filament',
+  print: 'process',
+  process: 'process',
+};
+
+// Pick latest version value from a {version: value} map
+function latestVersionValue(v: unknown): unknown {
+  if (v === null || typeof v !== 'object') return v;
+  const map = v as Record<string, unknown>;
+  const versions = Object.keys(map);
+  if (versions.length === 0) return null;
+  // Sort by version string descending (semver-ish)
+  versions.sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
+  return map[versions[0]];
+}
+
+function normalizeSettings(raw: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [key, val] of Object.entries(raw)) {
+    out[key] = latestVersionValue(val);
+  }
+  return out;
+}
+
+interface DiskProfile {
+  slicer: string;
+  profile_type: string;
+  name: string;
+  vendor?: string;
+  settings: Record<string, unknown>;
+}
+
+function seedProfileDir(db: {
+  upsertProfile: (engine: string, type: string, name: string, settings: string) => void;
+  getProfile: (engine: string, type: string, name: string) => unknown;
+}): { imported: number; skipped: number; errors: number } {
+  const baseDir = path.join(os.homedir(), 'slicer-profiles-db', 'profiles');
+  if (!fs.existsSync(baseDir)) return { imported: 0, skipped: 0, errors: 0 };
+
+  let imported = 0, skipped = 0, errors = 0;
+
+  for (const engine of fs.readdirSync(baseDir)) {
+    if (!SUPPORTED_ENGINES.has(engine)) continue;
+    const engineDir = path.join(baseDir, engine);
+    if (!fs.statSync(engineDir).isDirectory()) continue;
+
+    // engine/{vendor}/{type}/*.json
+    for (const vendor of fs.readdirSync(engineDir)) {
+      const vendorDir = path.join(engineDir, vendor);
+      if (!fs.statSync(vendorDir).isDirectory()) continue;
+
+      for (const typeDirName of fs.readdirSync(vendorDir)) {
+        const mappedType = TYPE_MAP[typeDirName.toLowerCase()];
+        if (!mappedType) continue;
+        const typeDir = path.join(vendorDir, typeDirName);
+        if (!fs.statSync(typeDir).isDirectory()) continue;
+
+        for (const file of fs.readdirSync(typeDir)) {
+          if (!file.endsWith('.json')) continue;
+          const filePath = path.join(typeDir, file);
+          try {
+            const raw = JSON.parse(fs.readFileSync(filePath, 'utf-8')) as DiskProfile;
+            if (!raw.name || !raw.profile_type) { errors++; continue; }
+            const name = raw.name;
+            if (db.getProfile(engine, mappedType, name)) { skipped++; continue; }
+            const settings = normalizeSettings(raw.settings || {});
+            db.upsertProfile(engine, mappedType, name, JSON.stringify(settings));
+            imported++;
+          } catch {
+            errors++;
+          }
+        }
+      }
+    }
+  }
+
+  console.log(`[Seed] Imported ${imported} profiles, skipped ${skipped} existing, ${errors} errors from ${baseDir}`);
+  return { imported, skipped, errors };
 }
 
 const PROFILES: DefaultProfile[] = [
@@ -229,4 +317,6 @@ export function seedDefaultProfiles(db: {
       db.upsertProfile(profile.engine, profile.type, profile.name, JSON.stringify(profile.settings));
     }
   }
+  // Also seed from on-disk profile DB at ~/slicer-profiles-db/profiles
+  seedProfileDir(db);
 }

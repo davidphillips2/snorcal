@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import path from 'node:path';
 import fs from 'node:fs';
 import type { Db } from '../db/index.js';
+import { discoverDevices } from '../services/ssdp-discovery.js';
 
 interface PrinterTestBody {
   printerIp: string;
@@ -16,28 +17,85 @@ interface PrinterSendBody {
 
 const MOONRAKER_PORT = 7125;
 
-async function testPrinterConnection(ip: string, port: number = MOONRAKER_PORT): Promise<{ ok: boolean; info?: string; error?: string }> {
-  try {
-    const res = await fetch(`http://${ip}:${port}/printer/info`, { signal: AbortSignal.timeout(5000) });
-    if (!res.ok) return { ok: false, error: `HTTP ${res.status}` };
-    const json = await res.json() as any;
-    const state = json.result?.state || 'unknown';
-    const version = json.result?.software_version || '';
-    return { ok: true, info: `Klipper ${state}${version ? ` (${version})` : ''}` };
-  } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : 'Connection failed' };
+import net from 'node:net';
+
+async function probeTcp(ip: string, port: number, timeoutMs = 2000): Promise<boolean> {
+  return new Promise((resolve) => {
+    const socket = new net.Socket();
+    const timer = setTimeout(() => { socket.destroy(); resolve(false); }, timeoutMs);
+    socket.connect(port, ip, () => { clearTimeout(timer); socket.destroy(); resolve(true); });
+    socket.on('error', () => { clearTimeout(timer); socket.destroy(); resolve(false); });
+  });
+}
+
+async function testPrinterConnection(ip: string, port?: number): Promise<{ ok: boolean; info?: string; error?: string }> {
+  // If user specified a port, probe it directly
+  if (port) {
+    const open = await probeTcp(ip, port);
+    if (open) return { ok: true, info: `Port ${port} open on ${ip}` };
+    return { ok: false, error: `Port ${port} not reachable on ${ip}` };
   }
+
+  // Auto-detect: try HTTP probes first, then TCP-only for MQTT
+  const httpProbes: Array<{ port: number; path: string; type: string }> = [
+    { port: 7125, path: '/printer/info', type: 'Moonraker/Klipper' },
+    { port: 80, path: '/api/version', type: 'OctoPrint' },
+  ];
+
+  for (const attempt of httpProbes) {
+    try {
+      const res = await fetch(`http://${ip}:${attempt.port}${attempt.path}`, { signal: AbortSignal.timeout(3000) });
+      if (!res.ok) continue;
+      const json = await res.json() as any;
+
+      if (attempt.type === 'Moonraker/Klipper' && json.result) {
+        const state = json.result.state || 'unknown';
+        const version = json.result.software_version || '';
+        return { ok: true, info: `${attempt.type} ${state}${version ? ` (${version})` : ''}` };
+      }
+      if (attempt.type === 'OctoPrint' && (json.server || json.api)) {
+        return { ok: true, info: `${attempt.type} ${json.server || ''}`.trim() };
+      }
+    } catch {}
+  }
+
+  // TCP-only probes for non-HTTP protocols
+  const tcpProbes: Array<{ port: number; type: string }> = [
+    { port: 7125, type: 'Possible Moonraker/Klipper' },
+    { port: 8883, type: 'Possible MQTT/TLS device' },
+    { port: 6001, type: 'Possible Bambu Lab HTTP' },
+  ];
+
+  for (const attempt of tcpProbes) {
+    const open = await probeTcp(ip, attempt.port);
+    if (open) return { ok: true, info: `${attempt.type} (port ${attempt.port} open)` };
+  }
+
+  return { ok: false, error: 'No printer found on common ports (7125, 8883, 6001, 80)' };
 }
 
 export async function printerRoutes(app: FastifyInstance, options: { db: Db }) {
   const { db } = options;
+
+  // GET /api/printers/discover — SSDP scan for devices on local network
+  app.get('/api/printers/discover', async (req: FastifyRequest, reply: FastifyReply) => {
+    const timeout = Math.min(Math.max(parseInt((req.query as any).timeout as string) || 5000, 2000), 15000);
+    try {
+      const devices = await discoverDevices(timeout);
+      return reply.send({ ok: true, data: devices });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return reply.send({ ok: false, error: `Discovery failed: ${message}` });
+    }
+  });
 
   // POST /api/printers/test — test connection to printer
   app.post('/api/printers/test', async (req: FastifyRequest, reply: FastifyReply) => {
     const { printerIp, printerPort } = req.body as PrinterTestBody;
     if (!printerIp) return reply.status(400).send({ ok: false, error: 'printerIp required' });
     const result = await testPrinterConnection(printerIp, printerPort);
-    return reply.send({ ok: result.ok, data: { info: result.info, error: result.error } });
+    if (!result.ok) return reply.send({ ok: false, error: result.error });
+    return reply.send({ ok: true, data: { info: result.info } });
   });
 
   // POST /api/printers/send — upload gcode to Moonraker and start print

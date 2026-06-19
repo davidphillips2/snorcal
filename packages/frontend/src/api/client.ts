@@ -139,6 +139,11 @@ export async function testPrinterConnection(printerIp: string, printerPort?: num
   }) as Promise<{ ok: boolean; info?: string; error?: string }>;
 }
 
+export async function discoverPrinters(timeout: number = 10000) {
+  const res = await apiFetch(`/printers/discover?timeout=${timeout}`);
+  return (res || []) as Array<{ ip: string; port: number; location: string; friendlyName: string; server: string; st: string; usn: string }>;
+}
+
 export async function sendToPrinter(jobId: string, printerIp: string, printerPort?: number) {
   return apiFetch('/printers/send', {
     method: 'POST',

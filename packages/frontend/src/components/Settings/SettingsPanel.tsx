@@ -312,39 +312,24 @@ export function SettingsPanel({
               className="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1 text-xs text-white"
             >
               <option value="">Default profile</option>
-              {filamentProfiles.map(p => <option key={p.name} value={p.name}>{p.name}</option>)}
+              {filamentProfiles
+                .filter(p => {
+                  const mat = slot.type.toUpperCase();
+                  if (!mat) return true;
+                  // Show profiles matching the selected material, or generic ones
+                  const name = p.name.toUpperCase();
+                  if (name.includes(mat)) return true;
+                  // If no profiles match the material, show all
+                  return !filamentProfiles.some(fp => fp.name.toUpperCase().includes(mat));
+                })
+                .map(p => <option key={p.name} value={p.name}>{p.name}</option>)}
             </select>
           </div>
         ))}
       </div>
 
       {/* Printer Connection */}
-      <div className="space-y-2">
-        <span className="text-sm font-medium text-gray-300">Printer Connection</span>
-        <div className="flex gap-2">
-          <input
-            type="text"
-            placeholder="Printer IP (e.g. 192.168.1.100)"
-            value={printerIp}
-            onChange={(e) => onPrinterIpChange(e.target.value)}
-            className="flex-1 bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-xs text-white min-w-0"
-          />
-          <button
-            onClick={async () => {
-              if (!printerIp) { alert('Enter printer IP first'); return; }
-              try {
-                const result = await api.testPrinterConnection(printerIp);
-                alert(result?.info ? `Connected: ${result.info}` : 'Connection failed');
-              } catch (err) {
-                alert(`Connection failed: ${err instanceof Error ? err.message : String(err)}`);
-              }
-            }}
-            className="px-3 py-1.5 rounded text-xs bg-gray-700 text-gray-300 hover:bg-gray-600 whitespace-nowrap"
-          >
-            Test
-          </button>
-        </div>
-      </div>
+      <PrinterConnection printerIp={printerIp} onPrinterIpChange={onPrinterIpChange} />
 
       {/* Multi-Material Support */}
       <div className="space-y-2">
@@ -443,6 +428,90 @@ export function SettingsPanel({
         );
       })}
 
+    </div>
+  );
+}
+
+// --- Printer Connection with SSDP discovery ---
+
+const PRINTER_KEYWORDS = ['moonraker', 'klipper', 'printer', '3d', 'prusa', 'bambu', 'snapmaker', 'creality', 'voron', 'octoprint'];
+
+function PrinterConnection({ printerIp, onPrinterIpChange }: { printerIp: string; onPrinterIpChange: (ip: string) => void }) {
+  const [isScanning, setIsScanning] = useState(false);
+  const [discovered, setDiscovered] = useState<Array<{ ip: string; port: number; friendlyName: string; server: string; st: string }>>([]);
+  const [showResults, setShowResults] = useState(false);
+
+  const handleScan = async () => {
+    setIsScanning(true);
+    setDiscovered([]);
+    setShowResults(true);
+    try {
+      const devices = await api.discoverPrinters(10000);
+      console.log(`[SSDP] discovered ${devices.length} devices:`, devices);
+      setDiscovered(devices.sort((a, b) => {
+        const aScore = PRINTER_KEYWORDS.some(k => `${a.server} ${a.st} ${a.friendlyName}`.toLowerCase().includes(k)) ? 0 : 1;
+        const bScore = PRINTER_KEYWORDS.some(k => `${b.server} ${b.st} ${b.friendlyName}`.toLowerCase().includes(k)) ? 0 : 1;
+        return aScore - bScore || a.friendlyName.localeCompare(b.friendlyName);
+      }));
+    } catch (err) {
+      console.error('[SSDP] scan failed:', err);
+      setShowResults(false);
+    } finally {
+      setIsScanning(false);
+    }
+  };
+
+  return (
+    <div className="space-y-2">
+      <span className="text-sm font-medium text-gray-300">Printer Connection</span>
+      <div className="flex gap-2">
+        <input
+          type="text"
+          placeholder="Printer IP"
+          value={printerIp}
+          onChange={(e) => onPrinterIpChange(e.target.value)}
+          className="flex-1 bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-xs text-white min-w-0"
+        />
+        <button
+          onClick={async () => {
+            if (!printerIp) return;
+            try {
+              const result = await api.testPrinterConnection(printerIp);
+              alert(result?.info ? `Connected: ${result.info}` : 'Connection failed');
+            } catch (err) { alert(`Failed: ${err instanceof Error ? err.message : String(err)}`); }
+          }}
+          className="px-2.5 py-1.5 rounded text-xs bg-gray-700 text-gray-300 hover:bg-gray-600 whitespace-nowrap"
+        >
+          Test
+        </button>
+        <button
+          onClick={handleScan}
+          disabled={isScanning}
+          className={`px-2.5 py-1.5 rounded text-xs whitespace-nowrap ${
+            isScanning ? 'bg-blue-600/30 text-blue-300' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+          }`}
+        >
+          {isScanning ? 'Scanning...' : 'Scan'}
+        </button>
+      </div>
+
+      {showResults && !isScanning && discovered.length > 0 && (
+        <div className="bg-gray-700/50 border border-gray-600 rounded max-h-48 overflow-y-auto">
+          {discovered.map((d, i) => (
+            <button key={`${d.ip}:${d.port}`}
+              onClick={() => { onPrinterIpChange(d.ip); setShowResults(false); }}
+              className="w-full text-left px-3 py-2 hover:bg-gray-600 border-b border-gray-700/50 last:border-0 transition"
+            >
+              <div className="text-xs text-white font-medium">{d.friendlyName || d.ip}</div>
+              <div className="text-[10px] text-gray-400">{d.ip}:{d.port}{d.server && <span className="ml-2">{d.server}</span>}</div>
+            </button>
+          ))}
+        </div>
+      )}
+
+      {showResults && !isScanning && discovered.length === 0 && (
+        <div className="text-xs text-gray-500 bg-gray-700/50 rounded px-3 py-2">No devices found.</div>
+      )}
     </div>
   );
 }

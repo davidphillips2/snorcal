@@ -170,13 +170,24 @@ export async function sliceRoutes(app: FastifyInstance, options: { db: Db }) {
   app.post('/api/slice', async (req: FastifyRequest, reply: FastifyReply) => {
     const body = req.body as SliceRequest;
 
-    if (!body.modelId || !body.engine || !body.settings) {
-      return reply.status(400).send({ ok: false, error: 'modelId, engine, and settings are required' });
+    if ((!body.modelId && !body.models) || !body.engine || !body.settings) {
+      return reply.status(400).send({ ok: false, error: 'modelId (or models), engine, and settings are required' });
     }
 
-    const model = db.getModel(body.modelId);
-    if (!model) {
-      return reply.status(404).send({ ok: false, error: 'Model not found' });
+    // Validate model(s) exist
+    if (body.modelId) {
+      const model = db.getModel(body.modelId);
+      if (!model) {
+        return reply.status(404).send({ ok: false, error: 'Model not found' });
+      }
+    }
+    if (body.models) {
+      for (const entry of body.models) {
+        const model = db.getModel(entry.modelId);
+        if (!model) {
+          return reply.status(404).send({ ok: false, error: `Model ${entry.modelId} not found` });
+        }
+      }
     }
 
     const validEngines = ['orcaslicer', 'bambustudio', 'snapmaker_orca'];
@@ -188,9 +199,12 @@ export async function sliceRoutes(app: FastifyInstance, options: { db: Db }) {
     const workDir = path.join(getJobsDir(), jobId);
     ensureDir(workDir);
 
+    const primaryModelId = body.modelId || body.models?.[0]?.modelId || '';
+    const primaryModel = body.modelId ? db.getModel(body.modelId) : db.getModel(primaryModelId);
+
     db.insertJob({
       id: jobId,
-      modelId: body.modelId,
+      modelId: primaryModelId,
       engine: body.engine,
       settings: JSON.stringify(body.settings),
       outputDir: path.join(workDir, 'output'),
@@ -209,7 +223,7 @@ export async function sliceRoutes(app: FastifyInstance, options: { db: Db }) {
       const queue = getQueue();
       const jobData: SliceJobData = {
         jobId,
-        modelId: body.modelId,
+        modelId: primaryModelId,
         engine: body.engine,
         plateIndex: body.plateIndex ?? 0,
         settings: body.settings,
@@ -221,7 +235,7 @@ export async function sliceRoutes(app: FastifyInstance, options: { db: Db }) {
       await queue.add('slice', jobData, { jobId });
     } else {
       // Direct execution (no Redis) — run in background, return immediately
-      runSliceDirect(jobId, body, model.file_path, model.name, workDir, db);
+      runSliceDirect(jobId, body, primaryModel!.file_path, primaryModel!.name, workDir, db);
     }
 
     return reply.send({ ok: true, data: { jobId } });
