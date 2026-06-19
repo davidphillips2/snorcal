@@ -13,6 +13,7 @@ export interface BambuAdapterOptions {
   serial: string;           // printer serial number
   accessCode: string;       // 8-digit LAN access code
   cameraPort?: number;      // default 6000 (P1 snapshot binary)
+  cameraIp?: string;        // override host for camera fetches (default: ip)
 }
 
 interface BambuPrintObject {
@@ -28,6 +29,8 @@ interface BambuPrintObject {
   nozzle_temper?: number;
   bed_target_temper?: number;
   nozzle_target_temper?: number;
+  cooling_fan_speed?: number;        // 0-100 percent
+  big_fan1_speed?: number;           // chamber fan
   spd_lvl?: number;
   ams_status?: number;
   // Plus AMS info comes on top-level `ams` key, handled separately
@@ -59,6 +62,7 @@ export class BambuAdapter implements PrinterAdapter {
   private serial: string;
   private accessCode: string;
   private cameraPort: number;
+  private cameraIp: string;
 
   private client: mqtt.MqttClient | null = null;
   private connection: PrinterConnectionState = 'disconnected';
@@ -75,9 +79,16 @@ export class BambuAdapter implements PrinterAdapter {
     this.serial = opts.serial;
     this.accessCode = opts.accessCode;
     this.cameraPort = opts.cameraPort ?? 6000;
+    this.cameraIp = opts.cameraIp ?? opts.ip;
   }
 
   async connect(): Promise<void> {
+    // Tear down any previous client first
+    if (this.client) {
+      try { await this.client.endAsync(true); } catch {}
+      this.client = null;
+    }
+
     return new Promise((resolve, reject) => {
       const brokerUrl = `mqtts://${this.ip}:${this.port}`;
       const client = mqtt.connect(brokerUrl, {
@@ -86,10 +97,9 @@ export class BambuAdapter implements PrinterAdapter {
         password: this.accessCode,
         protocolVersion: 4,             // MQTT 3.1.1
         keepalive: 30,
-        reconnectPeriod: 0,             // we handle reconnects manually
-        connectTimeout: 5000,
+        reconnectPeriod: 30000,         // gentle — bambuddy proxy bans >5 attempts/60s
+        connectTimeout: 8000,
         rejectUnauthorized: false,
-        // mqtt lib uses Node tls — disable hostname check too
         ...({ checkServerIdentity: () => undefined } as any),
       });
 
@@ -98,6 +108,7 @@ export class BambuAdapter implements PrinterAdapter {
         if (settled) return;
         settled = true;
         this.setConnection(false, err.message);
+        if (process.env.DEBUG_PRINTER) console.debug('[Bambu] connect reject:', err.message);
         reject(err);
       };
 
@@ -107,9 +118,9 @@ export class BambuAdapter implements PrinterAdapter {
           if (err) { fail(err); return; }
           this.client = client;
           this.setConnection(true);
-          // Request initial status
           this.publish({ pushing: { command: 'pushall', sequence_id: '0' } });
           if (!settled) { settled = true; resolve(); }
+          if (process.env.DEBUG_PRINTER) console.debug('[Bambu] connected + subscribed');
         });
       });
 
@@ -117,17 +128,24 @@ export class BambuAdapter implements PrinterAdapter {
         try { this.handleReport(JSON.parse(payload.toString('utf-8'))); } catch {}
       });
 
-      client.on('error', (err) => fail(err));
+      client.on('error', (err) => {
+        if (process.env.DEBUG_PRINTER) console.debug('[Bambu] mqtt error:', err.message);
+        if (!settled) fail(err);
+      });
 
       client.on('close', () => {
+        if (process.env.DEBUG_PRINTER) console.debug('[Bambu] close');
         this.setConnection(false, 'mqtt closed');
         if (!settled) { settled = true; reject(new Error('mqtt closed')); return; }
-        // Auto-reconnect with backoff
-        setTimeout(() => {
-          if (this.connection !== 'connected') {
-            this.connect().catch(() => {/* swallow */});
-          }
-        }, 5000);
+      });
+
+      client.on('offline', () => {
+        if (process.env.DEBUG_PRINTER) console.debug('[Bambu] offline');
+        this.setConnection(false, 'mqtt offline');
+      });
+
+      client.on('reconnect', () => {
+        if (process.env.DEBUG_PRINTER) console.debug('[Bambu] reconnecting...');
       });
 
       setTimeout(() => { if (!settled) fail(new Error('connect timeout')); }, 6000);
@@ -166,6 +184,7 @@ export class BambuAdapter implements PrinterAdapter {
         hotend: p?.nozzle_temper,
         hotendTarget: p?.nozzle_target_temper,
       },
+      fanSpeed: p?.cooling_fan_speed,
       etaSec: p?.mc_remaining_time !== undefined ? p.mc_remaining_time * 60 : undefined,
       file: p?.subtask_name ?? p?.gcode_file,
       ams: amsSlots,
@@ -320,60 +339,71 @@ export class BambuAdapter implements PrinterAdapter {
   }
 
   /**
-   * Fetch a JPEG snapshot from Bambu P1/A1 chamber camera (port 6000).
-   * Returns Buffer of JPEG. Called by camera route.
+   * Fetch a JPEG snapshot. Two paths:
+   *  - HTTP URL override (e.g. bambuddy proxy): simple GET, return buffer
+   *  - Default: Bambu chamber-image binary protocol on port 6000
    */
-  async fetchCameraSnapshot(): Promise<Buffer> {
+  async fetchCameraSnapshot(): Promise<Buffer | null> {
+    // HTTP override — camera_ip may hold a full URL (e.g. bambuddy snapshot endpoint)
+    if (/^https?:\/\//i.test(this.cameraIp)) {
+      const res = await fetch(this.cameraIp, { signal: AbortSignal.timeout(6000) });
+      if (!res.ok) throw new Error(`camera HTTP ${res.status}`);
+      const ab = await res.arrayBuffer();
+      return Buffer.from(ab);
+    }
+
     return new Promise((resolve, reject) => {
       const socket = tls.connect({
-        host: this.ip,
+        host: this.cameraIp,
         port: this.cameraPort,
         rejectUnauthorized: false,
         checkServerIdentity: () => undefined,
       }, () => {
-        // 80-byte auth payload
+        // 80-byte auth payload — layout matches Bambu chamber-image protocol
+        // 0-3: 0x40 magic | 4-7: 0x3000 cmd | 8-15: padding
+        // 16-47: "bblp" + nulls (32-byte slot) | 48-79: access code + nulls (32-byte slot)
         const buf = Buffer.alloc(80, 0);
         buf.writeUInt32LE(0x40, 0);
         buf.writeUInt32LE(0x3000, 4);
         buf.write('bblp', 16, 'ascii');
-        buf.write(this.accessCode, 16 + 16, 'ascii');
+        buf.write(this.accessCode, 48, 'ascii');
         socket.write(buf);
       });
 
-      const chunks: Buffer[] = [];
-      let headerReceived = false;
+      // Response framing: 16-byte header (LE uint32 at offset 0 = payload size) + JPEG bytes
+      let payloadSize = -1;
+      let buffered = Buffer.alloc(0);
+      let resolved = false;
+      const finish = (err?: Error) => {
+        if (resolved) return;
+        resolved = true;
+        socket.destroy();
+        if (err) { reject(err); return; }
+        if (payloadSize <= 0 || buffered.length < payloadSize) {
+          reject(new Error('camera frame incomplete'));
+          return;
+        }
+        resolve(buffered.subarray(0, payloadSize));
+      };
 
       socket.on('data', (data: Buffer) => {
-        if (!headerReceived) {
-          // First 16 bytes are header
-          if (data.length < 16) {
-            socket.destroy();
-            reject(new Error('camera snapshot header too short'));
-            return;
+        buffered = Buffer.concat([buffered, data]);
+        if (payloadSize < 0 && buffered.length >= 16) {
+          payloadSize = buffered.readUInt32LE(0);
+          if (payloadSize === 0 || payloadSize > 10_000_000) {
+            return finish(new Error(`invalid payload size ${payloadSize}`));
           }
-          headerReceived = true;
-          if (data.length > 16) chunks.push(data.subarray(16));
-        } else {
-          chunks.push(data);
+          buffered = buffered.subarray(16);
+        }
+        if (payloadSize > 0 && buffered.length >= payloadSize) {
+          finish();
         }
       });
 
-      socket.on('end', () => {
-        socket.destroy();
-        if (chunks.length === 0) return reject(new Error('no camera data'));
-        resolve(Buffer.concat(chunks));
-      });
+      socket.on('end', () => finish());
+      socket.on('error', (err) => finish(err));
 
-      socket.on('error', (err) => {
-        socket.destroy();
-        reject(err);
-      });
-
-      setTimeout(() => {
-        socket.destroy();
-        if (chunks.length > 0) resolve(Buffer.concat(chunks));
-        else reject(new Error('camera timeout'));
-      }, 4000);
+      setTimeout(() => finish(new Error('camera timeout')), 4000);
     });
   }
 }

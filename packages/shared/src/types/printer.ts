@@ -65,6 +65,7 @@ export interface PrinterStatus {
   layer?: number;
   totalLayers?: number;
   temps?: PrinterTemps;
+  fanSpeed?: number;          // 0-100 (% of max)
   etaSec?: number;
   file?: string;              // current print filename
   ams?: AmsSlot[];

@@ -8,7 +8,9 @@ interface Props {
 }
 
 export function CameraView({ printerId, protocol, connection, expanded }: Props) {
-  const size = expanded ? 'w-full aspect-video' : 'w-32 h-24 flex-shrink-0';
+  const size = expanded
+    ? 'w-full aspect-video'
+    : 'w-60 aspect-video flex-shrink-0';
 
   if (connection !== 'connected') {
     return (

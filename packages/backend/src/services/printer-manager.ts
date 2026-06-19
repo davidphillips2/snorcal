@@ -27,6 +27,8 @@ class PrinterManager {
         ip: p.ip,
         port: p.port,
         apiKey: p.api_key ?? undefined,
+        streamUrl: p.camera_stream_url ?? undefined,
+        snapshotUrl: p.camera_snapshot_url ?? undefined,
       });
     }
     if (p.protocol === 'bambu') {
@@ -36,6 +38,7 @@ class PrinterManager {
         port: p.port,
         serial: p.serial ?? '',
         accessCode: p.access_code ?? '',
+        cameraIp: p.camera_ip ?? undefined,
       });
     }
     throw new Error(`Unknown protocol: ${p.protocol}`);
@@ -74,6 +77,15 @@ class PrinterManager {
     if (!adapter) return;
     await adapter.disconnect();
     this.adapters.delete(printerId);
+  }
+
+  /** Force-stop then start with fresh adapter (resets reconnect state). */
+  async reconnect(printerId: string): Promise<void> {
+    if (!this.db) throw new Error('manager not initialized');
+    const p = this.db.getPrinter(printerId);
+    if (!p) throw new Error(`printer ${printerId} not found`);
+    await this.stopAdapter(printerId);
+    await this.startAdapter(p);
   }
 
   getAdapter(printerId: string): PrinterAdapter | undefined {

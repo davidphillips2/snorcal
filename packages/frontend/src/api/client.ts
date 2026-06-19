@@ -160,13 +160,29 @@ export async function listPrinters() {
     id: string; name: string; protocol: 'moonraker' | 'bambu';
     ip: string; port: number; serial?: string | null; accessCode?: string | null;
     apiKey?: string | null; lastStatus?: string | null; lastSeen?: string | null;
-    createdAt: string; status?: any;
+    createdAt: string; status?: any; model?: string | null;
+    cameraStreamUrl?: string | null; cameraSnapshotUrl?: string | null;
   }>>;
+}
+
+export async function listPrinterModels() {
+  try {
+    return await apiFetch('/printers/models') as Promise<string[]>;
+  } catch { return []; }
+}
+
+export async function updatePrinter(id: string, patch: { model?: string }) {
+  return apiFetch(`/printers/${id}`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(patch),
+  });
 }
 
 export async function createPrinter(p: {
   name: string; protocol: 'moonraker' | 'bambu'; ip: string; port?: number;
   serial?: string; accessCode?: string; apiKey?: string;
+  cameraStreamUrl?: string; cameraSnapshotUrl?: string;
+  model?: string;
 }) {
   return apiFetch('/printers', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -176,6 +192,10 @@ export async function createPrinter(p: {
 
 export async function deletePrinter(id: string) {
   return apiFetch(`/printers/${id}`, { method: 'DELETE' });
+}
+
+export async function reconnectPrinter(id: string) {
+  return apiFetch(`/printers/${id}/reconnect`, { method: 'POST' });
 }
 
 export async function sendPrinterCommand(printerId: string, command: string, args?: Record<string, unknown>) {

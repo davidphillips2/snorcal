@@ -18,6 +18,9 @@ function toPrinterRecord(row: any) {
     serial: row.serial,
     accessCode: row.access_code,
     apiKey: row.api_key,
+    cameraStreamUrl: row.camera_stream_url,
+    cameraSnapshotUrl: row.camera_snapshot_url,
+    model: row.model,
     lastStatus: row.last_status,
     lastSeen: row.last_seen,
     createdAt: row.created_at,
@@ -150,6 +153,9 @@ export async function printerRoutes(app: FastifyInstance, options: { db: Db }) {
       serial?: string;
       accessCode?: string;
       apiKey?: string;
+      cameraStreamUrl?: string;
+      cameraSnapshotUrl?: string;
+      model?: string;
     };
     if (!body.name || !body.protocol || !body.ip) {
       return reply.status(400).send({ ok: false, error: 'name, protocol, ip required' });
@@ -162,6 +168,9 @@ export async function printerRoutes(app: FastifyInstance, options: { db: Db }) {
     db.insertPrinter({
       id, name: body.name, protocol: body.protocol, ip: body.ip, port,
       serial: body.serial, access_code: body.accessCode, api_key: body.apiKey,
+      camera_stream_url: body.cameraStreamUrl || null,
+      camera_snapshot_url: body.cameraSnapshotUrl || null,
+      model: body.model || null,
     });
     const row = db.getPrinter(id)!;
     await printerManager.startAdapter(row).catch(err => {
@@ -177,11 +186,54 @@ export async function printerRoutes(app: FastifyInstance, options: { db: Db }) {
     return reply.send({ ok: true });
   });
 
+  // PATCH /api/printers/:id — update mutable fields (currently: model)
+  app.patch<{ Params: { id: string } }>('/api/printers/:id', async (req, reply) => {
+    const body = req.body as { model?: string };
+    const row = db.getPrinter(req.params.id);
+    if (!row) return reply.status(404).send({ ok: false, error: 'Printer not found' });
+    if (typeof body.model !== 'undefined') {
+      db.updatePrinterModel(req.params.id, body.model || null);
+    }
+    const updated = db.getPrinter(req.params.id)!;
+    return reply.send({ ok: true, data: toPrinterRecord(updated) });
+  });
+
+  // GET /api/printers/models — unique machine profile names across all known engines
+  app.get('/api/printers/models', async (_req, reply) => {
+    const engines = ['orcaslicer', 'bambustudio', 'snapmaker_orca'];
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const engine of engines) {
+      try {
+        const rows = db.listProfiles(engine, 'machine');
+        for (const r of rows) {
+          if (r.name && !seen.has(r.name)) {
+            seen.add(r.name);
+            out.push(r.name);
+          }
+        }
+      } catch {}
+    }
+    out.sort((a, b) => a.localeCompare(b));
+    return reply.send({ ok: true, data: out });
+  });
+
   // GET /api/printers/:id/status
   app.get<{ Params: { id: string } }>('/api/printers/:id/status', async (req, reply) => {
     const status = printerManager.getStatus(req.params.id);
     if (!status) return reply.status(404).send({ ok: false, error: 'Printer not connected' });
     return reply.send({ ok: true, data: status });
+  });
+
+  // POST /api/printers/:id/reconnect — stop + start fresh adapter
+  app.post<{ Params: { id: string } }>('/api/printers/:id/reconnect', async (req, reply) => {
+    try {
+      await printerManager.reconnect(req.params.id);
+      return reply.send({ ok: true });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return reply.send({ ok: false, error: message });
+    }
   });
 
   // POST /api/printers/:id/command
@@ -227,8 +279,23 @@ export async function printerRoutes(app: FastifyInstance, options: { db: Db }) {
       return;
     }
 
-    // Moonraker MJPEG passthrough
+    // Moonraker: prefer adapter.fetchCameraSnapshot (custom URL) → JPEG
+    // Else fall back to MJPEG passthrough via cameraUrl()
     const adapter = printerManager.getAdapter(req.params.id);
+    if (adapter && typeof adapter.fetchCameraSnapshot === 'function') {
+      try {
+        const jpeg = await adapter.fetchCameraSnapshot();
+        if (jpeg) {
+          reply.raw.writeHead(200, { 'Content-Type': 'image/jpeg', 'Cache-Control': 'no-store' });
+          reply.raw.end(jpeg);
+          reply.hijack();
+          return;
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return reply.status(502).send({ ok: false, error: message });
+      }
+    }
     const url = adapter?.cameraUrl();
     if (!url) return reply.status(400).send({ ok: false, error: 'Camera not available' });
 

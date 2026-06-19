@@ -136,11 +136,19 @@ export class Db {
   insertPrinter(p: {
     id: string; name: string; protocol: string; ip: string; port: number;
     serial?: string | null; access_code?: string | null; api_key?: string | null;
+    camera_ip?: string | null;
+    camera_stream_url?: string | null;
+    camera_snapshot_url?: string | null;
+    model?: string | null;
   }) {
     this.db.prepare(`
-      INSERT INTO printers (id, name, protocol, ip, port, serial, access_code, api_key)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(p.id, p.name, p.protocol, p.ip, p.port, p.serial ?? null, p.access_code ?? null, p.api_key ?? null);
+      INSERT INTO printers (id, name, protocol, ip, port, serial, access_code, api_key, camera_ip, camera_stream_url, camera_snapshot_url, model)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(p.id, p.name, p.protocol, p.ip, p.port, p.serial ?? null, p.access_code ?? null, p.api_key ?? null, p.camera_ip ?? null, p.camera_stream_url ?? null, p.camera_snapshot_url ?? null, p.model ?? null);
+  }
+
+  updatePrinterModel(id: string, model: string | null) {
+    this.db.prepare('UPDATE printers SET model = ? WHERE id = ?').run(model, id);
   }
 
   updatePrinterStatus(id: string, status: string | null) {
@@ -228,6 +236,10 @@ export interface DbPrinter {
   serial: string | null;
   access_code: string | null;
   api_key: string | null;
+  camera_ip: string | null;
+  camera_stream_url: string | null;
+  camera_snapshot_url: string | null;
+  model: string | null;
   last_status: string | null;
   last_seen: string | null;
   created_at: string;

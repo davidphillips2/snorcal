@@ -11,6 +11,8 @@ export interface MoonrakerAdapterOptions {
   port?: number;            // default 7125
   apiKey?: string;
   webcamPath?: string;      // default /webcam (mjpegstreamer)
+  streamUrl?: string;       // full URL override for MJPEG stream
+  snapshotUrl?: string;     // full URL override for JPEG snapshot
   // Callbacks set externally if needed
 }
 
@@ -33,6 +35,8 @@ export class MoonrakerAdapter implements PrinterAdapter {
   private port: number;
   private apiKey?: string;
   private webcamPath: string;
+  private streamUrl?: string;
+  private snapshotUrl?: string;
 
   private ws: WebSocket | null = null;
   private reconnectTimer: NodeJS.Timeout | null = null;
@@ -52,6 +56,8 @@ export class MoonrakerAdapter implements PrinterAdapter {
     this.port = opts.port ?? 7125;
     this.apiKey = opts.apiKey;
     this.webcamPath = opts.webcamPath ?? '/webcam';
+    this.streamUrl = opts.streamUrl;
+    this.snapshotUrl = opts.snapshotUrl;
   }
 
   async connect(): Promise<void> {
@@ -160,6 +166,7 @@ export class MoonrakerAdapter implements PrinterAdapter {
     const bed = this.objects.heater_bed;
     const vsd = this.objects.virtual_sdcard;
     const disp = this.objects.display_status;
+    const fan = this.objects.fan;
 
     const progress = vsd?.progress ?? disp?.progress ?? 0;
     const etaSec = ps && vsd && vsd.progress > 0
@@ -180,6 +187,7 @@ export class MoonrakerAdapter implements PrinterAdapter {
         hotend: extruder?.temperature,
         hotendTarget: extruder?.target,
       },
+      fanSpeed: fan ? Math.round(fan.speed * 100) : undefined,
       etaSec,
       file: ps?.filename,
       updatedAt: new Date().toISOString(),
@@ -312,6 +320,19 @@ export class MoonrakerAdapter implements PrinterAdapter {
   }
 
   cameraUrl(): string | null {
-    return `http://${this.ip}:${this.port}${this.webcamPath}/?action=stream`;
+    return this.streamUrl ?? `http://${this.ip}:${this.port}${this.webcamPath}/?action=stream`;
   }
+
+  /** Per-adapter snapshot fetch — used by camera route when snapshotUrl is set. */
+  async fetchCameraSnapshot(): Promise<Buffer | null> {
+    if (!this.snapshotUrl) return null;
+    const res = await fetch(this.snapshotUrl, {
+      headers: this.authHeaders(),
+      signal: AbortSignal.timeout(6000),
+    });
+    if (!res.ok) throw new Error(`camera HTTP ${res.status}`);
+    return Buffer.from(await res.arrayBuffer());
+  }
+
+  getSnapshotUrl(): string | null { return this.snapshotUrl ?? null; }
 }

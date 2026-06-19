@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import * as api from '../../api/client';
 import type { DiscoveredDevice } from '@slorca/shared';
 
@@ -15,10 +15,19 @@ export function AddPrinterModal({ onClose, onAdded }: Props) {
   const [serial, setSerial] = useState('');
   const [accessCode, setAccessCode] = useState('');
   const [apiKey, setApiKey] = useState('');
+  const [cameraStreamUrl, setCameraStreamUrl] = useState('');
+  const [cameraSnapshotUrl, setCameraSnapshotUrl] = useState('');
+  const [modelChoice, setModelChoice] = useState<string>('');     // '' | '__other__' | profile-name
+  const [modelCustom, setModelCustom] = useState<string>('');     // free text when __other__
+  const [availableModels, setAvailableModels] = useState<string[]>([]);
   const [scanning, setScanning] = useState(false);
   const [discovered, setDiscovered] = useState<DiscoveredDevice[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    api.listPrinterModels().then(setAvailableModels).catch(() => setAvailableModels([]));
+  }, []);
 
   const scan = async () => {
     setScanning(true);
@@ -59,6 +68,9 @@ export function AddPrinterModal({ onClose, onAdded }: Props) {
         serial: serial.trim() || undefined,
         accessCode: accessCode.trim() || undefined,
         apiKey: apiKey.trim() || undefined,
+        cameraStreamUrl: cameraStreamUrl.trim() || undefined,
+        cameraSnapshotUrl: cameraSnapshotUrl.trim() || undefined,
+        model: modelChoice === '__other__' ? modelCustom.trim() : (modelChoice || undefined),
       });
       onAdded();
     } catch (e) {
@@ -116,6 +128,22 @@ export function AddPrinterModal({ onClose, onAdded }: Props) {
           <input value={name} onChange={(e) => setName(e.target.value)} placeholder="My Printer"
             className="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-white" />
         </Field>
+        <Field label="Printer Model">
+          <select value={modelChoice} onChange={(e) => setModelChoice(e.target.value)}
+            className="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-white">
+            <option value="">Select model…</option>
+            {availableModels.map(m => <option key={m} value={m}>{m}</option>)}
+            <option value="__other__">Other / not in list</option>
+          </select>
+          {modelChoice === '__other__' && (
+            <input value={modelCustom} onChange={(e) => setModelCustom(e.target.value)}
+              placeholder="Custom model name (e.g. Creality Ender 3)"
+              className="mt-2 w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-white" />
+          )}
+          <p className="mt-1 text-[11px] text-gray-500">
+            Used to filter machine/process profiles in slicer. Pick &quot;Other&quot; to skip filtering.
+          </p>
+        </Field>
         <div className="flex gap-2">
           <Field label="IP">
             <input value={ip} onChange={(e) => setIp(e.target.value)} placeholder="192.168.1.50"
@@ -150,6 +178,32 @@ export function AddPrinterModal({ onClose, onAdded }: Props) {
               className="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-white" />
           </Field>
         )}
+
+        {/* Camera URLs — optional overrides */}
+        <details className="border border-gray-700 rounded">
+          <summary className="px-3 py-2 text-sm text-gray-300 cursor-pointer hover:bg-gray-700/50">
+            Camera URLs (optional)
+          </summary>
+          <div className="p-3 space-y-3 border-t border-gray-700">
+            <Field label="Snapshot URL (JPEG)">
+              <input value={cameraSnapshotUrl} onChange={(e) => setCameraSnapshotUrl(e.target.value)}
+                placeholder={protocol === 'moonraker'
+                  ? `http://${ip || 'ip'}/webcam/snapshot.jpg`
+                  : 'http://bambuddy:8000/api/v1/printers/1/camera/snapshot'}
+                className="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-white" />
+            </Field>
+            <Field label="Stream URL (MJPEG, optional)">
+              <input value={cameraStreamUrl} onChange={(e) => setCameraStreamUrl(e.target.value)}
+                placeholder={protocol === 'moonraker'
+                  ? `http://${ip || 'ip'}/webcam/?action=stream`
+                  : ''}
+                className="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-white" />
+            </Field>
+            <p className="text-[11px] text-gray-500">
+              Snapshot URL polled every few seconds. Stream URL used as native &lt;img&gt; src (MJPEG only — WebRTC not supported).
+            </p>
+          </div>
+        </details>
 
         <div className="flex gap-2 pt-2">
           <button onClick={onClose}

@@ -13,6 +13,8 @@ import { PrinterSelect } from './components/PrinterSelect';
 import { GcodePreviewCanvas } from './components/Viewer/GcodePreviewCanvas';
 import { GcodeLayerSlider } from './components/Viewer/GcodeLayerSlider';
 import { PrinterDashboard } from './components/PrinterMonitor/PrinterDashboard';
+import { HomeDashboard } from './components/Home/HomeDashboard';
+import { PrinterDetail } from './components/PrinterMonitor/PrinterDetail';
 import { PRINTERS, getSavedPrinter, savePrinter } from './config/printers';
 import { useSSE } from './hooks/useSSE';
 import * as api from './api/client';
@@ -129,6 +131,8 @@ export default function App() {
   );
 
   // UI
+  const [view, setView] = useState<'home' | 'slice' | 'jobs' | 'printer'>('home');
+  const [selectedPrinterId, setSelectedPrinterId] = useState<string | null>(null);
   const [showSidebar, setShowSidebar] = useState(false);
   const [showSettings, setShowSettings] = useState(true);
   const [showJobs, setShowJobs] = useState(false);
@@ -648,7 +652,6 @@ export default function App() {
               selectedProfiles={selectedProfiles} onProfilesChange={setSelectedProfiles}
               multiMaterial={multiMaterial} onMultiMaterialChange={(mm) => { setMultiMaterial(mm); localStorage.setItem('slorca_multi_material', JSON.stringify(mm)); }}
               filamentSlots={filamentSlots} onFilamentSlotsChange={(slots) => { setFilamentSlots(slots); localStorage.setItem('slorca_filament_slots', JSON.stringify(slots)); }}
-              printerIp={printerIp} onPrinterIpChange={(ip) => { setPrinterIp(ip); localStorage.setItem('slorca_printer_ip', ip); }}
             />
           )}
         </div>
@@ -717,7 +720,47 @@ export default function App() {
   );
 
   return (
-    <div className="h-dvh flex bg-gray-900 text-white overflow-hidden">
+    <div className="h-dvh flex flex-col bg-gray-900 text-white overflow-hidden">
+      {/* Top nav */}
+      <header className="flex items-center justify-between px-4 py-2 bg-gray-950 border-b border-gray-800 shrink-0 z-20">
+        <div className="flex items-center gap-6">
+          <span className="text-base font-semibold tracking-tight">slorca</span>
+          <nav className="flex gap-1">
+            {(['home', 'slice', 'jobs'] as const).map(v => (
+              <button key={v} onClick={() => setView(v)}
+                className={`px-3 py-1.5 rounded text-sm capitalize ${
+                  view === v ? 'bg-gray-700 text-white' : 'text-gray-400 hover:text-white hover:bg-gray-800'
+                }`}>
+                {v}
+              </button>
+            ))}
+          </nav>
+        </div>
+        <div className="text-xs text-gray-500">{engine}</div>
+      </header>
+
+      {/* View content */}
+      {view === 'home' && (
+        <HomeDashboard
+          onSlice={() => setView('slice')}
+          onOpenJob={(jobId) => { setPreviewJobId(jobId); setView('slice'); }}
+          onOpenPrinter={(id) => { setSelectedPrinterId(id); setView('printer'); }}
+        />
+      )}
+
+      {view === 'printer' && selectedPrinterId && (
+        <PrinterDetail id={selectedPrinterId} onBack={() => { setSelectedPrinterId(null); setView('home'); }} />
+      )}
+
+      {view === 'jobs' && (
+        <div className="flex-1 overflow-y-auto p-6 max-w-4xl mx-auto w-full">
+          <JobList jobs={jobs} onCancel={handleCancelJob} onDownload={handleDownloadGcode}
+            onPreview={(jid) => { setPreviewJobId(jid); setView('slice'); }} />
+        </div>
+      )}
+
+      {view === 'slice' && (
+        <div className="flex flex-1 overflow-hidden">
       {showSidebar && <div className="fixed inset-0 bg-black/50 z-30 md:hidden" onClick={() => setShowSidebar(false)} />}
 
       <aside className={`w-72 bg-gray-800 border-r border-gray-700 flex flex-col shrink-0
@@ -825,6 +868,8 @@ export default function App() {
           )}
         </div>
       </main>
+        </div>
+      )}
 
       {showPrinters && <PrinterDashboard onClose={() => setShowPrinters(false)} />}
     </div>

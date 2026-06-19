@@ -47,11 +47,51 @@ interface SettingsPanelProps {
   onMultiMaterialChange: (config: MultiMaterialConfig) => void;
   filamentSlots: FilamentSlotConfig[];
   onFilamentSlotsChange: (slots: FilamentSlotConfig[]) => void;
-  printerIp: string;
-  onPrinterIpChange: (ip: string) => void;
 }
 
 const MATERIAL_TYPES = ['PLA', 'PETG', 'ABS', 'ASA', 'TPU', 'PA (Nylon)', 'PC', 'PVA', 'HIPS', 'CF (Carbon Fiber)'];
+
+// Brand / generic words stripped when tokenizing a machine profile name.
+// Goal: keep only the distinctive model identifier (e.g. "P1S", "U1", "Ender").
+const BRAND_WORDS = new Set([
+  'bambu', 'lab', 'snapmaker', 'anker', 'anycubic', 'creality', 'voron', 'prusa',
+  'printer', 'nozzle', 'all-metal', 'allmetal', 'standard', 'default', 'the',
+]);
+
+// Some printers share process profiles with a sibling model.
+// Key = canonical token found in machine name, value = extra tokens to also match.
+// Bambu P1S/A1/X1E all use X1C-tagged process profiles in Orca/Bambu.
+const MODEL_ALIASES: Record<string, string[]> = {
+  'p1s': ['x1c'],
+  'p1sc': ['x1c'],
+  'x1e': ['x1c'],
+  'x1c': ['x1c'],
+  'a1 mini': ['a1'],
+  'a1mini': ['a1'],
+};
+
+/** Extract distinctive lowercase tokens from a machine profile name, with aliases. */
+function extractModelTokens(modelName?: string): string[] {
+  if (!modelName) return [];
+  const lower = modelName.toLowerCase();
+  const tokens = new Set<string>();
+  // Check multi-word aliases first (e.g. "a1 mini")
+  for (const [key, aliases] of Object.entries(MODEL_ALIASES)) {
+    if (lower.includes(key)) {
+      tokens.add(key);
+      aliases.forEach(a => tokens.add(a));
+    }
+  }
+  for (const raw of lower.split(/[^a-z0-9.]+/)) {
+    if (!raw) continue;
+    if (BRAND_WORDS.has(raw)) continue;
+    if (/^\d+(\.\d+)?$/.test(raw)) continue;  // pure numbers like 0.4
+    if (raw.length < 2) continue;
+    tokens.add(raw);
+    if (MODEL_ALIASES[raw]) MODEL_ALIASES[raw].forEach(a => tokens.add(a));
+  }
+  return Array.from(tokens);
+}
 
 const MULTI_MATERIAL_PRESET: Record<string, string> = {
   enable_support: '1',
@@ -72,7 +112,6 @@ export function SettingsPanel({
   engine, onEngineChange, settings, onSettingsChange,
   selectedProfiles, onProfilesChange, multiMaterial, onMultiMaterialChange,
   filamentSlots, onFilamentSlotsChange,
-  printerIp, onPrinterIpChange,
 }: SettingsPanelProps) {
   // Initialize collapsed state from group defaults
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>(() => {
@@ -82,6 +121,7 @@ export function SettingsPanel({
   });
   const [search, setSearch] = useState('');
   const [profiles, setProfiles] = useState<ProfileInfo[]>([]);
+  const [printers, setPrinters] = useState<Array<{ name: string; model?: string | null }>>([]);
   const [importing, setImporting] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -89,9 +129,35 @@ export function SettingsPanel({
     api.getProfiles(engine).then(setProfiles).catch(() => setProfiles([]));
   }, [engine]);
 
-  const machineProfiles = profiles.filter(p => p.profile_type === 'machine');
+  useEffect(() => {
+    api.listPrinters().then(setPrinters).catch(() => setPrinters([]));
+  }, []);
+
+  const machineProfilesAll = profiles.filter(p => p.profile_type === 'machine');
   const filamentProfiles = profiles.filter(p => p.profile_type === 'filament');
-  const processProfiles = profiles.filter(p => p.profile_type === 'process');
+
+  // Filter machine dropdown to profiles matching a connected printer's `model` (exact name).
+  // Printers with model=null/'' are ignored (treated as "Other").
+  const printerModels = Array.from(new Set(
+    printers.map(p => p.model).filter((m): m is string => !!m && m.trim().length > 0)
+  ));
+  const machineFiltered = printerModels.length === 0
+    ? machineProfilesAll
+    : machineProfilesAll.filter(p => printerModels.includes(p.name));
+  const machineProfiles = machineFiltered.length > 0 ? machineFiltered : machineProfilesAll;
+
+  // Process filter: key off the SELECTED machine profile, not all printers.
+  // Extract distinctive tokens (drop brand words + pure numbers) and match process names.
+  const selectedMachine = selectedProfiles.machine;
+  const processTokens = extractModelTokens(selectedMachine);
+  const processProfilesAll = profiles.filter(p => p.profile_type === 'process');
+  const processMatched = processTokens.length === 0
+    ? processProfilesAll
+    : processProfilesAll.filter(p => {
+        const n = p.name.toLowerCase();
+        return processTokens.some(tok => n.includes(tok));
+      });
+  const processProfiles = processMatched.length > 0 ? processMatched : processProfilesAll;
 
   const updateSetting = useCallback((key: string, value: string) => {
     onSettingsChange({ ...settings, [key]: value });
@@ -240,7 +306,7 @@ export function SettingsPanel({
             </label>
           </div>
         </div>
-        {renderProfileSelect('Machine', 'machine', machineProfiles)}
+        {renderProfileSelect('Machine', 'machine', machineFiltered)}
         {renderProfileSelect('Process', 'process', processProfiles)}
       </div>
 
@@ -327,9 +393,6 @@ export function SettingsPanel({
           </div>
         ))}
       </div>
-
-      {/* Printer Connection */}
-      <PrinterConnection printerIp={printerIp} onPrinterIpChange={onPrinterIpChange} />
 
       {/* Multi-Material Support */}
       <div className="space-y-2">
@@ -428,90 +491,6 @@ export function SettingsPanel({
         );
       })}
 
-    </div>
-  );
-}
-
-// --- Printer Connection with SSDP discovery ---
-
-const PRINTER_KEYWORDS = ['moonraker', 'klipper', 'printer', '3d', 'prusa', 'bambu', 'snapmaker', 'creality', 'voron', 'octoprint'];
-
-function PrinterConnection({ printerIp, onPrinterIpChange }: { printerIp: string; onPrinterIpChange: (ip: string) => void }) {
-  const [isScanning, setIsScanning] = useState(false);
-  const [discovered, setDiscovered] = useState<Array<{ ip: string; port: number; friendlyName: string; server: string; st: string }>>([]);
-  const [showResults, setShowResults] = useState(false);
-
-  const handleScan = async () => {
-    setIsScanning(true);
-    setDiscovered([]);
-    setShowResults(true);
-    try {
-      const devices = await api.discoverPrinters(10000);
-      console.log(`[SSDP] discovered ${devices.length} devices:`, devices);
-      setDiscovered(devices.sort((a, b) => {
-        const aScore = PRINTER_KEYWORDS.some(k => `${a.server} ${a.st} ${a.friendlyName}`.toLowerCase().includes(k)) ? 0 : 1;
-        const bScore = PRINTER_KEYWORDS.some(k => `${b.server} ${b.st} ${b.friendlyName}`.toLowerCase().includes(k)) ? 0 : 1;
-        return aScore - bScore || a.friendlyName.localeCompare(b.friendlyName);
-      }));
-    } catch (err) {
-      console.error('[SSDP] scan failed:', err);
-      setShowResults(false);
-    } finally {
-      setIsScanning(false);
-    }
-  };
-
-  return (
-    <div className="space-y-2">
-      <span className="text-sm font-medium text-gray-300">Printer Connection</span>
-      <div className="flex gap-2">
-        <input
-          type="text"
-          placeholder="Printer IP"
-          value={printerIp}
-          onChange={(e) => onPrinterIpChange(e.target.value)}
-          className="flex-1 bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-xs text-white min-w-0"
-        />
-        <button
-          onClick={async () => {
-            if (!printerIp) return;
-            try {
-              const result = await api.testPrinterConnection(printerIp);
-              alert(result?.info ? `Connected: ${result.info}` : 'Connection failed');
-            } catch (err) { alert(`Failed: ${err instanceof Error ? err.message : String(err)}`); }
-          }}
-          className="px-2.5 py-1.5 rounded text-xs bg-gray-700 text-gray-300 hover:bg-gray-600 whitespace-nowrap"
-        >
-          Test
-        </button>
-        <button
-          onClick={handleScan}
-          disabled={isScanning}
-          className={`px-2.5 py-1.5 rounded text-xs whitespace-nowrap ${
-            isScanning ? 'bg-blue-600/30 text-blue-300' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-          }`}
-        >
-          {isScanning ? 'Scanning...' : 'Scan'}
-        </button>
-      </div>
-
-      {showResults && !isScanning && discovered.length > 0 && (
-        <div className="bg-gray-700/50 border border-gray-600 rounded max-h-48 overflow-y-auto">
-          {discovered.map((d, i) => (
-            <button key={`${d.ip}:${d.port}`}
-              onClick={() => { onPrinterIpChange(d.ip); setShowResults(false); }}
-              className="w-full text-left px-3 py-2 hover:bg-gray-600 border-b border-gray-700/50 last:border-0 transition"
-            >
-              <div className="text-xs text-white font-medium">{d.friendlyName || d.ip}</div>
-              <div className="text-[10px] text-gray-400">{d.ip}:{d.port}{d.server && <span className="ml-2">{d.server}</span>}</div>
-            </button>
-          ))}
-        </div>
-      )}
-
-      {showResults && !isScanning && discovered.length === 0 && (
-        <div className="text-xs text-gray-500 bg-gray-700/50 rounded px-3 py-2">No devices found.</div>
-      )}
     </div>
   );
 }

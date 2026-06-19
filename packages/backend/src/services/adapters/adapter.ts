@@ -41,4 +41,11 @@ export interface PrinterAdapter {
    * Frontend hits backend route `/api/printers/:id/camera` which calls this.
    */
   cameraUrl(): string | null;
+
+  /**
+   * Optional: fetch a single JPEG snapshot. Used by camera route when a
+   * snapshot URL is configured (more reliable than piping MJPEG).
+   * Returns null if adapter has no snapshot fetcher.
+   */
+  fetchCameraSnapshot?(): Promise<Buffer | null>;
 }

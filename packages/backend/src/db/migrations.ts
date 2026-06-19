@@ -138,4 +138,37 @@ export function runSchemaMigrations(db: Database.Database) {
   } catch {
     // Migration not needed or already applied
   }
+
+  // Add camera_ip column to printers (override `ip` for camera fetches)
+  try {
+    const cols = db.prepare("PRAGMA table_info(printers)").all() as { name: string }[];
+    if (!cols.some(c => c.name === 'camera_ip')) {
+      db.exec("ALTER TABLE printers ADD COLUMN camera_ip TEXT");
+    }
+  } catch {
+    // Migration not needed or already applied
+  }
+
+  // Add custom camera stream/snapshot URL columns (full URL override)
+  try {
+    const cols = db.prepare("PRAGMA table_info(printers)").all() as { name: string }[];
+    if (!cols.some(c => c.name === 'camera_stream_url')) {
+      db.exec("ALTER TABLE printers ADD COLUMN camera_stream_url TEXT");
+    }
+    if (!cols.some(c => c.name === 'camera_snapshot_url')) {
+      db.exec("ALTER TABLE printers ADD COLUMN camera_snapshot_url TEXT");
+    }
+  } catch {
+    // Migration not needed or already applied
+  }
+
+  // Add model column to printers (machine profile name for slicer filter)
+  try {
+    const cols = db.prepare("PRAGMA table_info(printers)").all() as { name: string }[];
+    if (!cols.some(c => c.name === 'model')) {
+      db.exec("ALTER TABLE printers ADD COLUMN model TEXT");
+    }
+  } catch {
+    // Migration not needed or already applied
+  }
 }

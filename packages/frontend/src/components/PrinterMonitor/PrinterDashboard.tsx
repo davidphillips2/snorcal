@@ -56,6 +56,12 @@ export function PrinterDashboard({ onClose }: Props) {
     await refresh();
   };
 
+  const onReconnect = async (id: string) => {
+    try { await api.reconnectPrinter(id); } catch (e) {
+      alert(`Reconnect failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  };
+
   const onCommand = async (printerId: string, command: string, args?: Record<string, unknown>) => {
     try {
       await api.sendPrinterCommand(printerId, command, args);
@@ -103,6 +109,7 @@ export function PrinterDashboard({ onClose }: Props) {
                 expanded={expandedId === p.id}
                 onToggle={() => setExpandedId(expandedId === p.id ? null : p.id)}
                 onDelete={() => onDelete(p.id)}
+                onReconnect={() => onReconnect(p.id)}
                 onCommand={(cmd, args) => onCommand(p.id, cmd, args)}
               />
             ))}
@@ -126,10 +133,11 @@ interface CardProps {
   expanded: boolean;
   onToggle: () => void;
   onDelete: () => void;
+  onReconnect: () => void;
   onCommand: (cmd: string, args?: Record<string, unknown>) => void;
 }
 
-function PrinterCard({ printer, status, expanded, onToggle, onDelete, onCommand }: CardProps) {
+function PrinterCard({ printer, status, expanded, onToggle, onDelete, onReconnect, onCommand }: CardProps) {
   const connection = status?.connection ?? 'disconnected';
   const state = status?.state ?? 'offline';
   const connColor = {
@@ -138,8 +146,8 @@ function PrinterCard({ printer, status, expanded, onToggle, onDelete, onCommand 
   }[connection] || 'bg-gray-500';
 
   return (
-    <div className="bg-gray-800 border border-gray-700 rounded-lg overflow-hidden">
-      <div className="p-3 flex items-start gap-3">
+    <div className="bg-gray-800 border border-gray-700 rounded-lg overflow-hidden min-w-0">
+      <div className="p-3 flex flex-col sm:flex-row items-start gap-3">
         <CameraView printerId={printer.id} protocol={printer.protocol} connection={connection} expanded={expanded} />
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
@@ -196,6 +204,12 @@ function PrinterCard({ printer, status, expanded, onToggle, onDelete, onCommand 
           <button onClick={() => onCommand('resume')}
             className="text-xs text-green-300 hover:text-green-200 px-2 py-1 rounded hover:bg-gray-700">Resume</button>
         )}
+        {(connection === 'disconnected' || connection === 'error') && (
+          <button onClick={onReconnect}
+            className="text-xs text-blue-300 hover:text-blue-200 px-2 py-1 rounded hover:bg-gray-700">
+            Reconnect
+          </button>
+        )}
         <button onClick={onDelete}
           className="ml-auto text-xs text-red-400 hover:text-red-300 px-2 py-1">Remove</button>
       </div>
@@ -222,19 +236,19 @@ function ExpandedControls({ printer, status, onCommand }: {
       <div className="space-y-1.5">
         <label className="flex items-center gap-2 text-xs text-gray-300">
           <span className="w-12">Hotend</span>
-          <input type="range" min="0" max="300" value={hotend}
+          <input type="number" min="0" max="300" value={hotend}
             onChange={(e) => setHotend(Number(e.target.value))}
-            className="flex-1" />
-          <span className="w-12 text-right">{hotend}°C</span>
+            className="w-20 px-2 py-0.5 bg-gray-700 rounded text-white" />
+          <span className="text-gray-400">°C</span>
           <button onClick={() => onCommand('set_temp', { heater: 'hotend', value: hotend })}
             className="px-2 py-0.5 bg-blue-600 hover:bg-blue-500 rounded text-white">Set</button>
         </label>
         <label className="flex items-center gap-2 text-xs text-gray-300">
           <span className="w-12">Bed</span>
-          <input type="range" min="0" max="120" value={bed}
+          <input type="number" min="0" max="120" value={bed}
             onChange={(e) => setBed(Number(e.target.value))}
-            className="flex-1" />
-          <span className="w-12 text-right">{bed}°C</span>
+            className="w-20 px-2 py-0.5 bg-gray-700 rounded text-white" />
+          <span className="text-gray-400">°C</span>
           <button onClick={() => onCommand('set_temp', { heater: 'bed', value: bed })}
             className="px-2 py-0.5 bg-blue-600 hover:bg-blue-500 rounded text-white">Set</button>
         </label>
