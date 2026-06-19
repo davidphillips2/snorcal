@@ -198,7 +198,9 @@ export async function printerRoutes(app: FastifyInstance, options: { db: Db }) {
     return reply.send({ ok: true, data: toPrinterRecord(updated) });
   });
 
-  // GET /api/printers/models — unique machine profile names across all known engines
+  // GET /api/printers/models — unique machine family names across all known engines.
+  // Strips nozzle variants ("0.4 nozzle", "(0.6 nozzle)") so each printer model
+  // appears once regardless of nozzle options.
   app.get('/api/printers/models', async (_req, reply) => {
     const engines = ['orcaslicer', 'bambustudio', 'snapmaker_orca'];
     const seen = new Set<string>();
@@ -207,9 +209,14 @@ export async function printerRoutes(app: FastifyInstance, options: { db: Db }) {
       try {
         const rows = db.listProfiles(engine, 'machine');
         for (const r of rows) {
-          if (r.name && !seen.has(r.name)) {
-            seen.add(r.name);
-            out.push(r.name);
+          if (!r.name) continue;
+          const clean = r.name
+            .replace(/\s*\(?\s*0\.\d+\s*(?:mm)?\s*nozzle\s*\)?\s*/gi, '')
+            .replace(/\s+/g, ' ')
+            .trim();
+          if (clean && !seen.has(clean)) {
+            seen.add(clean);
+            out.push(clean);
           }
         }
       } catch {}

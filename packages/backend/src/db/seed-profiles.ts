@@ -14,8 +14,14 @@ interface DefaultProfile {
   settings: Record<string, unknown>;
 }
 
-// Engines slorca supports — only seed from these dirs
-const SUPPORTED_ENGINES = new Set(['orcaslicer', 'bambustudio', 'snapmaker_orca']);
+// Map source dir → slorca engine tag. CrealityPrint JSON format is
+// OrcaSlicer-compatible, so we re-tag its profiles as orcaslicer.
+const ENGINE_MAP: Record<string, string> = {
+  orcaslicer: 'orcaslicer',
+  bambustudio: 'bambustudio',
+  snapmaker_orca: 'snapmaker_orca',
+  crealityprint: 'orcaslicer',
+};
 const TYPE_MAP: Record<string, string> = {
   machine: 'machine',
   filament: 'filament',
@@ -60,7 +66,8 @@ function seedProfileDir(db: {
   let imported = 0, skipped = 0, errors = 0;
 
   for (const engine of fs.readdirSync(baseDir)) {
-    if (!SUPPORTED_ENGINES.has(engine)) continue;
+    const dbEngine = ENGINE_MAP[engine];
+    if (!dbEngine) continue;
     const engineDir = path.join(baseDir, engine);
     if (!fs.statSync(engineDir).isDirectory()) continue;
 
@@ -82,9 +89,9 @@ function seedProfileDir(db: {
             const raw = JSON.parse(fs.readFileSync(filePath, 'utf-8')) as DiskProfile;
             if (!raw.name || !raw.profile_type) { errors++; continue; }
             const name = raw.name;
-            if (db.getProfile(engine, mappedType, name)) { skipped++; continue; }
+            if (db.getProfile(dbEngine, mappedType, name)) { skipped++; continue; }
             const settings = normalizeSettings(raw.settings || {});
-            db.upsertProfile(engine, mappedType, name, JSON.stringify(settings));
+            db.upsertProfile(dbEngine, mappedType, name, JSON.stringify(settings));
             imported++;
           } catch {
             errors++;
