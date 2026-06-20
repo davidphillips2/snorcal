@@ -512,7 +512,6 @@ export default function App() {
     setIsUploading(true);
     try {
       const model = await api.uploadModel(file);
-      // Auto-offset so new models don't overlap
       const offset = projectModels.length * 50;
       const newPm: ProjectModel = {
         modelId: model.id,
@@ -536,6 +535,40 @@ export default function App() {
       setIsUploading(false);
     }
   }, [projectModels.length]);
+
+  // Sequential multi-file upload — preserves order, sets isUploading once for batch
+  const handleUploadMany = useCallback(async (files: File[]) => {
+    if (files.length === 0) return;
+    setIsUploading(true);
+    try {
+      for (const file of files) {
+        try {
+          const model = await api.uploadModel(file);
+          const offset = projectModels.length * 50;
+          const newPm: ProjectModel = {
+            modelId: model.id,
+            name: model.name,
+            faceCount: model.faceCount,
+            plateCount: model.plateCount ?? 1,
+            plateId: activePlateId,
+            rotation: { x: 0, y: 0, z: 0 },
+            positionOffset: { x: offset, y: 0, z: 0 },
+            scale: { ...DEFAULT_SCALE },
+            mirror: { ...DEFAULT_MIRROR },
+            faceColors: null,
+            visible: true,
+            kind: 'model',
+          };
+          updateModels(prev => [...prev, newPm]);
+          setActiveModelIndex(projectModels.length);
+        } catch (err) {
+          console.error(`Upload failed for ${file.name}:`, err);
+        }
+      }
+    } finally {
+      setIsUploading(false);
+    }
+  }, [projectModels.length, activePlateId, updateModels]);
 
   // Remove model from project
   const handleRemoveModel = useCallback((idx: number) => {
@@ -1061,6 +1094,7 @@ export default function App() {
           onRemove={handleRemoveModel}
           onToggleVisible={handleToggleVisible}
           onUpload={handleUpload}
+          onUploadMany={handleUploadMany}
           isUploading={isUploading}
         />
 
@@ -1412,16 +1446,28 @@ export default function App() {
           {!hasVisibleModels && !previewJobId && activePlateModels.length === 0 && projectModels.length === 0 && (
             <div className="absolute inset-0 flex items-center justify-center text-gray-500 z-10 cursor-pointer"
               onClick={() => uploadInputRef.current?.click()}
-              onDrop={(e) => { e.preventDefault(); const file = e.dataTransfer.files[0]; if (file && /\.(stl|step|stp|3mf)$/i.test(file.name)) handleUpload(file); }}
+              onDrop={(e) => {
+                e.preventDefault();
+                const files = Array.from(e.dataTransfer.files).filter(f => /\.(stl|step|stp|3mf)$/i.test(f.name));
+                if (files.length === 1) handleUpload(files[0]);
+                else if (files.length > 1) handleUploadMany(files);
+              }}
               onDragOver={(e) => e.preventDefault()}>
-              <input ref={uploadInputRef} type="file" accept=".stl,.step,.stp,.3mf"
-                onChange={(e) => { const f = e.target.files?.[0]; if (f) handleUpload(f); }} className="hidden" />
+              <input ref={uploadInputRef} type="file" accept=".stl,.step,.stp,.3mf" multiple
+                onChange={(e) => {
+                  const list = e.target.files;
+                  if (!list || list.length === 0) return;
+                  const files = Array.from(list);
+                  if (files.length === 1) handleUpload(files[0]);
+                  else handleUploadMany(files);
+                  e.target.value = '';
+                }} className="hidden" />
               <div className="text-center px-4">
                 <svg className="w-16 h-16 mx-auto mb-4 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
                   <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5" />
                 </svg>
-                <p className="text-lg">Click or drop a file to upload</p>
-                <p className="text-sm mt-1">Supports .stl, .step, .3mf</p>
+                <p className="text-lg">Click or drop files to upload</p>
+                <p className="text-sm mt-1">Supports .stl, .step, .3mf — multiple OK</p>
               </div>
             </div>
           )}

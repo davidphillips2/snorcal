@@ -2,21 +2,24 @@ import { useState, useCallback, useRef } from 'react';
 
 interface ModelUploaderProps {
   onUpload: (file: File) => void;
+  onUploadMany?: (files: File[]) => void;
   isUploading?: boolean;
 }
 
-export function ModelUploader({ onUpload, isUploading }: ModelUploaderProps) {
+const ACCEPT_RE = /\.(stl|step|stp|3mf)$/i;
+
+export function ModelUploader({ onUpload, onUploadMany, isUploading }: ModelUploaderProps) {
   const [isDragging, setIsDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     setIsDragging(false);
-    const file = e.dataTransfer.files[0];
-    if (file && (file.name.endsWith('.stl') || file.name.endsWith('.step') || file.name.endsWith('.stp') || file.name.endsWith('.3mf'))) {
-      onUpload(file);
-    }
-  }, [onUpload]);
+    const files = Array.from(e.dataTransfer.files).filter(f => ACCEPT_RE.test(f.name));
+    if (files.length === 0) return;
+    if (files.length === 1 || !onUploadMany) onUpload(files[0]);
+    else onUploadMany(files);
+  }, [onUpload, onUploadMany]);
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -30,8 +33,12 @@ export function ModelUploader({ onUpload, isUploading }: ModelUploaderProps) {
   const handleClick = () => fileInputRef.current?.click();
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) onUpload(file);
+    const list = e.target.files;
+    if (!list || list.length === 0) return;
+    const files = Array.from(list);
+    if (files.length === 1 || !onUploadMany) onUpload(files[0]);
+    else onUploadMany(files);
+    e.target.value = '';
   };
 
   return (
@@ -50,11 +57,12 @@ export function ModelUploader({ onUpload, isUploading }: ModelUploaderProps) {
         ref={fileInputRef}
         type="file"
         accept=".stl,.step,.stp,.3mf"
+        multiple
         onChange={handleFileSelect}
         className="hidden"
       />
       <p className="text-gray-400 text-xs">
-        {isUploading ? 'Uploading...' : 'Drop STL/3MF or click to browse'}
+        {isUploading ? 'Uploading...' : 'Drop STL/3MF or click to browse — multiple OK'}
       </p>
     </div>
   );

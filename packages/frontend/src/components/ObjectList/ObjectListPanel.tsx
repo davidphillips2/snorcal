@@ -11,6 +11,7 @@ interface ObjectListPanelProps {
   onRemove: (globalIdx: number) => void;
   onToggleVisible: (globalIdx: number) => void;
   onUpload: (file: File) => void;
+  onUploadMany?: (files: File[]) => void;
   isUploading: boolean;
 }
 
@@ -58,13 +59,13 @@ function buildHierarchy(plateModels: ProjectModel[], allModels: ProjectModel[]):
 }
 
 export function ObjectListPanel({
-  models, allModels, activeIndex, onSelect, onRemove, onToggleVisible, onUpload, isUploading,
+  models, allModels, activeIndex, onSelect, onRemove, onToggleVisible, onUpload, onUploadMany, isUploading,
 }: ObjectListPanelProps) {
   const hierarchy = useMemo(() => buildHierarchy(models, allModels), [models, allModels]);
   const fileRef = useRef<HTMLInputElement>(null);
 
   if (models.length === 0) {
-    return <ModelUploader onUpload={onUpload} isUploading={isUploading} />;
+    return <ModelUploader onUpload={onUpload} onUploadMany={onUploadMany} isUploading={isUploading} />;
   }
 
   return (
@@ -85,7 +86,15 @@ export function ObjectListPanel({
           ref={fileRef}
           type="file"
           accept=".stl,.step,.stp,.3mf"
-          onChange={(e) => { const f = e.target.files?.[0]; if (f) onUpload(f); e.target.value = ''; }}
+          multiple
+          onChange={(e) => {
+            const list = e.target.files;
+            if (!list || list.length === 0) return;
+            const files = Array.from(list);
+            if (files.length === 1 || !onUploadMany) onUpload(files[0]);
+            else onUploadMany(files);
+            e.target.value = '';
+          }}
           className="hidden"
         />
       </div>
