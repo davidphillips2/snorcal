@@ -17,6 +17,7 @@ export function AddPrinterModal({ onClose, onAdded }: Props) {
   const [apiKey, setApiKey] = useState('');
   const [cameraStreamUrl, setCameraStreamUrl] = useState('');
   const [cameraSnapshotUrl, setCameraSnapshotUrl] = useState('');
+  const [manualSlots, setManualSlots] = useState<number>(4);      // snapmaker direct-feed spool count
   const [modelChoice, setModelChoice] = useState<string>('');     // '' | '__other__' | profile-name
   const [modelCustom, setModelCustom] = useState<string>('');     // free text when __other__
   const [availableModels, setAvailableModels] = useState<string[]>([]);
@@ -76,6 +77,7 @@ export function AddPrinterModal({ onClose, onAdded }: Props) {
         cameraStreamUrl: cameraStreamUrl.trim() || undefined,
         cameraSnapshotUrl: cameraSnapshotUrl.trim() || undefined,
         model: modelChoice === '__other__' ? modelCustom.trim() : (modelChoice || undefined),
+        manualSlots: protocol === 'snapmaker' ? manualSlots : undefined,
       });
       onAdded();
     } catch (e) {
@@ -183,8 +185,15 @@ export function AddPrinterModal({ onClose, onAdded }: Props) {
               <input value={accessCode} onChange={(e) => setAccessCode(e.target.value)} placeholder="touchscreen code"
                 className="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-white" />
             </Field>
+            <Field label="Direct-feed spool count">
+              <input type="number" min={0} max={8} value={manualSlots}
+                onChange={(e) => setManualSlots(Math.max(0, Math.min(8, Number(e.target.value) || 0)))}
+                className="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-white" />
+            </Field>
             <p className="text-xs text-gray-400">
               On printer touchscreen: Settings → LAN → LAN Access Code. Used to bootstrap mTLS.
+              <br />Spool count = how many direct-feed slots the printer has (U1 = 4). Used at print
+              time to remap gcode T-codes — printer has no readable slot state.
             </p>
           </>
         )}

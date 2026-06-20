@@ -185,6 +185,7 @@ export async function createPrinter(p: {
   serial?: string; accessCode?: string; apiKey?: string;
   cameraStreamUrl?: string; cameraSnapshotUrl?: string;
   model?: string;
+  manualSlots?: number;
 }) {
   return apiFetch('/printers', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },

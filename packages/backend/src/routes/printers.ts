@@ -410,11 +410,12 @@ export async function printerRoutes(app: FastifyInstance, options: { db: Db }) {
       const hasMapping = mapping && mapping.length > 0;
 
       // Decide if we need to rewrite gcode T-codes.
-      // Bambu/Snapmaker: ams_mapping sent in start-print payload — no gcode rewrite.
-      // Moonraker / generic Klipper with manual_slots: rewrite Tx per mapping before upload.
+      // Bambu: ams_mapping sent in start-print MQTT payload — no gcode rewrite.
+      // Snapmaker U1 (no AMS, 4 direct spools), Moonraker, generic Klipper with
+      // manual_slots: rewrite Tx per mapping before upload.
       let uploadPath = gcodePath;
       let tempPath: string | null = null;
-      const supportsNativeMapping = printer.protocol === 'bambu' || printer.protocol === 'snapmaker';
+      const supportsNativeMapping = printer.protocol === 'bambu';
       if (hasMapping && !supportsNativeMapping) {
         const { rewriteGcodeToolMapping, mappingIsNoop } = await import('../services/gcode-rewriter.js');
         if (!mappingIsNoop(mapping!)) {

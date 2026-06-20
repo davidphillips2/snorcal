@@ -29,6 +29,7 @@ export function SetupWizard({ onClose, onAdded }: Props) {
   const [modelChoice, setModelChoice] = useState<string>('');
   const [modelCustom, setModelCustom] = useState<string>('');
   const [availableModels, setAvailableModels] = useState<string[]>([]);
+  const [manualSlots, setManualSlots] = useState<number>(4);      // snapmaker direct-feed spool count
 
   const [scanning, setScanning] = useState(false);
   const [discovered, setDiscovered] = useState<DiscoveredDevice[]>([]);
@@ -102,6 +103,7 @@ export function SetupWizard({ onClose, onAdded }: Props) {
         accessCode: accessCode.trim() || undefined,
         apiKey: apiKey.trim() || undefined,
         model: modelChoice === '__other__' ? modelCustom.trim() : (modelChoice || undefined),
+        manualSlots: protocol === 'snapmaker' ? manualSlots : undefined,
       });
       onAdded();
     } catch (e) {
@@ -265,8 +267,15 @@ export function SetupWizard({ onClose, onAdded }: Props) {
                   <Field label="LAN access code">
                     <input value={accessCode} onChange={e => setAccessCode(e.target.value)} placeholder="touchscreen code" className={inputCls} />
                   </Field>
+                  <Field label="Direct-feed spool count">
+                    <input type="number" min={0} max={8} value={manualSlots}
+                      onChange={e => setManualSlots(Math.max(0, Math.min(8, Number(e.target.value) || 0)))}
+                      className={inputCls} />
+                  </Field>
                   <p className="text-[11px] text-gray-500">
                     On printer touchscreen: Settings → LAN → LAN Access Code. Snorcal bootstraps mTLS to your printer using this code.
+                    <br />Spool count = how many direct-feed slots the printer has (U1 = 4). Used at print
+                    time to remap gcode T-codes — printer has no readable slot state.
                   </p>
                 </>
               )}
