@@ -25,6 +25,7 @@ import { PrinterDashboard } from './components/PrinterMonitor/PrinterDashboard';
 import { InventoryPanel } from './components/Inventory/InventoryPanel';
 import { MultiPrinterFit } from './components/PrinterMonitor/MultiPrinterFit';
 import { LiveMonitorOverlay } from './components/PrinterMonitor/LiveMonitorOverlay';
+import { FilamentRemapModal } from './components/PrinterMonitor/FilamentRemapModal';
 import { SetupWizard } from './components/Onboarding/SetupWizard';
 import type { PrinterStatus } from '@snorcal/shared';
 import { HomeDashboard } from './components/Home/HomeDashboard';
@@ -351,13 +352,13 @@ export default function App() {
   const [wizardDismissed, setWizardDismissed] = useState(() => localStorage.getItem('snorcal_onboarded') === '1');
 
   // Registered printers (for target picker + Send)
-  const [printers, setPrinters] = useState<Array<{ id: string; name: string; model?: string | null; protocol: string; bedVolume?: { x: number; y: number; z: number } | null; cameraSnapshotUrl?: string | null; protocolCamId?: string }>>([]);
+  const [printers, setPrinters] = useState<Array<{ id: string; name: string; model?: string | null; protocol: string; bedVolume?: { x: number; y: number; z: number } | null; cameraSnapshotUrl?: string | null; protocolCamId?: string; manualSlots?: number }>>([]);
   const [printerStatuses, setPrinterStatuses] = useState<Record<string, PrinterStatus>>({});
   const [targetPrinterId, setTargetPrinterId] = useState<string | null>(() => localStorage.getItem('snorcal_target_printer'));
   const [bedVolume, setBedVolume] = useState<{ x: number; y: number; z: number } | null>(null);
   useEffect(() => {
     api.listPrinters().then(list => {
-      setPrinters(list.map(p => ({ id: p.id, name: p.name, model: p.model, protocol: p.protocol, bedVolume: p.bedVolume ?? null, cameraSnapshotUrl: p.cameraSnapshotUrl ?? null })));
+      setPrinters(list.map(p => ({ id: p.id, name: p.name, model: p.model, protocol: p.protocol, bedVolume: p.bedVolume ?? null, cameraSnapshotUrl: p.cameraSnapshotUrl ?? null, manualSlots: p.manualSlots ?? 0 })));
       // Auto-pick first if none selected
       if (list.length > 0) {
         setTargetPrinterId(cur => {
@@ -739,16 +740,35 @@ export default function App() {
     } catch { setIsParsingGcode(false); setPreviewJobId(null); }
   }, []);
 
+  const [remapJobId, setRemapJobId] = useState<string | null>(null);
+
   const handleSendToPrinter = useCallback(async (jobId: string) => {
     if (!targetPrinterId) {
       alert('No target printer selected. Add a printer first.');
       return;
     }
+    const printer = printers.find(p => p.id === targetPrinterId);
+    if (!printer) { alert('Target printer not found'); return; }
+
+    // Check if remap UI is needed: gcode has >1 filament, OR printer has multi-slots (AMS or manual)
+    let filaments: api.JobFilament[] = [];
+    try { filaments = await api.getJobFilaments(jobId); } catch { /* ignore */ }
+    const usedCount = filaments.filter(f => f.used).length;
+    const hasAms = printer.protocol === 'bambu' && printerStatuses[targetPrinterId]?.ams && printerStatuses[targetPrinterId]!.ams!.length > 0;
+    const hasManualSlots = (printer.manualSlots ?? 0) > 0;
+    const needsRemap = usedCount > 1 || ((hasAms || hasManualSlots) && filaments.length > 0);
+
+    if (needsRemap) {
+      setRemapJobId(jobId);
+      return;
+    }
+
+    // Direct send — no remap
     try {
       const result = await api.sendToRegisteredPrinter(targetPrinterId, jobId, true);
       alert(`Sent to printer. Path: ${result.printerPath}`);
     } catch (err) { alert(`Send failed: ${err instanceof Error ? err.message : String(err)}`); }
-  }, [targetPrinterId]);
+  }, [targetPrinterId, printers, printerStatuses]);
 
   const handleExitPreview = useCallback(() => { setPreviewJobId(null); setGcodeText(null); setCurrentPreviewLayer(0); setLayerCount(0); }, []);
 
@@ -1537,6 +1557,24 @@ export default function App() {
 
       {showPrinters && <PrinterDashboard onClose={() => setShowPrinters(false)} />}
       {showInventory && <InventoryPanel onClose={() => setShowInventory(false)} />}
+      {remapJobId && targetPrinterId && (() => {
+        const p = printers.find(x => x.id === targetPrinterId);
+        if (!p) return null;
+        return (
+          <FilamentRemapModal
+            jobId={remapJobId}
+            printerId={targetPrinterId}
+            printerProtocol={p.protocol as 'moonraker' | 'bambu'}
+            printerManualSlots={p.manualSlots ?? 0}
+            printerStatus={printerStatuses[targetPrinterId]}
+            onClose={() => setRemapJobId(null)}
+            onSent={(printerPath) => {
+              setRemapJobId(null);
+              alert(`Sent to printer. Path: ${printerPath}`);
+            }}
+          />
+        );
+      })()}
       {showWizard && (
         <SetupWizard
           onClose={() => {
@@ -1549,7 +1587,7 @@ export default function App() {
             localStorage.setItem('snorcal_onboarded', '1');
             setWizardDismissed(true);
             api.listPrinters().then(list => {
-              setPrinters(list.map(p => ({ id: p.id, name: p.name, model: p.model, protocol: p.protocol, bedVolume: p.bedVolume ?? null, cameraSnapshotUrl: p.cameraSnapshotUrl ?? null })));
+              setPrinters(list.map(p => ({ id: p.id, name: p.name, model: p.model, protocol: p.protocol, bedVolume: p.bedVolume ?? null, cameraSnapshotUrl: p.cameraSnapshotUrl ?? null, manualSlots: p.manualSlots ?? 0 })));
             }).catch(() => {});
           }}
         />

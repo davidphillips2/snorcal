@@ -274,9 +274,13 @@ export class BambuAdapter implements PrinterAdapter {
       case 'start': {
         // args.file = printer-side 3mf filename (already FTP'd)
         // args.plate = gcode path inside 3mf e.g. "Metadata/plate_1.gcode"
+        // args.amsMapping = optional number[] (gcode filament idx → 1-indexed AMS tray, 0=skip)
+        //                   When provided, switches on use_ams so printer pulls from physical trays.
         const file = String(cmd.args?.file ?? '');
         const platePath = String(cmd.args?.plate ?? 'Metadata/plate_1.gcode');
         if (!file) throw new Error('file required for start');
+        const amsMapping = Array.isArray(cmd.args?.amsMapping) ? (cmd.args!.amsMapping as number[]) : null;
+        const useAms = amsMapping !== null && amsMapping.some(v => v > 0);
         this.publish({
           print: {
             sequence_id: '0',
@@ -291,7 +295,8 @@ export class BambuAdapter implements PrinterAdapter {
             flow_cali: false,
             vibration_cali: true,
             layer_inspect: false,
-            use_ams: false,
+            use_ams: useAms,
+            ...(useAms ? { ams_mapping: amsMapping } : {}),
             cfg: '0',
           },
         });

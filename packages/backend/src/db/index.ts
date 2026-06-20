@@ -140,11 +140,12 @@ export class Db {
     camera_stream_url?: string | null;
     camera_snapshot_url?: string | null;
     model?: string | null;
+    manual_slots?: number;
   }) {
     this.db.prepare(`
-      INSERT INTO printers (id, name, protocol, ip, port, serial, access_code, api_key, camera_ip, camera_stream_url, camera_snapshot_url, model)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(p.id, p.name, p.protocol, p.ip, p.port, p.serial ?? null, p.access_code ?? null, p.api_key ?? null, p.camera_ip ?? null, p.camera_stream_url ?? null, p.camera_snapshot_url ?? null, p.model ?? null);
+      INSERT INTO printers (id, name, protocol, ip, port, serial, access_code, api_key, camera_ip, camera_stream_url, camera_snapshot_url, model, manual_slots)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(p.id, p.name, p.protocol, p.ip, p.port, p.serial ?? null, p.access_code ?? null, p.api_key ?? null, p.camera_ip ?? null, p.camera_stream_url ?? null, p.camera_snapshot_url ?? null, p.model ?? null, p.manual_slots ?? 0);
   }
 
   updatePrinterModel(id: string, model: string | null) {
@@ -327,7 +328,7 @@ export interface DbPlate {
 export interface DbPrinter {
   id: string;
   name: string;
-  protocol: string;       // 'moonraker' | 'bambu'
+  protocol: string;       // 'moonraker' | 'bambu' | 'snapmaker'
   ip: string;
   port: number;
   serial: string | null;
@@ -337,6 +338,7 @@ export interface DbPrinter {
   camera_stream_url: string | null;
   camera_snapshot_url: string | null;
   model: string | null;
+  manual_slots: number;   // multi-material slot count for printers with no live introspection (e.g. Creality CFS)
   last_status: string | null;
   last_seen: string | null;
   created_at: string;

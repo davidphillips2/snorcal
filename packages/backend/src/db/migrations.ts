@@ -172,6 +172,16 @@ export function runSchemaMigrations(db: Database.Database) {
     // Migration not needed or already applied
   }
 
+  // Add manual_slots column (multi-material slot count for printers we can't introspect, e.g. Creality CFS)
+  try {
+    const cols = db.prepare("PRAGMA table_info(printers)").all() as { name: string }[];
+    if (!cols.some(c => c.name === 'manual_slots')) {
+      db.exec("ALTER TABLE printers ADD COLUMN manual_slots INTEGER DEFAULT 0");
+    }
+  } catch {
+    // Migration not needed or already applied
+  }
+
   // Spools inventory (filament tracking)
   try {
     db.exec(`

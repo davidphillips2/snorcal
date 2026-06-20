@@ -163,6 +163,7 @@ export async function listPrinters() {
     createdAt: string; status?: any; model?: string | null;
     bedVolume?: { x: number; y: number; z: number } | null;
     cameraStreamUrl?: string | null; cameraSnapshotUrl?: string | null;
+    manualSlots?: number;
   }>>;
 }
 
@@ -206,11 +207,26 @@ export async function sendPrinterCommand(printerId: string, command: string, arg
   });
 }
 
-export async function sendToRegisteredPrinter(printerId: string, jobId: string, startPrint = true) {
+export async function sendToRegisteredPrinter(printerId: string, jobId: string, startPrint = true, filamentMapping?: number[]) {
   return apiFetch(`/printers/${printerId}/send`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ jobId, startPrint }),
+    body: JSON.stringify({ jobId, startPrint, filamentMapping }),
   }) as Promise<{ printerPath: string }>;
+}
+
+export interface JobFilament {
+  index: number;
+  color: string | null;
+  type: string | null;
+  weightG: number | null;
+  used: boolean;
+}
+
+export async function getJobFilaments(jobId: string): Promise<JobFilament[]> {
+  try {
+    const data = await apiFetch(`/jobs/${jobId}/filaments`) as JobFilament[];
+    return Array.isArray(data) ? data : [];
+  } catch { return []; }
 }
 
 export function cameraUrl(printerId: string): string {

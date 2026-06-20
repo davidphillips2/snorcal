@@ -21,6 +21,7 @@ function toPrinterRecord(row: any) {
     cameraStreamUrl: row.camera_stream_url,
     cameraSnapshotUrl: row.camera_snapshot_url,
     model: row.model,
+    manualSlots: row.manual_slots ?? 0,
     bedVolume: resolveBedVolume(dbForResolver, row.model),
     lastStatus: row.last_status,
     lastSeen: row.last_seen,
@@ -202,6 +203,7 @@ export async function printerRoutes(app: FastifyInstance, options: { db: Db }) {
       cameraStreamUrl?: string;
       cameraSnapshotUrl?: string;
       model?: string;
+      manualSlots?: number;
     };
     if (!body.name || !body.protocol || !body.ip) {
       return reply.status(400).send({ ok: false, error: 'name, protocol, ip required' });
@@ -217,6 +219,7 @@ export async function printerRoutes(app: FastifyInstance, options: { db: Db }) {
       camera_stream_url: body.cameraStreamUrl || null,
       camera_snapshot_url: body.cameraSnapshotUrl || null,
       model: body.model || null,
+      manual_slots: body.manualSlots ?? 0,
     });
     const row = db.getPrinter(id)!;
     await printerManager.startAdapter(row).catch(err => {
@@ -380,8 +383,14 @@ export async function printerRoutes(app: FastifyInstance, options: { db: Db }) {
   });
 
   // POST /api/printers/:id/send — upload gcode + start print (unified across protocols)
+  // Body:
+  //   jobId: string
+  //   startPrint?: boolean (default true)
+  //   filamentMapping?: number[]  // gcode filament idx → physical slot idx
+  //                               // Bambu: 1-indexed AMS tray (0=skip). use_ams auto-enabled when any >0.
+  //                               // Moonraker/manualSlots: T-code rewrite (Tx → Ty) before upload
   app.post<{ Params: { id: string } }>('/api/printers/:id/send', async (req, reply) => {
-    const body = req.body as { jobId: string; startPrint?: boolean };
+    const body = req.body as { jobId: string; startPrint?: boolean; filamentMapping?: number[] };
     if (!body.jobId) return reply.status(400).send({ ok: false, error: 'jobId required' });
     const job = db.getJob(body.jobId);
     if (!job) return reply.status(404).send({ ok: false, error: 'Job not found' });
@@ -390,12 +399,43 @@ export async function printerRoutes(app: FastifyInstance, options: { db: Db }) {
     try {
       const gcodePath = findGcode(job.output_dir!);
       if (!gcodePath) return reply.status(400).send({ ok: false, error: 'No gcode file' });
-      const filename = path.basename(gcodePath);
-      const printerPath = await printerManager.uploadFile(req.params.id, gcodePath, filename);
-      if (body.startPrint !== false) {
-        await printerManager.startPrint(req.params.id, printerPath);
+
+      const printer = db.getPrinter(req.params.id);
+      if (!printer) return reply.status(404).send({ ok: false, error: 'Printer not found' });
+
+      const mapping = Array.isArray(body.filamentMapping) ? body.filamentMapping : null;
+      const hasMapping = mapping && mapping.length > 0;
+
+      // Decide if we need to rewrite gcode T-codes.
+      // Bambu: ams_mapping sent in MQTT start payload — no gcode rewrite.
+      // Moonraker / generic Klipper with manual_slots: rewrite Tx per mapping before upload.
+      let uploadPath = gcodePath;
+      let tempPath: string | null = null;
+      if (hasMapping && printer.protocol !== 'bambu') {
+        const { rewriteGcodeToolMapping, mappingIsNoop } = await import('../services/gcode-rewriter.js');
+        if (!mappingIsNoop(mapping!)) {
+          tempPath = await rewriteGcodeToolMapping(gcodePath, mapping!);
+          uploadPath = tempPath;
+        }
       }
-      return reply.send({ ok: true, data: { printerPath } });
+
+      try {
+        const filename = path.basename(uploadPath);
+        const printerPath = await printerManager.uploadFile(req.params.id, uploadPath, filename);
+        if (body.startPrint !== false) {
+          if (printer.protocol === 'bambu' && hasMapping) {
+            // Pass ams_mapping through to MQTT project_file command
+            await printerManager.startPrint(req.params.id, printerPath, { amsMapping: mapping });
+          } else {
+            await printerManager.startPrint(req.params.id, printerPath);
+          }
+        }
+        return reply.send({ ok: true, data: { printerPath } });
+      } finally {
+        if (tempPath) {
+          try { fs.unlinkSync(tempPath); } catch { /* ignore */ }
+        }
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       return reply.send({ ok: false, error: message });

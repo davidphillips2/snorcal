@@ -294,6 +294,19 @@ export async function sliceRoutes(app: FastifyInstance, options: { db: Db }) {
     };
   });
 
+  // GET /api/jobs/:id/filaments — Parse gcode for required filaments
+  // Returns FilamentInfo[] for the FilamentRemapModal UI.
+  app.get<{ Params: { id: string } }>('/api/jobs/:id/filaments', async (req, reply) => {
+    const job = db.getJob(req.params.id);
+    if (!job) return reply.status(404).send({ ok: false, error: 'Job not found' });
+    if (!job.output_dir) return reply.status(400).send({ ok: false, error: 'No output dir' });
+    const gcodePath = findJobGcode(job.output_dir);
+    if (!gcodePath) return reply.status(400).send({ ok: false, error: 'No gcode file' });
+    const { parseGcodeFilaments } = await import('../services/gcode-filaments.js');
+    const filaments = parseGcodeFilaments(gcodePath);
+    return { ok: true, data: filaments };
+  });
+
   // POST /api/jobs/:id/cancel — Cancel a job
   app.post<{ Params: { id: string } }>('/api/jobs/:id/cancel', async (req, reply) => {
     const job = db.getJob(req.params.id);
@@ -595,4 +608,18 @@ function parseGcodeEstimates(gcodePath: string, modelName: string): {
   }
 
   return { modelName, estimatedTime, filamentUsedG, filamentCost };
+}
+
+function findJobGcode(dir: string): string | null {
+  if (!fs.existsSync(dir)) return null;
+  for (const f of fs.readdirSync(dir)) {
+    const full = path.join(dir, f);
+    const st = fs.statSync(full);
+    if (st.isFile() && f.endsWith('.gcode')) return full;
+    if (st.isDirectory()) {
+      const sub = findJobGcode(full);
+      if (sub) return sub;
+    }
+  }
+  return null;
 }
