@@ -8,6 +8,7 @@ import { TransformPanel } from './components/ModelEdit/TransformPanel';
 import { MeasureTool, type Measurement } from './components/ModelEdit/MeasureTool';
 import { CutTool } from './components/ModelEdit/CutTool';
 import { AddVolumeModal } from './components/ModelEdit/AddVolumeModal';
+import { ObjectListPanel } from './components/ObjectList/ObjectListPanel';
 import { AxisIndicator } from './components/Viewer/AxisIndicator';
 import { Bed } from './components/Viewer/Bed';
 import { ModelMover } from './components/Viewer/ModelMover';
@@ -122,7 +123,6 @@ export default function App() {
   const [sceneRefs, setSceneRefs] = useState<SceneRefs | null>(null);
   const meshRefs = useRef<(THREE.Mesh | null)[]>([]);
   const uploadInputRef = useRef<HTMLInputElement>(null);
-  const sidebarUploadRef = useRef<HTMLInputElement>(null);
   const [paintMode, setPaintMode] = useState<PaintMode>('orbit');
   const [measurement, setMeasurement] = useState<Measurement | null>(null);
   const [addVolumeKind, setAddVolumeKind] = useState<'negative' | 'modifier' | null>(null);
@@ -364,7 +364,15 @@ export default function App() {
 
   // Remove model from project
   const handleRemoveModel = useCallback((idx: number) => {
-    setProjectModels(prev => prev.filter((_, i) => i !== idx));
+    setProjectModels(prev => {
+      const target = prev[idx];
+      if (!target) return prev;
+      // Cascade-delete children linked to this parent (only if removing a model parent)
+      const childIds = target.kind === 'model'
+        ? new Set(prev.filter(m => m.linkedTo?.includes(target.modelId)).map(m => m.modelId))
+        : new Set<string>();
+      return prev.filter((p, i) => i !== idx && !childIds.has(p.modelId));
+    });
     meshRefs.current = meshRefs.current.filter((_, i) => i !== idx);
     setActiveModelIndex(prev => {
       if (prev === null) return null;
@@ -591,6 +599,10 @@ export default function App() {
     setProjectModels(prev => prev.map((p, i) => i === activeModelIndex ? { ...p, ...patch } : p));
   }, [activeModelIndex]);
 
+  const handleToggleVisible = useCallback((idx: number) => {
+    setProjectModels(prev => prev.map((p, i) => i === idx ? { ...p, visible: !p.visible } : p));
+  }, []);
+
   const handleDuplicate = useCallback(() => {
     if (!activeModel) return;
     const dup: ProjectModel = {
@@ -811,50 +823,17 @@ export default function App() {
 
       {/* Scrollable */}
       <div className="flex-1 overflow-y-auto p-3 space-y-3">
-        {/* Model list */}
-        <div className="space-y-1">
-          <div className="flex items-center justify-between">
-            <label className="text-xs font-medium text-gray-400 uppercase tracking-wider">Models</label>
-            <button
-              onClick={() => sidebarUploadRef.current?.click()}
-              disabled={isUploading}
-              className="px-2 py-0.5 rounded text-xs bg-gray-700 text-gray-300 hover:bg-gray-600 transition"
-              title="Upload model"
-            >
-              + Add
-            </button>
-            <input ref={sidebarUploadRef} type="file" accept=".stl,.step,.stp,.3mf"
-              onChange={(e) => { const f = e.target.files?.[0]; if (f) handleUpload(f); e.target.value = ''; }}
-              className="hidden" />
-          </div>
-          {activePlateModels.length === 0 ? (
-            <ModelUploader onUpload={handleUpload} isUploading={isUploading} />
-          ) : (
-            <div className="space-y-1 max-h-32 overflow-y-auto">
-              {activePlateModels.map((pm) => {
-                const idx = projectModels.indexOf(pm);
-                return (
-                <div key={pm.modelId}
-                  onClick={() => setActiveModelIndex(idx)}
-                  className={`flex items-center gap-2 px-2 py-1.5 rounded-lg cursor-pointer transition text-sm ${
-                    activeModelIndex === idx
-                      ? 'bg-blue-600/20 text-blue-300 border border-blue-600/30'
-                      : 'bg-gray-700/30 text-gray-300 hover:bg-gray-700/60 border border-transparent'
-                  }`}>
-                  <span className="truncate flex-1 text-xs">{pm.name}</span>
-                  <button
-                    onClick={(e) => { e.stopPropagation(); handleRemoveModel(idx); }}
-                    className="shrink-0 w-5 h-5 flex items-center justify-center rounded text-gray-500 hover:text-red-400 hover:bg-red-600/20 text-xs"
-                    title="Remove"
-                  >
-                    &times;
-                  </button>
-                </div>
-              );
-            })}
-            </div>
-          )}
-        </div>
+        {/* Object list */}
+        <ObjectListPanel
+          models={activePlateModels}
+          allModels={projectModels}
+          activeIndex={activeModelIndex}
+          onSelect={setActiveModelIndex}
+          onRemove={handleRemoveModel}
+          onToggleVisible={handleToggleVisible}
+          onUpload={handleUpload}
+          isUploading={isUploading}
+        />
 
         {/* Target printer picker */}
         <div className="space-y-1">
