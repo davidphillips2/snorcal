@@ -5,17 +5,16 @@ import { STLViewer, extractFaceColors, autoOrient, type Rotation3D } from './com
 import { FacePainter, type PaintMode } from './components/Viewer/FacePainter';
 import { ViewerToolbar } from './components/Viewer/ViewerToolbar';
 import { AxisIndicator } from './components/Viewer/AxisIndicator';
+import { Bed } from './components/Viewer/Bed';
 import { ModelMover } from './components/Viewer/ModelMover';
 import { ModelUploader } from './components/ModelUploader';
 import { JobList } from './components/Jobs/JobList';
 import { SettingsPanel } from './components/Settings/SettingsPanel';
-import { PrinterSelect } from './components/PrinterSelect';
 import { GcodePreviewCanvas } from './components/Viewer/GcodePreviewCanvas';
 import { GcodeLayerSlider } from './components/Viewer/GcodeLayerSlider';
 import { PrinterDashboard } from './components/PrinterMonitor/PrinterDashboard';
 import { HomeDashboard } from './components/Home/HomeDashboard';
 import { PrinterDetail } from './components/PrinterMonitor/PrinterDetail';
-import { PRINTERS, getSavedPrinter, savePrinter } from './config/printers';
 import { useSSE } from './hooks/useSSE';
 import * as api from './api/client';
 
@@ -109,13 +108,12 @@ export default function App() {
   // Models on the active plate
   const activePlateModels = projectModels.filter(m => m.plateId === activePlateId);
 
-  // Printer
-  const [printerId, setPrinterId] = useState<string | null>(() => getSavedPrinter()?.id ?? null);
-  const printer = printerId ? PRINTERS.find(p => p.id === printerId) : null;
+  // Printer target (registered printers fetched below)
+  // Legacy hardcoded PRINTERS list removed in favor of DB-registered printers.
 
   // Slicer config
   const [jobs, setJobs] = useState<Job[]>([]);
-  const [engine, setEngineRaw] = useState(() => persisted.current?.engine || localStorage.getItem('slorca_engine') || printer?.engine || 'orcaslicer');
+  const [engine, setEngineRaw] = useState(() => persisted.current?.engine || localStorage.getItem('slorca_engine') || 'orcaslicer');
   const setEngine = useCallback((e: string) => {
     localStorage.setItem('slorca_engine', e);
     setEngineRaw(e);
@@ -141,6 +139,7 @@ export default function App() {
   // Registered printers (for target picker + Send)
   const [printers, setPrinters] = useState<Array<{ id: string; name: string; model?: string | null; protocol: string }>>([]);
   const [targetPrinterId, setTargetPrinterId] = useState<string | null>(() => localStorage.getItem('slorca_target_printer'));
+  const [bedVolume, setBedVolume] = useState<{ x: number; y: number; z: number } | null>(null);
   useEffect(() => {
     api.listPrinters().then(list => {
       setPrinters(list.map(p => ({ id: p.id, name: p.name, model: p.model, protocol: p.protocol })));
@@ -154,6 +153,15 @@ export default function App() {
       }
     }).catch(() => {});
   }, []);
+
+  // Sync bed volume from target printer's record
+  useEffect(() => {
+    if (!targetPrinterId) { setBedVolume(null); return; }
+    api.listPrinters().then(list => {
+      const p = list.find(x => x.id === targetPrinterId);
+      setBedVolume(p?.bedVolume ?? null);
+    }).catch(() => {});
+  }, [targetPrinterId]);
 
   // Gcode preview
   const [previewJobId, setPreviewJobId] = useState<string | null>(null);
@@ -206,21 +214,12 @@ export default function App() {
     }
   }, [projectModels.length]); // re-run when models added
 
-  // Load default settings when engine or printer changes
+  // Load default settings when engine changes
   useEffect(() => {
-    if (printer) {
-      setSelectedProfiles(printer.defaultProfiles);
-      const presets: Record<string, string> = {};
-      for (const [key, val] of Object.entries(printer.settings)) {
-        if (typeof val === 'string') presets[key] = val;
-      }
-      setSettings(presets);
-    } else {
-      api.getDefaultSettings(engine).then((data) => {
-        if (data?.process) setSettings(data.process);
-      }).catch(console.error);
-    }
-  }, [engine, printer]);
+    api.getDefaultSettings(engine).then((data) => {
+      if (data?.process) setSettings(data.process);
+    }).catch(console.error);
+  }, [engine]);
 
   // Persist state on changes (debounced)
   useEffect(() => {
@@ -243,13 +242,6 @@ export default function App() {
     }, 500);
     return () => clearTimeout(timer);
   }, [projectModels, plates, activePlateId, activeModelIndex, engine, settings, selectedProfiles, filamentSlots, multiMaterial, printerIp]);
-
-  const handleSelectPrinter = useCallback((id: string) => {
-    savePrinter(id);
-    setPrinterId(id);
-    const p = PRINTERS.find(pr => pr.id === id);
-    if (p) setEngine(p.engine);
-  }, []);
 
   // SSE updates
   useEffect(() => {
@@ -341,7 +333,6 @@ export default function App() {
   const sliceModels = useCallback(async (models: ProjectModel[]) => {
     if (models.length === 0) return;
     const processSettings: Record<string, string> = {};
-    if (printer) { for (const [key, val] of Object.entries(printer.settings)) { if (typeof val === 'string') processSettings[key] = val; } }
     Object.assign(processSettings, settings);
     return api.submitSliceJob({
       models: models.map(pm => ({ modelId: pm.modelId, rotation: pm.rotation, positionOffset: pm.positionOffset })),
@@ -350,9 +341,9 @@ export default function App() {
       profiles: selectedProfiles,
       multiMaterial: multiMaterial.enabled ? multiMaterial : undefined,
       filamentSlots: filamentSlots.length > 1 ? filamentSlots : undefined,
-      buildVolume: printer?.buildVolume,
+      buildVolume: bedVolume ?? undefined,
     });
-  }, [engine, settings, printer, selectedProfiles, multiMaterial, filamentSlots]);
+  }, [engine, settings, selectedProfiles, multiMaterial, filamentSlots, bedVolume]);
 
   const handleSlicePlate = useCallback(async () => {
     const visible = activePlateModels.filter(m => m.visible);
@@ -586,19 +577,12 @@ export default function App() {
     };
   }, [sceneRefs, paintMode, projectModels, activeModelIndex]);
 
-  if (!printerId) return <PrinterSelect onSelect={handleSelectPrinter} />;
-
   const sidebarContent = (
     <div className="flex flex-col h-full">
       {/* Header */}
       <div className="px-4 py-3 border-b border-gray-700 shrink-0">
         <div className="flex items-center justify-between">
           <h1 className="text-base font-bold tracking-tight">Slorca</h1>
-          {printer && (
-            <button onClick={() => setPrinterId(null)} className="text-xs text-gray-400 hover:text-white bg-gray-700 px-2 py-0.5 rounded transition" title="Change printer">
-              {printer.name}
-            </button>
-          )}
         </div>
       </div>
 
@@ -818,7 +802,6 @@ export default function App() {
             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" /></svg>
           </button>
           <span className="text-sm font-bold">Slorca</span>
-          {printer && <span className="text-xs text-gray-400 ml-auto">{printer.name}</span>}
         </div>
 
         {/* 3D Viewer */}
@@ -840,6 +823,11 @@ export default function App() {
               />
             );
           })}
+
+          {/* Bed grid — sized to target printer's bed volume (default 200³ if unknown) */}
+          {sceneRefs && (
+            <Bed sceneRefs={sceneRefs} size={bedVolume ?? { x: 200, y: 200, z: 200 }} />
+          )}
 
           {/* Active model interaction */}
           {sceneRefs && hasVisibleModels && !previewJobId && (
@@ -878,7 +866,7 @@ export default function App() {
           {previewJobId && gcodeText && (
             <>
               <GcodePreviewCanvas gcode={gcodeText} layer={currentPreviewLayer} singleLayerMode={!showAllLayers}
-                extrusionColors={filamentSlots.map(s => s.color)} buildVolume={printer?.buildVolume} onLayerCountReady={handleLayerCountReady} />
+                extrusionColors={filamentSlots.map(s => s.color)} buildVolume={bedVolume ?? undefined} onLayerCountReady={handleLayerCountReady} />
               {layerCount > 0 && (
                 <GcodeLayerSlider currentLayer={currentPreviewLayer} totalLayers={layerCount} showAllLayers={showAllLayers}
                   onLayerChange={setCurrentPreviewLayer} onShowAllLayersChange={setShowAllLayers} onExit={handleExitPreview} />

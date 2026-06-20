@@ -52,7 +52,7 @@ export function Scene({ onReady }: SceneProps) {
     backLight.position.set(-50, -50, -50);
     scene.add(backLight);
 
-    scene.add(new THREE.GridHelper(200, 20, 0x444444, 0x333333));
+    // Bed grid now rendered by <Bed> component, sized to target printer.
 
     // Store camera on renderer for FacePainter
     (renderer as any).__slorca_camera = camera;

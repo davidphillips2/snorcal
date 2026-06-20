@@ -161,6 +161,7 @@ export async function listPrinters() {
     ip: string; port: number; serial?: string | null; accessCode?: string | null;
     apiKey?: string | null; lastStatus?: string | null; lastSeen?: string | null;
     createdAt: string; status?: any; model?: string | null;
+    bedVolume?: { x: number; y: number; z: number } | null;
     cameraStreamUrl?: string | null; cameraSnapshotUrl?: string | null;
   }>>;
 }

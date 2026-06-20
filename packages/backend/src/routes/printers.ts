@@ -21,10 +21,55 @@ function toPrinterRecord(row: any) {
     cameraStreamUrl: row.camera_stream_url,
     cameraSnapshotUrl: row.camera_snapshot_url,
     model: row.model,
+    bedVolume: resolveBedVolume(dbForResolver, row.model),
     lastStatus: row.last_status,
     lastSeen: row.last_seen,
     createdAt: row.created_at,
   };
+}
+
+// Resolved lazily — set by printerRoutes() init. Avoids passing db through every call.
+let dbForResolver: import('../db/index.js').Db | null = null;
+
+/**
+ * Resolve printer bed volume (mm) from its `model` family by looking up any
+ * matching machine profile across engines. Returns null if not resolvable.
+ * `printable_area` is a 4-point "XxY" polygon; we take max X/Y as bed size.
+ */
+function resolveBedVolume(db: import('../db/index.js').Db | null, model: string | null | undefined): { x: number; y: number; z: number } | null {
+  if (!db || !model) return null;
+  const engines = ['orcaslicer', 'bambustudio', 'snapmaker_orca'];
+  for (const engine of engines) {
+    let rows: { name: string }[];
+    try {
+      rows = db.listProfiles(engine, 'machine') as any;
+    } catch { continue; }
+    // First profile whose name is the model exactly OR starts with "model " / "model("
+    const match = rows.find(r =>
+      r.name === model || r.name.startsWith(model + ' ') || r.name.startsWith(model + '(')
+    );
+    if (!match) continue;
+    const full = db.getProfile(engine, 'machine', match.name) as { settings: string } | undefined;
+    if (!full?.settings) continue;
+    try {
+      const s = JSON.parse(full.settings) as Record<string, unknown>;
+      const area = s.printable_area;
+      const height = s.printable_height;
+      let maxX = 0, maxY = 0;
+      if (Array.isArray(area)) {
+        for (const pt of area as string[]) {
+          const m = /^(\d+(?:\.\d+)?)x(\d+(?:\.\d+)?)$/i.exec(String(pt));
+          if (m) {
+            maxX = Math.max(maxX, parseFloat(m[1]));
+            maxY = Math.max(maxY, parseFloat(m[2]));
+          }
+        }
+      }
+      const z = height ? parseFloat(String(height)) : 0;
+      if (maxX > 0 && maxY > 0) return { x: maxX, y: maxY, z: z || 200 };
+    } catch { /* ignore malformed */ }
+  }
+  return null;
 }
 
 interface PrinterTestBody {
@@ -99,6 +144,7 @@ async function testPrinterConnection(ip: string, port?: number): Promise<{ ok: b
 
 export async function printerRoutes(app: FastifyInstance, options: { db: Db }) {
   const { db } = options;
+  dbForResolver = db;
 
   // GET /api/printers/discover — SSDP scan for devices on local network
   app.get('/api/printers/discover', async (req: FastifyRequest, reply: FastifyReply) => {
