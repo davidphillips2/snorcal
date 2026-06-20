@@ -28,6 +28,7 @@ export interface SettingGroup {
 // Default values extracted from default-project-settings.json (first element for arrays)
 export const DEFAULT_VALUES: Record<string, string> = {
   layer_height: '0.2',
+  adaptive_layer_height: '0',
   initial_layer_height: '0.25',
   initial_layer_print_height: '0.2',
   wall_loops: '2',
@@ -273,6 +274,7 @@ export const SETTING_GROUPS: SettingGroup[] = [
     defaultCollapsed: false,
     settings: [
       { key: 'layer_height', label: 'Layer Height (mm)', type: 'number', step: '0.05' },
+      { key: 'adaptive_layer_height', label: 'Adaptive Layer Height', type: 'toggle' },
       { key: 'initial_layer_height', label: 'First Layer Height (mm)', type: 'number', step: '0.05' },
       { key: 'initial_layer_print_height', label: 'First Layer Print Height (mm)', type: 'number', step: '0.05' },
       { key: 'wall_loops', label: 'Wall Loops', type: 'number', step: '1' },

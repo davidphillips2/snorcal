@@ -369,6 +369,7 @@
     "lateral_lattice_angle_2": "45",
     "layer_change_gcode": "",
     "layer_height": "0.2",
+    "adaptive_layer_height": "0",
     "line_width": "0",
     "long_retractions_when_cut": [
         "0"
