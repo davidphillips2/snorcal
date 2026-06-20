@@ -18,6 +18,7 @@ import { JobList } from './components/Jobs/JobList';
 import { SettingsPanel } from './components/Settings/SettingsPanel';
 import { GcodePreviewCanvas } from './components/Viewer/GcodePreviewCanvas';
 import { GcodeLayerSlider } from './components/Viewer/GcodeLayerSlider';
+import { GcodeTimeBreakdown } from './components/Viewer/GcodeTimeBreakdown';
 import { PrinterDashboard } from './components/PrinterMonitor/PrinterDashboard';
 import { HomeDashboard } from './components/Home/HomeDashboard';
 import { PrinterDetail } from './components/PrinterMonitor/PrinterDetail';
@@ -1281,6 +1282,7 @@ export default function App() {
               <GcodePreviewCanvas gcode={gcodeText} layer={currentPreviewLayer} singleLayerMode={!showAllLayers}
                 extrusionColors={filamentSlots.map(s => s.color)} buildVolume={bedVolume ?? undefined}
                 colorMode={gcodeColorMode} onLayerCountReady={handleLayerCountReady} />
+              <GcodeTimeBreakdown gcode={gcodeText} />
               {layerCount > 0 && (
                 <GcodeLayerSlider currentLayer={currentPreviewLayer} totalLayers={layerCount} showAllLayers={showAllLayers}
                   onLayerChange={setCurrentPreviewLayer} onShowAllLayersChange={setShowAllLayers} onExit={handleExitPreview}
