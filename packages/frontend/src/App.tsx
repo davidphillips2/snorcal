@@ -821,6 +821,14 @@ export default function App() {
 
   // Support painter — click mesh → upload pillar STL linked to that parent
   const [supportDiameter, setSupportDiameter] = useState(5);
+  // Paint-by-layer: constrain paint/fill to Z range (null = no constraint)
+  const [paintZRange, setPaintZRange] = useState<{ min: number; max: number } | null>(null);
+  const paintZBounds = useMemo(() => {
+    if (!activeMesh) return null;
+    activeMesh.updateMatrixWorld(true);
+    const box = new THREE.Box3().setFromObject(activeMesh);
+    return { min: box.min.y, max: box.max.y };
+  }, [activeMesh, meshRevision]);
   const handleAddSupport = useCallback(async (file: File, parentModelId: string, positionOffset: { x: number; y: number; z: number }) => {
     setIsUploading(true);
     try {
@@ -1183,6 +1191,7 @@ export default function App() {
                 renderer={sceneRefs.renderer}
                 activeColor={activeColor}
                 paintMode={paintMode}
+                zRange={paintZRange}
                 onLayOnFace={handleLayOnFace}
               />
               <MeasureTool
@@ -1223,6 +1232,9 @@ export default function App() {
                 filamentColors={filamentSlots.map(s => s.color)}
                 supportDiameter={supportDiameter}
                 onSupportDiameterChange={setSupportDiameter}
+                paintZRange={paintZRange}
+                paintZBounds={paintZBounds}
+                onPaintZRangeChange={setPaintZRange}
               />
               {paintMode === 'transform' && (
                 <TransformPanel

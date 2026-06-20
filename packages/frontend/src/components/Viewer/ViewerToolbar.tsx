@@ -18,6 +18,9 @@ interface ViewerToolbarProps {
   filamentColors?: string[];
   supportDiameter: number;
   onSupportDiameterChange: (d: number) => void;
+  paintZRange: { min: number; max: number } | null;
+  paintZBounds: { min: number; max: number } | null;
+  onPaintZRangeChange: (r: { min: number; max: number } | null) => void;
 }
 
 const PALETTE = [
@@ -153,6 +156,7 @@ export function ViewerToolbar({
   paintMode, onModeChange, activeColor, onColorChange, onUndo, onRedo, canUndo, canRedo, onSave,
   rotation, onRotationChange, onAutoOrient, filamentColors,
   supportDiameter, onSupportDiameterChange,
+  paintZRange, paintZBounds, onPaintZRangeChange,
 }: ViewerToolbarProps) {
   const palette = filamentColors && filamentColors.length > 0 ? filamentColors : PALETTE;
   const isPainting = paintMode === 'paint' || paintMode === 'fill';
@@ -240,6 +244,48 @@ export function ViewerToolbar({
                   <div className="w-full h-full" style={{ background: `conic-gradient(red, yellow, lime, aqua, blue, magenta, red)` }} />
                 </label>
               </div>
+              <div className="w-px h-6 bg-gray-600 mx-1" />
+              <label className="flex items-center gap-1.5 text-xs text-gray-400 shrink-0" title="Restrict paint to Z height range">
+                <input
+                  type="checkbox"
+                  checked={paintZRange !== null}
+                  onChange={(e) => {
+                    if (e.target.checked && paintZBounds) {
+                      const mid = (paintZBounds.min + paintZBounds.max) / 2;
+                      onPaintZRangeChange({ min: paintZBounds.min, max: mid });
+                    } else {
+                      onPaintZRangeChange(null);
+                    }
+                  }}
+                  disabled={!paintZBounds}
+                  className="accent-blue-500"
+                />
+                <span>Z</span>
+                <input
+                  type="number"
+                  step="0.5"
+                  value={paintZRange ? paintZRange.min.toFixed(1) : paintZBounds ? paintZBounds.min.toFixed(1) : '0'}
+                  disabled={!paintZRange}
+                  onChange={(e) => {
+                    const v = Number(e.target.value);
+                    if (paintZRange && !Number.isNaN(v)) onPaintZRangeChange({ ...paintZRange, min: v });
+                  }}
+                  className="w-12 bg-gray-700 border border-gray-600 rounded px-1 py-0.5 text-xs text-white text-right disabled:opacity-40"
+                />
+                <span className="text-gray-500">–</span>
+                <input
+                  type="number"
+                  step="0.5"
+                  value={paintZRange ? paintZRange.max.toFixed(1) : paintZBounds ? paintZBounds.max.toFixed(1) : '0'}
+                  disabled={!paintZRange}
+                  onChange={(e) => {
+                    const v = Number(e.target.value);
+                    if (paintZRange && !Number.isNaN(v)) onPaintZRangeChange({ ...paintZRange, max: v });
+                  }}
+                  className="w-12 bg-gray-700 border border-gray-600 rounded px-1 py-0.5 text-xs text-white text-right disabled:opacity-40"
+                />
+                <span className="text-gray-500 text-[10px] hidden md:inline">mm</span>
+              </label>
             </>
           )}
 

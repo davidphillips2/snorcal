@@ -10,6 +10,8 @@ interface FacePainterProps {
   renderer: THREE.WebGLRenderer | null;
   activeColor: string;
   paintMode: PaintMode;
+  /** When set, clicks outside this Y-range (world space) are ignored by paint/fill. */
+  zRange?: { min: number; max: number } | null;
   onPaint?: (faceIndex: number, color: string) => void;
   onLayOnFace?: (rotation: Rotation3D) => void;
 }
@@ -22,7 +24,7 @@ function getPosAttr(geometry: THREE.BufferGeometry): THREE.BufferAttribute {
  * Three.js raycaster-based face painter.
  * Supports single-face paint and flood fill of connected same-colored faces.
  */
-export function FacePainter({ mesh, renderer, activeColor, paintMode, onPaint, onLayOnFace }: FacePainterProps) {
+export function FacePainter({ mesh, renderer, activeColor, paintMode, zRange, onPaint, onLayOnFace }: FacePainterProps) {
   const undoStackRef = useRef<Uint8Array[]>([]);
   const adjacencyRef = useRef<Map<number, number[]> | null>(null);
 
@@ -145,6 +147,12 @@ export function FacePainter({ mesh, renderer, activeColor, paintMode, onPaint, o
       const faceIndex = intersects[0].faceIndex;
       if (faceIndex == null) return;
 
+      // Paint-by-layer: ignore hits outside the active Y band (world space)
+      if (zRange) {
+        const y = intersects[0].point.y;
+        if (y < zRange.min || y > zRange.max) return;
+      }
+
       paintFace(geometry, faceIndex, activeColor);
       // Also paint adjacent faces for a thicker brush
       const adjacency = getAdjacency(geometry);
@@ -175,6 +183,12 @@ export function FacePainter({ mesh, renderer, activeColor, paintMode, onPaint, o
 
       const faceIndex = intersects[0].faceIndex;
       if (faceIndex == null) return;
+
+      // Paint-by-layer: ignore hits outside the active Y band (world space)
+      if (zRange && paintMode !== 'lay') {
+        const y = intersects[0].point.y;
+        if (y < zRange.min || y > zRange.max) return;
+      }
 
       // Lay on face mode — rotate model so clicked face sits on bed
       if (paintMode === 'lay') {
@@ -255,7 +269,7 @@ export function FacePainter({ mesh, renderer, activeColor, paintMode, onPaint, o
       canvas.style.cursor = 'grab';
       canvas.style.touchAction = '';
     };
-  }, [mesh, renderer, paintMode, activeColor, onPaint, onLayOnFace, pushUndo, floodFill, paintFace]);
+  }, [mesh, renderer, paintMode, activeColor, zRange, onPaint, onLayOnFace, pushUndo, floodFill, paintFace]);
 
   // Undo
   const undo = useCallback(() => {
