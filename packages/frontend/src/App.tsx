@@ -10,6 +10,7 @@ import { CutTool } from './components/ModelEdit/CutTool';
 import { AddVolumeModal } from './components/ModelEdit/AddVolumeModal';
 import { SupportPainter } from './components/ModelEdit/SupportPainter';
 import { ObjectListPanel } from './components/ObjectList/ObjectListPanel';
+import { PlateTabs } from './components/Plates/PlateTabs';
 import { AxisIndicator } from './components/Viewer/AxisIndicator';
 import { Bed } from './components/Viewer/Bed';
 import { ModelMover } from './components/Viewer/ModelMover';
@@ -178,6 +179,60 @@ export default function App() {
     pushUndo();
     setProjectModels(updater);
   }, [pushUndo]);
+
+  // --- Plate manager handlers ---
+  const handleRenamePlate = useCallback((id: string, name: string) => {
+    setPlates(prev => prev.map(p => p.id === id ? { ...p, name } : p));
+  }, []);
+  const handleDuplicatePlate = useCallback((id: string) => {
+    const idx = plates.findIndex(p => p.id === id);
+    if (idx < 0) return;
+    const src = plates[idx];
+    const newId = `plate-${Date.now()}`;
+    const modelIdMap = new Map<string, string>();
+    const clones: ProjectModel[] = projectModels
+      .filter(m => m.plateId === id)
+      .map(m => {
+        const newMid = `m-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        modelIdMap.set(m.modelId, newMid);
+        return { ...m, modelId: newMid, plateId: newId, faceColors: m.faceColors ? new Uint8Array(m.faceColors) : null };
+      });
+    clones.forEach(c => {
+      if (c.linkedTo) c.linkedTo = c.linkedTo.map(lid => modelIdMap.get(lid) ?? lid);
+    });
+    setPlates(prev => [
+      ...prev.slice(0, idx + 1),
+      { id: newId, name: `${src.name} copy` },
+      ...prev.slice(idx + 1),
+    ]);
+    updateModels(pm => [...pm, ...clones]);
+    setActivePlateId(newId);
+    setActiveModelIndex(null);
+  }, [plates, projectModels, updateModels]);
+  const handleDeletePlate = useCallback((id: string) => {
+    if (plates.length <= 1) return;
+    const idx = plates.findIndex(p => p.id === id);
+    if (idx < 0) return;
+    setPlates(prev => prev.filter(p => p.id !== id));
+    updateModels(pm => pm.filter(m => m.plateId !== id));
+    if (activePlateId === id) {
+      const fallbackIdx = Math.max(0, idx - 1);
+      setActivePlateId(prev => {
+        const next = plates.filter(p => p.id !== id);
+        return next[Math.min(fallbackIdx, next.length - 1)]?.id ?? prev;
+      });
+      setActiveModelIndex(null);
+    }
+  }, [plates, activePlateId, updateModels]);
+  const handleReorderPlates = useCallback((fromIdx: number, toIdx: number) => {
+    setPlates(prev => {
+      if (fromIdx === toIdx || fromIdx < 0 || toIdx < 0 || fromIdx >= prev.length || toIdx >= prev.length) return prev;
+      const next = [...prev];
+      const [moved] = next.splice(fromIdx, 1);
+      next.splice(toIdx, 0, moved);
+      return next;
+    });
+  }, []);
 
   const handleUndo = useCallback(() => {
     // Project-models undo takes precedence; fall back to face-paint undo
@@ -1025,31 +1080,22 @@ export default function App() {
       </div>
 
       {/* Plate tabs */}
-      <div className="px-3 py-2 border-t border-gray-700 shrink-0">
-        <div className="flex items-center gap-1 overflow-x-auto">
-          {plates.map((p, i) => (
-            <button key={p.id}
-              onClick={() => { setActivePlateId(p.id); setActiveModelIndex(null); }}
-              className={`px-2.5 py-1 rounded text-xs font-medium whitespace-nowrap transition ${
-                activePlateId === p.id ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-              }`}>
-              {p.name}
-              {plates.length > 1 && (
-                <span className="ml-1 text-gray-400">{projectModels.filter(m => m.plateId === p.id).length}</span>
-              )}
-            </button>
-          ))}
-          <button onClick={() => {
-            const n = plates.length + 1;
-            const id = `plate-${Date.now()}`;
-            setPlates(prev => [...prev, { id, name: `Plate ${n}` }]);
-            setActivePlateId(id);
-            setActiveModelIndex(null);
-          }} className="px-2 py-1 rounded text-xs bg-gray-700 text-gray-400 hover:bg-gray-600 hover:text-white transition shrink-0">
-            + Plate
-          </button>
-        </div>
-      </div>
+      <PlateTabs
+        plates={plates.map(p => ({ id: p.id, name: p.name, modelCount: projectModels.filter(m => m.plateId === p.id).length }))}
+        activePlateId={activePlateId}
+        onSelect={(id) => { setActivePlateId(id); setActiveModelIndex(null); }}
+        onRename={handleRenamePlate}
+        onDuplicate={handleDuplicatePlate}
+        onDelete={handleDeletePlate}
+        onReorder={handleReorderPlates}
+        onAdd={() => {
+          const n = plates.length + 1;
+          const id = `plate-${Date.now()}`;
+          setPlates(prev => [...prev, { id, name: `Plate ${n}` }]);
+          setActivePlateId(id);
+          setActiveModelIndex(null);
+        }}
+      />
 
       {/* Slice buttons */}
       <div className="p-3 border-t border-gray-700 shrink-0 space-y-2">
