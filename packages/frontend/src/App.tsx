@@ -233,6 +233,17 @@ export default function App() {
       return next;
     });
   }, []);
+  // Toggle anti-warp brim preset: brim_ears + 8mm width
+  const toggleBrim = useCallback(() => {
+    setSettings(prev => {
+      const isOn = prev.brim_type === 'brim_ears' && Number(prev.brim_width || 0) > 0;
+      return {
+        ...prev,
+        brim_type: isOn ? 'auto_brim' : 'brim_ears',
+        brim_width: isOn ? '0' : '8',
+      };
+    });
+  }, []);
 
   const handleUndo = useCallback(() => {
     // Project-models undo takes precedence; fall back to face-paint undo
@@ -1282,6 +1293,8 @@ export default function App() {
                 paintZRange={paintZRange}
                 paintZBounds={paintZBounds}
                 onPaintZRangeChange={setPaintZRange}
+                onToggleBrim={toggleBrim}
+                brimOn={settings.brim_type === 'brim_ears' && Number(settings.brim_width || 0) > 0}
               />
               {paintMode === 'transform' && (
                 <TransformPanel

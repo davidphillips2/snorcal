@@ -21,6 +21,8 @@ interface ViewerToolbarProps {
   paintZRange: { min: number; max: number } | null;
   paintZBounds: { min: number; max: number } | null;
   onPaintZRangeChange: (r: { min: number; max: number } | null) => void;
+  onToggleBrim: () => void;
+  brimOn: boolean;
 }
 
 const PALETTE = [
@@ -140,6 +142,15 @@ function IconSupport() {
   );
 }
 
+function IconBrim() {
+  return (
+    <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+      <rect x="6" y="6" width="12" height="12" rx="1" />
+      <path d="M2 8V6M2 16v-2M8 2H6M16 2h-2M22 8V6M22 16v-2M8 22H6M16 22h-2" strokeDasharray="1.5 1.5" />
+    </svg>
+  );
+}
+
 const MODES: { key: PaintMode; label: string; Icon: () => ReactNode }[] = [
   { key: 'orbit', label: 'Orbit', Icon: IconOrbit },
   { key: 'rotate', label: 'Rotate', Icon: IconRotate },
@@ -157,6 +168,7 @@ export function ViewerToolbar({
   rotation, onRotationChange, onAutoOrient, filamentColors,
   supportDiameter, onSupportDiameterChange,
   paintZRange, paintZBounds, onPaintZRangeChange,
+  onToggleBrim, brimOn,
 }: ViewerToolbarProps) {
   const palette = filamentColors && filamentColors.length > 0 ? filamentColors : PALETTE;
   const isPainting = paintMode === 'paint' || paintMode === 'fill';
@@ -206,6 +218,15 @@ export function ViewerToolbar({
             className="w-8 h-8 flex items-center justify-center rounded-md text-green-400 hover:bg-gray-700 transition"
           >
             <IconSave />
+          </button>
+          <button
+            onClick={onToggleBrim}
+            title={brimOn ? 'Anti-warp brim on (click to disable)' : 'Enable anti-warp brim (ears + 8mm)'}
+            className={`w-8 h-8 flex items-center justify-center rounded-md transition ${
+              brimOn ? 'bg-orange-600 text-white' : 'text-gray-300 hover:bg-gray-700'
+            }`}
+          >
+            <IconBrim />
           </button>
 
           {isPainting && (
