@@ -186,17 +186,23 @@ function makeMaterialForKind(kind: ModelKind): THREE.Material {
 }
 
 /**
- * Auto-orient: find the best base face and place it on the bottom (build plate).
+ * Auto-orient: place the largest flat face on the build plate (OrcaSlicer-style).
  *
- * Picks the quantized normal direction maximizing `area × dot(N, -Y)` — i.e.,
- * total area weighted by how much it already faces down. This biases toward
- * existing bases (face normal pointing -Y) and never picks a top face (normal
- * pointing +Y). When no downward-facing direction exists (model on its side),
- * falls back to the largest direction.
+ * Aggregates face area by quantized outward-normal direction, then picks the
+ * direction with the most area. A 1% downward bias only breaks ties between
+ * equal-area faces (prefers the one already facing -Y). Outward direction is
+ * recovered via centroid − bbox center, so STLs with inconsistent winding
+ * still score correctly.
  */
 export function autoOrient(geometry: THREE.BufferGeometry): Rotation3D {
   const posAttr = geometry.attributes.position;
   const faceCount = posAttr.count / 3;
+
+  // Bbox center for outward-direction heuristic — STL winding may be inconsistent,
+  // so we use centroid−center to disambiguate inward vs outward normals.
+  geometry.computeBoundingBox();
+  const meshCenter = new THREE.Vector3();
+  geometry.boundingBox!.getCenter(meshCenter);
 
   const Q = 10;
   const quantize = (v: number) => Math.round(v * Q);
@@ -210,6 +216,8 @@ export function autoOrient(geometry: THREE.BufferGeometry): Rotation3D {
   const edge1 = new THREE.Vector3();
   const edge2 = new THREE.Vector3();
   const normal = new THREE.Vector3();
+  const centroid = new THREE.Vector3();
+  const outward = new THREE.Vector3();
 
   for (let f = 0; f < faceCount; f++) {
     const i0 = f * 3;
@@ -224,17 +232,24 @@ export function autoOrient(geometry: THREE.BufferGeometry): Rotation3D {
     const area = normal.length() * 0.5;
     normal.normalize();
 
+    // Flip normal to outward-facing using centroid direction from bbox center
+    centroid.copy(v0).add(v1).add(v2).multiplyScalar(1 / 3);
+    outward.copy(centroid).sub(meshCenter);
+    if (normal.dot(outward) < 0) normal.negate();
+
     const key = `${quantize(normal.x)}_${quantize(normal.y)}_${quantize(normal.z)}`;
     normalAreas.set(key, (normalAreas.get(key) || 0) + area);
     if (!normalDirs.has(key)) normalDirs.set(key, normal.clone());
   }
 
-  // Score each direction: area × downwardness. -Y → +1, +Y → -1, sides → 0.
+  // Score each direction: area dominates (largest flat face down = OrcaSlicer-style).
+  // Small downward bias (1%) only breaks ties between equal-area faces, so an
+  // already-downward face wins over an upward one of the same size.
   let bestKey = '';
   let bestScore = -Infinity;
   for (const [key, area] of normalAreas) {
     const dir = normalDirs.get(key)!;
-    const score = area * -dir.y;  // -dir.y because dot with (0,-1,0) = -dir.y
+    const score = area * (1 - 0.01 * dir.y);
     if (score > bestScore) { bestScore = score; bestKey = key; }
   }
 

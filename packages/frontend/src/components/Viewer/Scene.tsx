@@ -27,6 +27,7 @@ export function Scene({ onReady }: SceneProps) {
     renderer.setSize(container.clientWidth, container.clientHeight);
     renderer.setClearColor(0x1a1a2e);
     renderer.shadowMap.enabled = true;
+    renderer.domElement.style.touchAction = 'none';
     container.appendChild(renderer.domElement);
 
     const scene = new THREE.Scene();
