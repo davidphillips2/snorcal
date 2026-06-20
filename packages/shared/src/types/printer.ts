@@ -23,7 +23,7 @@ export interface PrinterRecord {
   createdAt: string;
 }
 
-export type PrinterProtocol = 'moonraker' | 'bambu';
+export type PrinterProtocol = 'moonraker' | 'bambu' | 'snapmaker';
 
 export type PrinterConnectionState =
   | 'disconnected'

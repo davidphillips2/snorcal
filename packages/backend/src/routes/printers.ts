@@ -211,8 +211,11 @@ export async function printerRoutes(app: FastifyInstance, options: { db: Db }) {
     if (body.protocol === 'bambu' && (!body.serial || !body.accessCode)) {
       return reply.status(400).send({ ok: false, error: 'serial and accessCode required for bambu' });
     }
+    if (body.protocol === 'snapmaker' && !body.accessCode) {
+      return reply.status(400).send({ ok: false, error: 'accessCode required for snapmaker (LAN code on touchscreen)' });
+    }
     const id = randomUUID();
-    const port = body.port ?? (body.protocol === 'bambu' ? 8883 : 7125);
+    const port = body.port ?? (body.protocol === 'bambu' ? 8883 : body.protocol === 'snapmaker' ? 8883 : 7125);
     db.insertPrinter({
       id, name: body.name, protocol: body.protocol, ip: body.ip, port,
       serial: body.serial, access_code: body.accessCode, api_key: body.apiKey,
@@ -407,11 +410,12 @@ export async function printerRoutes(app: FastifyInstance, options: { db: Db }) {
       const hasMapping = mapping && mapping.length > 0;
 
       // Decide if we need to rewrite gcode T-codes.
-      // Bambu: ams_mapping sent in MQTT start payload — no gcode rewrite.
+      // Bambu/Snapmaker: ams_mapping sent in start-print payload — no gcode rewrite.
       // Moonraker / generic Klipper with manual_slots: rewrite Tx per mapping before upload.
       let uploadPath = gcodePath;
       let tempPath: string | null = null;
-      if (hasMapping && printer.protocol !== 'bambu') {
+      const supportsNativeMapping = printer.protocol === 'bambu' || printer.protocol === 'snapmaker';
+      if (hasMapping && !supportsNativeMapping) {
         const { rewriteGcodeToolMapping, mappingIsNoop } = await import('../services/gcode-rewriter.js');
         if (!mappingIsNoop(mapping!)) {
           tempPath = await rewriteGcodeToolMapping(gcodePath, mapping!);
@@ -423,8 +427,8 @@ export async function printerRoutes(app: FastifyInstance, options: { db: Db }) {
         const filename = path.basename(uploadPath);
         const printerPath = await printerManager.uploadFile(req.params.id, uploadPath, filename);
         if (body.startPrint !== false) {
-          if (printer.protocol === 'bambu' && hasMapping) {
-            // Pass ams_mapping through to MQTT project_file command
+          if (hasMapping && supportsNativeMapping) {
+            // Pass ams_mapping through to MQTT start command
             await printerManager.startPrint(req.params.id, printerPath, { amsMapping: mapping });
           } else {
             await printerManager.startPrint(req.params.id, printerPath);

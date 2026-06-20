@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 
 interface Props {
   printerId: string;
-  protocol: 'moonraker' | 'bambu';
+  protocol: 'moonraker' | 'bambu' | 'snapmaker';
   connection: string;
   expanded?: boolean;
 }

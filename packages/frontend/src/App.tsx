@@ -1564,7 +1564,7 @@ export default function App() {
           <FilamentRemapModal
             jobId={remapJobId}
             printerId={targetPrinterId}
-            printerProtocol={p.protocol as 'moonraker' | 'bambu'}
+            printerProtocol={p.protocol as 'moonraker' | 'bambu' | 'snapmaker'}
             printerManualSlots={p.manualSlots ?? 0}
             printerStatus={printerStatuses[targetPrinterId]}
             onClose={() => setRemapJobId(null)}

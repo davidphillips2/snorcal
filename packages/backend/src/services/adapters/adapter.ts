@@ -1,9 +1,9 @@
 import type { PrinterCommand, PrinterStatus } from '@snorcal/shared';
 
-/** Common adapter interface implemented by Moonraker, Bambu, etc. */
+/** Common adapter interface implemented by Moonraker, Bambu, Snapmaker, etc. */
 export interface PrinterAdapter {
   readonly printerId: string;
-  readonly protocol: 'moonraker' | 'bambu';
+  readonly protocol: 'moonraker' | 'bambu' | 'snapmaker';
 
   /** Establish connection. Resolves on first connect. Throws on failure. */
   connect(): Promise<void>;

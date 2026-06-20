@@ -3,6 +3,7 @@ import type { PrinterCommand, PrinterStatus } from '@snorcal/shared';
 import type { PrinterAdapter } from './adapters/adapter.js';
 import { MoonrakerAdapter } from './adapters/moonraker-adapter.js';
 import { BambuAdapter } from './adapters/bambu-adapter.js';
+import { SnapmakerAdapter } from './adapters/snapmaker-adapter.js';
 import { emitPrinterStatus, emitPrinterConnected, emitPrinterDisconnected } from './event-bus.js';
 
 class PrinterManager {
@@ -39,6 +40,14 @@ class PrinterManager {
         serial: p.serial ?? '',
         accessCode: p.access_code ?? '',
         cameraIp: p.camera_ip ?? undefined,
+      });
+    }
+    if (p.protocol === 'snapmaker') {
+      return new SnapmakerAdapter({
+        printerId: p.id,
+        ip: p.ip,
+        port: p.port,
+        accessCode: p.access_code ?? '',
       });
     }
     throw new Error(`Unknown protocol: ${p.protocol}`);

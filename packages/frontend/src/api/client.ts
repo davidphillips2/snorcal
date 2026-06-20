@@ -157,7 +157,7 @@ export async function sendToPrinter(jobId: string, printerIp: string, printerPor
 
 export async function listPrinters() {
   return apiFetch('/printers') as Promise<Array<{
-    id: string; name: string; protocol: 'moonraker' | 'bambu';
+    id: string; name: string; protocol: 'moonraker' | 'bambu' | 'snapmaker';
     ip: string; port: number; serial?: string | null; accessCode?: string | null;
     apiKey?: string | null; lastStatus?: string | null; lastSeen?: string | null;
     createdAt: string; status?: any; model?: string | null;
@@ -181,7 +181,7 @@ export async function updatePrinter(id: string, patch: { model?: string }) {
 }
 
 export async function createPrinter(p: {
-  name: string; protocol: 'moonraker' | 'bambu'; ip: string; port?: number;
+  name: string; protocol: 'moonraker' | 'bambu' | 'snapmaker'; ip: string; port?: number;
   serial?: string; accessCode?: string; apiKey?: string;
   cameraStreamUrl?: string; cameraSnapshotUrl?: string;
   model?: string;
