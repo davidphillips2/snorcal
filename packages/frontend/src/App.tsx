@@ -22,6 +22,8 @@ import { GcodeLayerSlider } from './components/Viewer/GcodeLayerSlider';
 import { GcodeTimeBreakdown } from './components/Viewer/GcodeTimeBreakdown';
 import { PrinterDashboard } from './components/PrinterMonitor/PrinterDashboard';
 import { MultiPrinterFit } from './components/PrinterMonitor/MultiPrinterFit';
+import { LiveMonitorOverlay } from './components/PrinterMonitor/LiveMonitorOverlay';
+import type { PrinterStatus } from '@snorcal/shared';
 import { HomeDashboard } from './components/Home/HomeDashboard';
 import { PrinterDetail } from './components/PrinterMonitor/PrinterDetail';
 import { useSSE } from './hooks/useSSE';
@@ -342,12 +344,13 @@ export default function App() {
   const [showPrinters, setShowPrinters] = useState(false);
 
   // Registered printers (for target picker + Send)
-  const [printers, setPrinters] = useState<Array<{ id: string; name: string; model?: string | null; protocol: string; bedVolume?: { x: number; y: number; z: number } | null }>>([]);
+  const [printers, setPrinters] = useState<Array<{ id: string; name: string; model?: string | null; protocol: string; bedVolume?: { x: number; y: number; z: number } | null; cameraSnapshotUrl?: string | null; protocolCamId?: string }>>([]);
+  const [printerStatuses, setPrinterStatuses] = useState<Record<string, PrinterStatus>>({});
   const [targetPrinterId, setTargetPrinterId] = useState<string | null>(() => localStorage.getItem('snorcal_target_printer'));
   const [bedVolume, setBedVolume] = useState<{ x: number; y: number; z: number } | null>(null);
   useEffect(() => {
     api.listPrinters().then(list => {
-      setPrinters(list.map(p => ({ id: p.id, name: p.name, model: p.model, protocol: p.protocol, bedVolume: p.bedVolume ?? null })));
+      setPrinters(list.map(p => ({ id: p.id, name: p.name, model: p.model, protocol: p.protocol, bedVolume: p.bedVolume ?? null, cameraSnapshotUrl: p.cameraSnapshotUrl ?? null })));
       // Auto-pick first if none selected
       if (list.length > 0) {
         setTargetPrinterId(cur => {
@@ -499,6 +502,10 @@ export default function App() {
   useEffect(() => {
     for (const msg of sseMsgs) {
       const jobId = msg.data.jobId as string;
+      if (msg.type === 'printer:status' && msg.data.printerId) {
+        setPrinterStatuses(prev => ({ ...prev, [msg.data.printerId as string]: msg.data as unknown as PrinterStatus }));
+        continue;
+      }
       if (!jobId) continue;
       setJobs((prev) =>
         prev.map((j) =>
@@ -1455,6 +1462,12 @@ export default function App() {
                 extrusionColors={filamentSlots.map(s => s.color)} buildVolume={bedVolume ?? undefined}
                 colorMode={gcodeColorMode} onLayerCountReady={handleLayerCountReady} />
               <GcodeTimeBreakdown gcode={gcodeText} />
+              <LiveMonitorOverlay
+                statuses={printerStatuses}
+                names={Object.fromEntries(printers.map(p => [p.id, p.name]))}
+                cameras={Object.fromEntries(printers.map(p => [p.id, p.cameraSnapshotUrl ?? `/api/printers/${p.id}/camera`]))}
+                focusPrinterId={targetPrinterId}
+              />
               {layerCount > 0 && (
                 <GcodeLayerSlider currentLayer={currentPreviewLayer} totalLayers={layerCount} showAllLayers={showAllLayers}
                   onLayerChange={setCurrentPreviewLayer} onShowAllLayersChange={setShowAllLayers} onExit={handleExitPreview}
