@@ -186,6 +186,103 @@ export class Db {
       .run(colors, modelId, plateIndex);
   }
 
+  // --- Spools ---
+
+  listSpools(includeArchived = false): DbSpool[] {
+    const sql = includeArchived
+      ? 'SELECT * FROM spools ORDER BY created_at DESC'
+      : 'SELECT * FROM spools WHERE archived = 0 ORDER BY created_at DESC';
+    return this.db.prepare(sql).all() as DbSpool[];
+  }
+
+  getSpool(id: string): DbSpool | undefined {
+    return this.db.prepare('SELECT * FROM spools WHERE id = ?').get(id) as DbSpool | undefined;
+  }
+
+  insertSpool(s: {
+    id: string; name: string; color?: string | null; material?: string | null;
+    total_weight_g?: number; remaining_weight_g?: number; cost_per_kg?: number;
+    purchased_at?: string | null; notes?: string | null;
+  }) {
+    this.db.prepare(`
+      INSERT INTO spools (id, name, color, material, total_weight_g, remaining_weight_g, cost_per_kg, purchased_at, notes)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(s.id, s.name, s.color ?? null, s.material ?? null,
+      s.total_weight_g ?? 1000, s.remaining_weight_g ?? 1000, s.cost_per_kg ?? 0,
+      s.purchased_at ?? null, s.notes ?? null);
+  }
+
+  updateSpool(id: string, fields: Partial<{
+    name: string; color: string | null; material: string | null;
+    total_weight_g: number; remaining_weight_g: number; cost_per_kg: number;
+    purchased_at: string | null; notes: string | null; archived: number;
+  }>) {
+    const allowed = ['name', 'color', 'material', 'total_weight_g', 'remaining_weight_g', 'cost_per_kg', 'purchased_at', 'notes', 'archived'] as const;
+    const sets: string[] = [];
+    const vals: unknown[] = [];
+    for (const k of allowed) {
+      if (fields[k] !== undefined) {
+        sets.push(`${k} = ?`);
+        vals.push(fields[k]);
+      }
+    }
+    if (sets.length === 0) return;
+    vals.push(id);
+    this.db.prepare(`UPDATE spools SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
+  }
+
+  deleteSpool(id: string) {
+    this.db.prepare('DELETE FROM spools WHERE id = ?').run(id);
+  }
+
+  // --- Print history ---
+
+  listPrintHistory(limit = 100): DbPrintHistory[] {
+    return this.db.prepare('SELECT * FROM print_history ORDER BY completed_at DESC LIMIT ?').all(limit) as DbPrintHistory[];
+  }
+
+  getPrintHistory(id: string): DbPrintHistory | undefined {
+    return this.db.prepare('SELECT * FROM print_history WHERE id = ?').get(id) as DbPrintHistory | undefined;
+  }
+
+  getPrintHistoryByJob(jobId: string): DbPrintHistory | undefined {
+    return this.db.prepare('SELECT * FROM print_history WHERE job_id = ?').get(jobId) as DbPrintHistory | undefined;
+  }
+
+  insertPrintHistory(h: {
+    id: string; job_id?: string | null; printer_id?: string | null;
+    model_name?: string | null; completed_at?: string; photo_path?: string | null;
+    rating?: number | null; notes?: string | null;
+  }) {
+    this.db.prepare(`
+      INSERT INTO print_history (id, job_id, printer_id, model_name, completed_at, photo_path, rating, notes)
+      VALUES (?, ?, ?, ?, COALESCE(?, datetime('now')), ?, ?, ?)
+    `).run(h.id, h.job_id ?? null, h.printer_id ?? null, h.model_name ?? null,
+      h.completed_at ?? null, h.photo_path ?? null, h.rating ?? null, h.notes ?? null);
+  }
+
+  updatePrintHistory(id: string, fields: Partial<{
+    photo_path: string | null; rating: number | null; notes: string | null;
+    printer_id: string | null;
+  }>) {
+    const allowed = ['photo_path', 'rating', 'notes', 'printer_id'] as const;
+    const sets: string[] = [];
+    const vals: unknown[] = [];
+    for (const k of allowed) {
+      if (fields[k] !== undefined) {
+        sets.push(`${k} = ?`);
+        vals.push(fields[k]);
+      }
+    }
+    if (sets.length === 0) return;
+    vals.push(id);
+    this.db.prepare(`UPDATE print_history SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
+  }
+
+  deletePrintHistory(id: string) {
+    this.db.prepare('DELETE FROM print_history WHERE id = ?').run(id);
+  }
+
   close() {
     this.db.close();
   }
@@ -242,5 +339,31 @@ export interface DbPrinter {
   model: string | null;
   last_status: string | null;
   last_seen: string | null;
+  created_at: string;
+}
+
+export interface DbSpool {
+  id: string;
+  name: string;
+  color: string | null;
+  material: string | null;
+  total_weight_g: number;
+  remaining_weight_g: number;
+  cost_per_kg: number;
+  purchased_at: string | null;
+  notes: string | null;
+  archived: number;       // 0 | 1
+  created_at: string;
+}
+
+export interface DbPrintHistory {
+  id: string;
+  job_id: string | null;
+  printer_id: string | null;
+  model_name: string | null;
+  completed_at: string;
+  photo_path: string | null;
+  rating: number | null;
+  notes: string | null;
   created_at: string;
 }

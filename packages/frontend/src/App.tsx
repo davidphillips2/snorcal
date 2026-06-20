@@ -22,6 +22,7 @@ import { GcodeLayerSlider } from './components/Viewer/GcodeLayerSlider';
 import { GcodeTimeBreakdown } from './components/Viewer/GcodeTimeBreakdown';
 import { GcodeLayerStrip } from './components/Viewer/GcodeLayerStrip';
 import { PrinterDashboard } from './components/PrinterMonitor/PrinterDashboard';
+import { InventoryPanel } from './components/Inventory/InventoryPanel';
 import { MultiPrinterFit } from './components/PrinterMonitor/MultiPrinterFit';
 import { LiveMonitorOverlay } from './components/PrinterMonitor/LiveMonitorOverlay';
 import type { PrinterStatus } from '@snorcal/shared';
@@ -344,6 +345,7 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(true);
   const [showJobs, setShowJobs] = useState(false);
   const [showPrinters, setShowPrinters] = useState(false);
+  const [showInventory, setShowInventory] = useState(false);
 
   // Registered printers (for target picker + Send)
   const [printers, setPrinters] = useState<Array<{ id: string; name: string; model?: string | null; protocol: string; bedVolume?: { x: number; y: number; z: number } | null; cameraSnapshotUrl?: string | null; protocolCamId?: string }>>([]);
@@ -1138,8 +1140,12 @@ export default function App() {
         <div className="space-y-1">
           <div className="flex items-center justify-between">
             <label className="text-xs font-medium text-gray-400 uppercase tracking-wider">Target</label>
-            <button onClick={() => setShowPrinters(true)}
-              className="text-[10px] text-gray-500 hover:text-gray-300">manage</button>
+            <div className="flex gap-2">
+              <button onClick={() => setShowInventory(true)}
+                className="text-[10px] text-gray-500 hover:text-gray-300">inventory</button>
+              <button onClick={() => setShowPrinters(true)}
+                className="text-[10px] text-gray-500 hover:text-gray-300">manage</button>
+            </div>
           </div>
           {printers.length === 0 ? (
             <button onClick={() => setShowPrinters(true)}
@@ -1525,6 +1531,7 @@ export default function App() {
       )}
 
       {showPrinters && <PrinterDashboard onClose={() => setShowPrinters(false)} />}
+      {showInventory && <InventoryPanel onClose={() => setShowInventory(false)} />}
     </div>
   );
 }

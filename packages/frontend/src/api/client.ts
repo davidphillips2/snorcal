@@ -225,3 +225,66 @@ export async function importProfiles(engine: string, file: File) {
     errors: { file: string; error: string }[];
   }>;
 }
+
+// --- Inventory: spools + print history ---
+
+export interface Spool {
+  id: string; name: string; color: string | null; material: string | null;
+  totalWeightG: number; remainingWeightG: number; costPerKg: number;
+  purchasedAt: string | null; notes: string | null; archived: boolean;
+  createdAt: string;
+}
+
+export interface PrintHistoryEntry {
+  id: string; jobId: string | null; printerId: string | null;
+  modelName: string | null; completedAt: string;
+  photoPath: string | null; photoUrl: string | null;
+  rating: number | null; notes: string | null;
+  createdAt: string;
+}
+
+export async function listSpools(archived = false) {
+  return apiFetch(`/inventory/spools?archived=${archived}`) as Promise<Spool[]>;
+}
+
+export async function createSpool(data: Partial<Spool> & { name: string }) {
+  return apiFetch('/inventory/spools', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data),
+  }) as Promise<Spool>;
+}
+
+export async function updateSpool(id: string, fields: Partial<Spool>) {
+  return apiFetch(`/inventory/spools/${id}`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(fields),
+  }) as Promise<Spool>;
+}
+
+export async function deleteSpool(id: string) {
+  return apiFetch(`/inventory/spools/${id}`, { method: 'DELETE' }) as Promise<{ ok: boolean }>;
+}
+
+export async function listPrintHistory(limit = 100) {
+  return apiFetch(`/inventory/print-history?limit=${limit}`) as Promise<PrintHistoryEntry[]>;
+}
+
+export async function createPrintHistory(data: Partial<PrintHistoryEntry>) {
+  return apiFetch('/inventory/print-history', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data),
+  }) as Promise<PrintHistoryEntry>;
+}
+
+export async function updatePrintHistory(id: string, fields: Partial<PrintHistoryEntry>) {
+  return apiFetch(`/inventory/print-history/${id}`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(fields),
+  }) as Promise<PrintHistoryEntry>;
+}
+
+export async function uploadPrintHistoryPhoto(id: string, file: File) {
+  const formData = new FormData();
+  formData.append('file', file);
+  return apiFetch(`/inventory/print-history/${id}/photo`, { method: 'POST', body: formData }) as Promise<PrintHistoryEntry>;
+}
+
+export async function deletePrintHistory(id: string) {
+  return apiFetch(`/inventory/print-history/${id}`, { method: 'DELETE' }) as Promise<{ ok: boolean }>;
+}

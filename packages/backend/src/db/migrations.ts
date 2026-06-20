@@ -171,4 +171,40 @@ export function runSchemaMigrations(db: Database.Database) {
   } catch {
     // Migration not needed or already applied
   }
+
+  // Spools inventory (filament tracking)
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS spools (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        color TEXT,
+        material TEXT,
+        total_weight_g REAL NOT NULL DEFAULT 1000,
+        remaining_weight_g REAL NOT NULL DEFAULT 1000,
+        cost_per_kg REAL NOT NULL DEFAULT 0,
+        purchased_at TEXT,
+        notes TEXT,
+        archived INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      )
+    `);
+  } catch { /* already exists */ }
+
+  // Print history (post-completion notes + photos)
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS print_history (
+        id TEXT PRIMARY KEY,
+        job_id TEXT REFERENCES jobs(id) ON DELETE SET NULL,
+        printer_id TEXT REFERENCES printers(id) ON DELETE SET NULL,
+        model_name TEXT,
+        completed_at TEXT NOT NULL DEFAULT (datetime('now')),
+        photo_path TEXT,
+        rating INTEGER,
+        notes TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      )
+    `);
+  } catch { /* already exists */ }
 }
