@@ -67,14 +67,21 @@ function expandFilamentSlots(
   while (types.length < targetCount) types.push(types[types.length - 1] || 'PLA');
   projectSettings['filament_type'] = types;
 
+  // Metadata keys that OrcaSlicer treats as scalar (Preset.hpp BBL_JSON_KEY_*).
+  // Expanding these to arrays breaks load_from_json's key_values.emplace()
+  // which expects string → throws type_error 302, aborting config parse.
+  const FILAMENT_METADATA_SCALARS = new Set(['filament_id']);
+
   // Collect all filament_* keys from profiles AND existing project settings
   const filamentKeys = new Set<string>();
   for (const p of profileSettings) {
-    if (p) for (const key of Object.keys(p)) { if (key.startsWith('filament_')) filamentKeys.add(key); }
+    if (p) for (const key of Object.keys(p)) {
+      if (key.startsWith('filament_') && !FILAMENT_METADATA_SCALARS.has(key)) filamentKeys.add(key);
+    }
   }
   // Also include filament_* keys already in projectSettings (from defaults/machine profile)
   for (const key of Object.keys(projectSettings)) {
-    if (key.startsWith('filament_') && Array.isArray(projectSettings[key])) filamentKeys.add(key);
+    if (key.startsWith('filament_') && Array.isArray(projectSettings[key]) && !FILAMENT_METADATA_SCALARS.has(key)) filamentKeys.add(key);
   }
 
   // Expand each filament_* key to targetCount-element array
@@ -142,9 +149,10 @@ function mergeFilamentProfiles(
   projectSettings['support_filament'] = config.supportFilament;
   projectSettings['support_interface_filament'] = config.supportInterfaceFilament;
 
+  // filament_id is scalar metadata (Preset.hpp BBL_JSON_KEY_FILAMENT_ID) — never expand
   const filamentKeys = new Set<string>();
-  if (profile0) for (const key of Object.keys(profile0)) { if (key.startsWith('filament_')) filamentKeys.add(key); }
-  if (profile1) for (const key of Object.keys(profile1)) { if (key.startsWith('filament_')) filamentKeys.add(key); }
+  if (profile0) for (const key of Object.keys(profile0)) { if (key.startsWith('filament_') && key !== 'filament_id') filamentKeys.add(key); }
+  if (profile1) for (const key of Object.keys(profile1)) { if (key.startsWith('filament_') && key !== 'filament_id') filamentKeys.add(key); }
 
   for (const key of filamentKeys) {
     const val0 = profile0?.[key];
@@ -387,6 +395,10 @@ function runSliceDirect(
             for (const [key, val] of Object.entries(profileSettings)) {
               // Skip metadata fields that aren't actual slicer settings
               if (['type', 'name', 'inherits', 'from', 'version'].includes(key)) continue;
+              // Skip null values — many exported profiles contain "key": null for
+              // inherited-from-parent markers. Overwriting defaults with null breaks
+              // the slicer (e.g. extruder_clearance_radius must be string, not null).
+              if (val === null) continue;
               projectSettings[key] = val;
             }
           } catch {

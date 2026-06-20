@@ -112,9 +112,10 @@ function expandFilamentSlots(
     try { return JSON.parse(p.settings) as Record<string, unknown>; } catch { return null; }
   });
 
+  // filament_id is scalar metadata (Preset.hpp BBL_JSON_KEY_FILAMENT_ID) — never expand
   const filamentKeys = new Set<string>();
   for (const p of resolved) {
-    if (p) for (const key of Object.keys(p)) { if (key.startsWith('filament_')) filamentKeys.add(key); }
+    if (p) for (const key of Object.keys(p)) { if (key.startsWith('filament_') && key !== 'filament_id') filamentKeys.add(key); }
   }
 
   for (const key of filamentKeys) {
@@ -150,9 +151,10 @@ function mergeFilamentProfiles(
   projectSettings['support_filament'] = config.supportFilament;
   projectSettings['support_interface_filament'] = config.supportInterfaceFilament;
 
+  // filament_id is scalar metadata — never expand
   const filamentKeys = new Set<string>();
-  if (profile0) for (const key of Object.keys(profile0)) { if (key.startsWith('filament_')) filamentKeys.add(key); }
-  if (profile1) for (const key of Object.keys(profile1)) { if (key.startsWith('filament_')) filamentKeys.add(key); }
+  if (profile0) for (const key of Object.keys(profile0)) { if (key.startsWith('filament_') && key !== 'filament_id') filamentKeys.add(key); }
+  if (profile1) for (const key of Object.keys(profile1)) { if (key.startsWith('filament_') && key !== 'filament_id') filamentKeys.add(key); }
 
   for (const key of filamentKeys) {
     const val0 = profile0?.[key];
@@ -210,6 +212,8 @@ async function processSliceJob(job: Job<SliceJobData>, db: Db): Promise<void> {
         projectSettings[key] = String(val);
       }
     }
+    // Note: profile merge + null-skip happens in runSliceDirect; queue path is
+    // currently unused (Redis not deployed in dev) — kept in sync separately.
 
     // Multi-material: load second filament profile and expand arrays
     if (multiMaterial?.enabled) {
