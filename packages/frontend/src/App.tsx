@@ -21,6 +21,7 @@ import { GcodePreviewCanvas } from './components/Viewer/GcodePreviewCanvas';
 import { GcodeLayerSlider } from './components/Viewer/GcodeLayerSlider';
 import { GcodeTimeBreakdown } from './components/Viewer/GcodeTimeBreakdown';
 import { PrinterDashboard } from './components/PrinterMonitor/PrinterDashboard';
+import { MultiPrinterFit } from './components/PrinterMonitor/MultiPrinterFit';
 import { HomeDashboard } from './components/Home/HomeDashboard';
 import { PrinterDetail } from './components/PrinterMonitor/PrinterDetail';
 import { useSSE } from './hooks/useSSE';
@@ -326,12 +327,12 @@ export default function App() {
   const [showPrinters, setShowPrinters] = useState(false);
 
   // Registered printers (for target picker + Send)
-  const [printers, setPrinters] = useState<Array<{ id: string; name: string; model?: string | null; protocol: string }>>([]);
+  const [printers, setPrinters] = useState<Array<{ id: string; name: string; model?: string | null; protocol: string; bedVolume?: { x: number; y: number; z: number } | null }>>([]);
   const [targetPrinterId, setTargetPrinterId] = useState<string | null>(() => localStorage.getItem('snorcal_target_printer'));
   const [bedVolume, setBedVolume] = useState<{ x: number; y: number; z: number } | null>(null);
   useEffect(() => {
     api.listPrinters().then(list => {
-      setPrinters(list.map(p => ({ id: p.id, name: p.name, model: p.model, protocol: p.protocol })));
+      setPrinters(list.map(p => ({ id: p.id, name: p.name, model: p.model, protocol: p.protocol, bedVolume: p.bedVolume ?? null })));
       // Auto-pick first if none selected
       if (list.length > 0) {
         setTargetPrinterId(cur => {
@@ -717,6 +718,27 @@ export default function App() {
     return { minX: off.x - hx, maxX: off.x + hx, minZ: -hz, maxZ: hz };
   }, [plateOffsets, activePlateId, bedForLayout.x, bedForLayout.y]);
 
+  // Combined XYZ bounds (mm) of all visible models on the active plate — for fit-check.
+  const activePlateModelBounds = useMemo(() => {
+    let minX = Infinity, minY = Infinity, minZ = Infinity;
+    let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+    let found = false;
+    for (let i = 0; i < meshRefs.current.length; i++) {
+      const mesh = meshRefs.current[i];
+      const pm = projectModels[i];
+      if (!mesh || !pm || pm.plateId !== activePlateId || !pm.visible) continue;
+      mesh.updateMatrixWorld(true);
+      const box = new THREE.Box3().setFromObject(mesh);
+      if (!isFinite(box.min.x)) continue;
+      minX = Math.min(minX, box.min.x); maxX = Math.max(maxX, box.max.x);
+      minY = Math.min(minY, box.min.y); maxY = Math.max(maxY, box.max.y);
+      minZ = Math.min(minZ, box.min.z); maxZ = Math.max(maxZ, box.max.z);
+      found = true;
+    }
+    if (!found) return null;
+    return { x: maxX - minX, y: maxY - minY, z: maxZ - minZ };
+  }, [projectModels, activePlateId, meshRevision]);
+
   const handleAutoOrient = useCallback(() => {
     if (!activeMesh || activeModelIndex == null) return;
     const newRotation = autoOrient(activeMesh.geometry);
@@ -1040,20 +1062,32 @@ export default function App() {
               + Add Printer
             </button>
           ) : (
-            <select
-              value={targetPrinterId ?? ''}
-              onChange={(e) => {
-                const v = e.target.value || null;
-                setTargetPrinterId(v);
-                if (v) localStorage.setItem('snorcal_target_printer', v);
-              }}
-              className="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-xs text-white">
-              {printers.map(p => (
-                <option key={p.id} value={p.id}>
-                  {p.name}{p.model ? ` · ${p.model}` : ''}
-                </option>
-              ))}
-            </select>
+            <>
+              <select
+                value={targetPrinterId ?? ''}
+                onChange={(e) => {
+                  const v = e.target.value || null;
+                  setTargetPrinterId(v);
+                  if (v) localStorage.setItem('snorcal_target_printer', v);
+                }}
+                className="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-xs text-white">
+                {printers.map(p => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}{p.model ? ` · ${p.model}` : ''}
+                  </option>
+                ))}
+              </select>
+              {activePlateModelBounds && (
+                <div className="mt-1.5">
+                  <MultiPrinterFit
+                    printers={printers}
+                    plateBounds={activePlateModelBounds}
+                    activePrinterId={targetPrinterId}
+                    onSelect={(id) => { setTargetPrinterId(id); localStorage.setItem('snorcal_target_printer', id); }}
+                  />
+                </div>
+              )}
+            </>
           )}
         </div>
 
