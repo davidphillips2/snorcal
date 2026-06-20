@@ -182,6 +182,13 @@ function KindIcon({ kind }: { kind: ModelKind }) {
       </span>
     );
   }
+  if (kind === 'support') {
+    return (
+      <span className="shrink-0 w-4 h-4 flex items-center justify-center text-purple-400 text-xs" title="Custom support">
+        ⊿
+      </span>
+    );
+  }
   return (
     <span className="shrink-0 w-4 h-4 flex items-center justify-center text-gray-400 text-xs" title="Model">
       ▣

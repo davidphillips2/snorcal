@@ -16,6 +16,8 @@ interface ViewerToolbarProps {
   onRotationChange: (rotation: Rotation3D) => void;
   onAutoOrient: () => void;
   filamentColors?: string[];
+  supportDiameter: number;
+  onSupportDiameterChange: (d: number) => void;
 }
 
 const PALETTE = [
@@ -126,12 +128,22 @@ function IconCut() {
   );
 }
 
+function IconSupport() {
+  return (
+    <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 3v18" />
+      <path d="M8 7h8M6 11h12M4 15h16M6 19h12" strokeDasharray="2 2" />
+    </svg>
+  );
+}
+
 const MODES: { key: PaintMode; label: string; Icon: () => ReactNode }[] = [
   { key: 'orbit', label: 'Orbit', Icon: IconOrbit },
   { key: 'rotate', label: 'Rotate', Icon: IconRotate },
   { key: 'transform', label: 'Transform', Icon: IconTransform },
   { key: 'measure', label: 'Measure', Icon: IconMeasure },
   { key: 'cut', label: 'Cut', Icon: IconCut },
+  { key: 'support', label: 'Support', Icon: IconSupport },
   { key: 'lay', label: 'Lay Flat', Icon: IconLayFlat },
   { key: 'paint', label: 'Paint', Icon: IconPaint },
   { key: 'fill', label: 'Fill', Icon: IconFill },
@@ -140,9 +152,11 @@ const MODES: { key: PaintMode; label: string; Icon: () => ReactNode }[] = [
 export function ViewerToolbar({
   paintMode, onModeChange, activeColor, onColorChange, onUndo, onRedo, canUndo, canRedo, onSave,
   rotation, onRotationChange, onAutoOrient, filamentColors,
+  supportDiameter, onSupportDiameterChange,
 }: ViewerToolbarProps) {
   const palette = filamentColors && filamentColors.length > 0 ? filamentColors : PALETTE;
   const isPainting = paintMode === 'paint' || paintMode === 'fill';
+  const isSupport = paintMode === 'support';
 
   return (
     <>
@@ -226,6 +240,26 @@ export function ViewerToolbar({
                   <div className="w-full h-full" style={{ background: `conic-gradient(red, yellow, lime, aqua, blue, magenta, red)` }} />
                 </label>
               </div>
+            </>
+          )}
+
+          {isSupport && (
+            <>
+              <div className="w-px h-6 bg-gray-600 mx-1" />
+              <label className="flex items-center gap-1.5 text-xs text-gray-400">
+                <span>Ø</span>
+                <input
+                  type="range"
+                  min={2}
+                  max={20}
+                  step={0.5}
+                  value={supportDiameter}
+                  onChange={(e) => onSupportDiameterChange(Number(e.target.value))}
+                  className="w-24 accent-blue-500"
+                />
+                <span className="font-mono w-12 text-gray-300">{supportDiameter.toFixed(1)}mm</span>
+              </label>
+              <span className="text-[10px] text-gray-500 hidden sm:inline">Click face to drop pillar</span>
             </>
           )}
         </div>

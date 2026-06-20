@@ -176,6 +176,16 @@ function makeMaterialForKind(kind: ModelKind): THREE.Material {
       roughness: 0.5,
     });
   }
+  if (kind === 'support') {
+    return new THREE.MeshStandardMaterial({
+      color: 0x9933cc,
+      transparent: true,
+      opacity: 0.5,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+      roughness: 0.5,
+    });
+  }
   return new THREE.MeshStandardMaterial({
     vertexColors: true,
     flatShading: true,

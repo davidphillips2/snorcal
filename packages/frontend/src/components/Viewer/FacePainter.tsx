@@ -3,7 +3,7 @@ import * as THREE from 'three';
 import type { Rotation3D } from './STLViewer';
 import { rotationFromNormalToDown } from './STLViewer';
 
-export type PaintMode = 'orbit' | 'paint' | 'fill' | 'rotate' | 'lay' | 'transform' | 'measure' | 'cut';
+export type PaintMode = 'orbit' | 'paint' | 'fill' | 'rotate' | 'lay' | 'transform' | 'measure' | 'cut' | 'support';
 
 interface FacePainterProps {
   mesh: THREE.Mesh | null;

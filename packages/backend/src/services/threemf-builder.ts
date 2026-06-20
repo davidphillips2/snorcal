@@ -4,7 +4,7 @@ import fs from 'node:fs';
 
 // --- Types ---
 
-export type ThreeMFObjectKind = 'model' | 'negative' | 'modifier';
+export type ThreeMFObjectKind = 'model' | 'negative' | 'modifier' | 'support';
 
 export interface ThreeMFModelInput {
   stlPath: string;
@@ -76,8 +76,8 @@ export async function build3MF(input: ThreeMFBuildInput): Promise<Buffer> {
     const name = model.name ?? `model_${mi}`;
     const geo = processModelGeometry(model, buildVolume);
 
-    // Negative/modifier volumes never split by paint — single object
-    if (kind === 'negative' || kind === 'modifier') {
+    // Negative/modifier/support volumes never split by paint — single object
+    if (kind === 'negative' || kind === 'modifier' || kind === 'support') {
       const parentId = model.linkedTo != null ? firstObjIdByModelIndex.get(model.linkedTo) : undefined;
       const id = nextId++;
       allObjects.push({
@@ -334,12 +334,14 @@ function paintColorToExtruder(pc: string | null): number {
 function kindTo3MFType(kind: ThreeMFObjectKind): string {
   if (kind === 'negative') return 'negative_part';
   if (kind === 'modifier') return 'modifier';
+  if (kind === 'support') return 'support_model';
   return 'model';
 }
 
 function kindToPartSubtype(kind: ThreeMFObjectKind): string {
   if (kind === 'negative') return 'negative_part';
   if (kind === 'modifier') return 'modifier';
+  if (kind === 'support') return 'support_model';
   return 'normal_part';
 }
 

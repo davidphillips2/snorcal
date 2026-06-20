@@ -8,6 +8,7 @@ import { TransformPanel } from './components/ModelEdit/TransformPanel';
 import { MeasureTool, type Measurement } from './components/ModelEdit/MeasureTool';
 import { CutTool } from './components/ModelEdit/CutTool';
 import { AddVolumeModal } from './components/ModelEdit/AddVolumeModal';
+import { SupportPainter } from './components/ModelEdit/SupportPainter';
 import { ObjectListPanel } from './components/ObjectList/ObjectListPanel';
 import { AxisIndicator } from './components/Viewer/AxisIndicator';
 import { Bed } from './components/Viewer/Bed';
@@ -818,6 +819,36 @@ export default function App() {
     }
   }, [addVolumeKind, activeModel, activePlateId, updateModels]);
 
+  // Support painter — click mesh → upload pillar STL linked to that parent
+  const [supportDiameter, setSupportDiameter] = useState(5);
+  const handleAddSupport = useCallback(async (file: File, parentModelId: string, positionOffset: { x: number; y: number; z: number }) => {
+    setIsUploading(true);
+    try {
+      const uploaded = await api.uploadModel(file);
+      const parentPm = projectModels.find(p => p.modelId === parentModelId);
+      const newPm: ProjectModel = {
+        modelId: uploaded.id,
+        name: uploaded.name,
+        faceCount: uploaded.faceCount,
+        plateCount: uploaded.plateCount ?? 1,
+        plateId: parentPm?.plateId ?? activePlateId,
+        rotation: { x: 0, y: 0, z: 0 },
+        positionOffset,
+        scale: { ...DEFAULT_SCALE },
+        mirror: { ...DEFAULT_MIRROR },
+        faceColors: null,
+        visible: true,
+        kind: 'support',
+        linkedTo: [parentModelId],
+      };
+      updateModels(prev => [...prev, newPm]);
+    } catch (err) {
+      alert(`Add support failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setIsUploading(false);
+    }
+  }, [projectModels, activePlateId, updateModels]);
+
   const isSlicing = jobs.some(j => j.status === 'running' || j.status === 'queued');
   const hasVisibleModels = activePlateModels.some(m => m.visible);
   const hasVisibleOnAnyPlate = projectModels.some(m => m.visible);
@@ -827,7 +858,7 @@ export default function App() {
   const isPaintingRef = useRef(false);
   useEffect(() => {
     if (!sceneRefs) return;
-    const isPaintMode = paintMode === 'paint' || paintMode === 'fill' || paintMode === 'lay';
+    const isPaintMode = paintMode === 'paint' || paintMode === 'fill' || paintMode === 'lay' || paintMode === 'support';
 
     sceneRefs.controls.mouseButtons = {
       LEFT: paintMode === 'orbit' ? THREE.MOUSE.ROTATE : undefined,
@@ -1160,6 +1191,14 @@ export default function App() {
                 active={paintMode === 'measure'}
                 onMeasurementChange={setMeasurement}
               />
+              <SupportPainter
+                sceneRefs={sceneRefs}
+                meshes={meshRefs.current.filter((m): m is THREE.Mesh => !!m)}
+                projectModels={projectModels}
+                active={paintMode === 'support'}
+                pillarDiameter={supportDiameter}
+                onAdd={handleAddSupport}
+              />
               <CutTool
                 sceneRefs={sceneRefs}
                 mesh={activeMesh}
@@ -1182,6 +1221,8 @@ export default function App() {
                 onRotationChange={handleRotationChange}
                 onAutoOrient={handleAutoOrient}
                 filamentColors={filamentSlots.map(s => s.color)}
+                supportDiameter={supportDiameter}
+                onSupportDiameterChange={setSupportDiameter}
               />
               {paintMode === 'transform' && (
                 <TransformPanel

@@ -5,8 +5,9 @@ export type ModelFormat = 'stl' | 'step';
  * - `model` — printable geometry
  * - `negative` — subtractive volume (3MF `negative_part`)
  * - `modifier` — settings override region (3MF `modifier`)
+ * - `support` — custom support pillar (3MF `support_model`)
  */
-export type ModelKind = 'model' | 'negative' | 'modifier';
+export type ModelKind = 'model' | 'negative' | 'modifier' | 'support';
 
 /** Non-uniform scale factors per axis. */
 export interface Scale3D {
