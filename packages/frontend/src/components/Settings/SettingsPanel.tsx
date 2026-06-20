@@ -124,6 +124,7 @@ export function SettingsPanel({
   const [printers, setPrinters] = useState<Array<{ name: string; model?: string | null }>>([]);
   const [importing, setImporting] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [diffMode, setDiffMode] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -256,16 +257,35 @@ export function SettingsPanel({
     </div>
   );
 
-  // Filter groups by search
+  // Filter groups by search and/or diff-mode
   const searchLower = search.toLowerCase();
-  const filteredGroups = search
-    ? SETTING_GROUPS.map(g => ({
-        ...g,
-        settings: g.settings.filter(s =>
-          s.label.toLowerCase().includes(searchLower) || s.key.toLowerCase().includes(searchLower)
-        ),
-      })).filter(g => g.settings.length > 0)
-    : SETTING_GROUPS;
+  const filteredGroups = (() => {
+    let groups = SETTING_GROUPS;
+    if (diffMode) {
+      groups = groups
+        .map(g => ({
+          ...g,
+          settings: g.settings.filter(s => {
+            const cur = settings[s.key];
+            const def = DEFAULT_VALUES[s.key];
+            // Show only when user has explicitly overridden default
+            return cur !== undefined && def !== undefined && String(cur) !== String(def);
+          }),
+        }))
+        .filter(g => g.settings.length > 0);
+    }
+    if (search) {
+      groups = groups
+        .map(g => ({
+          ...g,
+          settings: g.settings.filter(s =>
+            s.label.toLowerCase().includes(searchLower) || s.key.toLowerCase().includes(searchLower)
+          ),
+        }))
+        .filter(g => g.settings.length > 0);
+    }
+    return groups;
+  })();
 
   // Auto-expand groups when searching
   const isGroupCollapsed = (group: SettingGroup) => {
@@ -468,15 +488,24 @@ export function SettingsPanel({
         )}
       </div>
 
-      {/* Search */}
-      <div>
+      {/* Search + diff toggle */}
+      <div className="flex gap-2">
         <input
           type="text"
           placeholder="Search settings..."
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          className="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-xs text-white placeholder-gray-500"
+          className="flex-1 bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-xs text-white placeholder-gray-500"
         />
+        <button
+          onClick={() => setDiffMode(d => !d)}
+          title="Show only values that differ from defaults"
+          className={`px-2 py-1.5 rounded text-xs whitespace-nowrap transition ${
+            diffMode ? 'bg-amber-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+          }`}
+        >
+          Diff
+        </button>
       </div>
 
       {/* Setting groups */}
