@@ -17,7 +17,7 @@ export function AddPrinterModal({ onClose, onAdded }: Props) {
   const [apiKey, setApiKey] = useState('');
   const [cameraStreamUrl, setCameraStreamUrl] = useState('');
   const [cameraSnapshotUrl, setCameraSnapshotUrl] = useState('');
-  const [manualSlots, setManualSlots] = useState<number>(4);      // snapmaker direct-feed spool count
+  const [manualSlots, setManualSlots] = useState<number>(0);      // multi-extruder / CFS / direct-feed spool count
   const [modelChoice, setModelChoice] = useState<string>('');     // '' | '__other__' | profile-name
   const [modelCustom, setModelCustom] = useState<string>('');     // free text when __other__
   const [availableModels, setAvailableModels] = useState<string[]>([]);
@@ -77,7 +77,7 @@ export function AddPrinterModal({ onClose, onAdded }: Props) {
         cameraStreamUrl: cameraStreamUrl.trim() || undefined,
         cameraSnapshotUrl: cameraSnapshotUrl.trim() || undefined,
         model: modelChoice === '__other__' ? modelCustom.trim() : (modelChoice || undefined),
-        manualSlots: protocol === 'snapmaker' ? manualSlots : undefined,
+        manualSlots: protocol === 'snapmaker' || protocol === 'moonraker' ? manualSlots : undefined,
       });
       onAdded();
     } catch (e) {
@@ -199,10 +199,20 @@ export function AddPrinterModal({ onClose, onAdded }: Props) {
         )}
 
         {protocol === 'moonraker' && (
-          <Field label="API Key (optional)">
-            <input value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder="blank if trusted"
-              className="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-white" />
-          </Field>
+          <>
+            <Field label="API Key (optional)">
+              <input value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder="blank if trusted"
+                className="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-white" />
+            </Field>
+            <Field label="Manual spool count (optional)">
+              <input type="number" min={0} max={8} value={manualSlots}
+                onChange={(e) => setManualSlots(Math.max(0, Math.min(8, Number(e.target.value) || 0)))}
+                className="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-white" />
+              <span className="block text-[11px] text-gray-500 mt-1">
+                For multi-extruder / Creality CFS / Snapmaker U1 (4). 0 = single-extruder. Enables filament remap at print time.
+              </span>
+            </Field>
+          </>
         )}
 
         {/* Camera URLs — optional overrides */}

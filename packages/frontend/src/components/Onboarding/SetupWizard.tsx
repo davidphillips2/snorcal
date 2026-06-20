@@ -29,7 +29,7 @@ export function SetupWizard({ onClose, onAdded }: Props) {
   const [modelChoice, setModelChoice] = useState<string>('');
   const [modelCustom, setModelCustom] = useState<string>('');
   const [availableModels, setAvailableModels] = useState<string[]>([]);
-  const [manualSlots, setManualSlots] = useState<number>(4);      // snapmaker direct-feed spool count
+  const [manualSlots, setManualSlots] = useState<number>(4);      // snapmaker U1 default = 4; moonraker can override
 
   const [scanning, setScanning] = useState(false);
   const [discovered, setDiscovered] = useState<DiscoveredDevice[]>([]);
@@ -103,7 +103,7 @@ export function SetupWizard({ onClose, onAdded }: Props) {
         accessCode: accessCode.trim() || undefined,
         apiKey: apiKey.trim() || undefined,
         model: modelChoice === '__other__' ? modelCustom.trim() : (modelChoice || undefined),
-        manualSlots: protocol === 'snapmaker' ? manualSlots : undefined,
+        manualSlots: protocol === 'snapmaker' || protocol === 'moonraker' ? manualSlots : undefined,
       });
       onAdded();
     } catch (e) {
@@ -281,9 +281,19 @@ export function SetupWizard({ onClose, onAdded }: Props) {
               )}
 
               {protocol === 'moonraker' && (
-                <Field label="API key (optional)">
-                  <input value={apiKey} onChange={e => setApiKey(e.target.value)} placeholder="blank if trusted" className={inputCls} />
-                </Field>
+                <>
+                  <Field label="API key (optional)">
+                    <input value={apiKey} onChange={e => setApiKey(e.target.value)} placeholder="blank if trusted" className={inputCls} />
+                  </Field>
+                  <Field label="Manual spool count (optional)">
+                    <input type="number" min={0} max={8} value={manualSlots}
+                      onChange={e => setManualSlots(Math.max(0, Math.min(8, Number(e.target.value) || 0)))}
+                      className={inputCls} />
+                    <span className="block text-[11px] text-gray-500 mt-1">
+                      For multi-extruder / Creality CFS / Snapmaker U1 via Moonraker (4). 0 = single-extruder.
+                    </span>
+                  </Field>
+                </>
               )}
 
               <div className="flex gap-2 pt-2">

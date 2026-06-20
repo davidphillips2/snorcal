@@ -599,12 +599,39 @@ function parseGcodeEstimates(gcodePath: string, modelName: string): {
 
   for (const line of lines) {
     if (!line.startsWith(';')) continue;
-    const m1 = line.match(/estimated printing time \(normal mode\) = (.+)/);
-    if (m1) estimatedTime = m1[1].trim();
-    const m2 = line.match(/total filament used \[g\] = ([\d.]+)/);
-    if (m2) filamentUsedG = parseFloat(m2[1]);
-    const m3 = line.match(/total filament cost = ([\d.]+)/);
-    if (m3) filamentCost = parseFloat(m3[1]);
+    // OrcaSlicer (current): "; model printing time: 31m; total estimated time: 37m 55s"
+    // BambuStudio (legacy): "; estimated printing time (normal mode) = 37m 55s"
+    if (!estimatedTime) {
+      const m1a = line.match(/total estimated time:\s*(.+)/);
+      if (m1a) estimatedTime = m1a[1].split(';')[0].trim();
+      else {
+        const m1b = line.match(/estimated printing time \(normal mode\)\s*=\s*(.+)/);
+        if (m1b) estimatedTime = m1b[1].trim();
+      }
+    }
+    // OrcaSlicer: "; filament used [g] = 5.83" (scalar) or array
+    if (filamentUsedG === undefined) {
+      const m2 = line.match(/filament used \[g\]\s*[:=]\s*([\d.\s,\[\]]+)/);
+      if (m2) {
+        // Sum array elements; for scalar, parseFloat gets the single value.
+        const nums = m2[1].match(/[\d.]+/g);
+        if (nums) filamentUsedG = nums.reduce((sum, s) => sum + parseFloat(s), 0);
+      } else {
+        const m2b = line.match(/total filament used \[g\]\s*=\s*([\d.]+)/);
+        if (m2b) filamentUsedG = parseFloat(m2b[1]);
+      }
+    }
+    // OrcaSlicer: "; filament cost = 0.09" (scalar) or array
+    if (filamentCost === undefined) {
+      const m3 = line.match(/filament cost\s*[:=]\s*([\d.\s,\[\]]+)/);
+      if (m3) {
+        const nums = m3[1].match(/[\d.]+/g);
+        if (nums) filamentCost = nums.reduce((sum, s) => sum + parseFloat(s), 0);
+      } else {
+        const m3b = line.match(/total filament cost\s*=\s*([\d.]+)/);
+        if (m3b) filamentCost = parseFloat(m3b[1]);
+      }
+    }
   }
 
   return { modelName, estimatedTime, filamentUsedG, filamentCost };
