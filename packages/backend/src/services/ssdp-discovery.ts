@@ -2,7 +2,7 @@ import dgram from 'node:dgram';
 import net from 'node:net';
 import os from 'node:os';
 import { execFile } from 'node:child_process';
-import type { DiscoveredDevice } from '@slorca/shared';
+import type { DiscoveredDevice } from '@snorcal/shared';
 
 const SSDP_ADDR = '239.255.255.250';
 const SSDP_PORT = 1900;

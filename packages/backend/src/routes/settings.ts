@@ -5,7 +5,7 @@ import {
   DEFAULT_PROCESS_SETTINGS,
   DEFAULT_MACHINE_SETTINGS,
   DEFAULT_FILAMENT_SETTINGS,
-} from '@slorca/shared';
+} from '@snorcal/shared';
 
 const VALID_TYPES = ['machine', 'filament', 'process'] as const;
 type ProfileType = typeof VALID_TYPES[number];

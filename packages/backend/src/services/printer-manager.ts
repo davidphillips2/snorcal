@@ -1,5 +1,5 @@
 import type { Db, DbPrinter } from '../db/index.js';
-import type { PrinterCommand, PrinterStatus } from '@slorca/shared';
+import type { PrinterCommand, PrinterStatus } from '@snorcal/shared';
 import type { PrinterAdapter } from './adapters/adapter.js';
 import { MoonrakerAdapter } from './adapters/moonraker-adapter.js';
 import { BambuAdapter } from './adapters/bambu-adapter.js';

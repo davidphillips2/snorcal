@@ -22,7 +22,7 @@ import { HomeDashboard } from './components/Home/HomeDashboard';
 import { PrinterDetail } from './components/PrinterMonitor/PrinterDetail';
 import { useSSE } from './hooks/useSSE';
 import * as api from './api/client';
-import type { ModelKind, Scale3D, Mirror3D } from '@slorca/shared';
+import type { ModelKind, Scale3D, Mirror3D } from '@snorcal/shared';
 
 // --- Types ---
 
@@ -93,9 +93,30 @@ interface PersistedState {
   printerIp: string;
 }
 
+// Migrate legacy slorca_* localStorage keys → snorcal_* (one-shot per key)
+function migrateLegacyKeys() {
+  const keys = [
+    'snorcal_project', 'snorcal_engine', 'snorcal_filament_slots',
+    'snorcal_printer_ip', 'snorcal_multi_material', 'snorcal_target_printer',
+  ];
+  for (const k of keys) {
+    const oldKey = k.replace('snorcal_', 'slorca_');
+    if (localStorage.getItem(k) === null && localStorage.getItem(oldKey) !== null) {
+      localStorage.setItem(k, localStorage.getItem(oldKey)!);
+      localStorage.removeItem(oldKey);
+    }
+  }
+  // printers.ts STORAGE_KEY legacy
+  if (localStorage.getItem('snorcal_printer') === null && localStorage.getItem('slorca_printer') !== null) {
+    localStorage.setItem('snorcal_printer', localStorage.getItem('slorca_printer')!);
+    localStorage.removeItem('slorca_printer');
+  }
+}
+
 function loadPersistedState(): PersistedState | null {
   try {
-    const raw = localStorage.getItem('slorca_project');
+    migrateLegacyKeys();
+    const raw = localStorage.getItem('snorcal_project');
     if (!raw) return null;
     return JSON.parse(raw);
   } catch { return null; }
@@ -103,7 +124,7 @@ function loadPersistedState(): PersistedState | null {
 
 function savePersistedState(state: PersistedState) {
   try {
-    localStorage.setItem('slorca_project', JSON.stringify(state));
+    localStorage.setItem('snorcal_project', JSON.stringify(state));
   } catch { /* localStorage full */ }
 }
 
@@ -167,7 +188,7 @@ export default function App() {
       forceUndoTick(t => t + 1);
       return;
     }
-    const paintUndo = (window as any).__slorca_undo as (() => void) | undefined;
+    const paintUndo = (window as any).__snorcal_undo as (() => void) | undefined;
     paintUndo?.();
   }, []);
 
@@ -213,19 +234,19 @@ export default function App() {
 
   // Slicer config
   const [jobs, setJobs] = useState<Job[]>([]);
-  const [engine, setEngineRaw] = useState(() => persisted.current?.engine || localStorage.getItem('slorca_engine') || 'orcaslicer');
+  const [engine, setEngineRaw] = useState(() => persisted.current?.engine || localStorage.getItem('snorcal_engine') || 'orcaslicer');
   const setEngine = useCallback((e: string) => {
-    localStorage.setItem('slorca_engine', e);
+    localStorage.setItem('snorcal_engine', e);
     setEngineRaw(e);
   }, []);
   const [settings, setSettings] = useState<Record<string, string>>(() => persisted.current?.settings || {});
   const [selectedProfiles, setSelectedProfiles] = useState(() => persisted.current?.selectedProfiles || {});
   const [filamentSlots, setFilamentSlots] = useState<Array<{ color: string; type: string; profile?: string }>>(() =>
-    persisted.current?.filamentSlots || (() => { try { return JSON.parse(localStorage.getItem('slorca_filament_slots') || 'null'); } catch { return null; } })() || [{ color: '#FF0000', type: 'PLA' }]
+    persisted.current?.filamentSlots || (() => { try { return JSON.parse(localStorage.getItem('snorcal_filament_slots') || 'null'); } catch { return null; } })() || [{ color: '#FF0000', type: 'PLA' }]
   );
-  const [printerIp, setPrinterIp] = useState(() => persisted.current?.printerIp || localStorage.getItem('slorca_printer_ip') || '');
+  const [printerIp, setPrinterIp] = useState(() => persisted.current?.printerIp || localStorage.getItem('snorcal_printer_ip') || '');
   const [multiMaterial, setMultiMaterial] = useState(() =>
-    persisted.current?.multiMaterial || (() => { try { return JSON.parse(localStorage.getItem('slorca_multi_material') || 'null'); } catch { return null; } })() || { enabled: false, supportFilament: '1', supportInterfaceFilament: '1' }
+    persisted.current?.multiMaterial || (() => { try { return JSON.parse(localStorage.getItem('snorcal_multi_material') || 'null'); } catch { return null; } })() || { enabled: false, supportFilament: '1', supportInterfaceFilament: '1' }
   );
 
   // UI
@@ -238,7 +259,7 @@ export default function App() {
 
   // Registered printers (for target picker + Send)
   const [printers, setPrinters] = useState<Array<{ id: string; name: string; model?: string | null; protocol: string }>>([]);
-  const [targetPrinterId, setTargetPrinterId] = useState<string | null>(() => localStorage.getItem('slorca_target_printer'));
+  const [targetPrinterId, setTargetPrinterId] = useState<string | null>(() => localStorage.getItem('snorcal_target_printer'));
   const [bedVolume, setBedVolume] = useState<{ x: number; y: number; z: number } | null>(null);
   useEffect(() => {
     api.listPrinters().then(list => {
@@ -247,7 +268,7 @@ export default function App() {
       if (list.length > 0) {
         setTargetPrinterId(cur => {
           const resolved = cur && list.some(p => p.id === cur) ? cur : list[0].id;
-          localStorage.setItem('slorca_target_printer', resolved);
+          localStorage.setItem('snorcal_target_printer', resolved);
           return resolved;
         });
       }
@@ -882,7 +903,7 @@ export default function App() {
       {/* Header */}
       <div className="px-4 py-3 border-b border-gray-700 shrink-0">
         <div className="flex items-center justify-between">
-          <h1 className="text-base font-bold tracking-tight">Slorca</h1>
+          <h1 className="text-base font-bold tracking-tight">Snorcal</h1>
         </div>
       </div>
 
@@ -918,7 +939,7 @@ export default function App() {
               onChange={(e) => {
                 const v = e.target.value || null;
                 setTargetPrinterId(v);
-                if (v) localStorage.setItem('slorca_target_printer', v);
+                if (v) localStorage.setItem('snorcal_target_printer', v);
               }}
               className="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-xs text-white">
               {printers.map(p => (
@@ -941,8 +962,8 @@ export default function App() {
             <SettingsPanel
               engine={engine} onEngineChange={setEngine} settings={settings} onSettingsChange={setSettings}
               selectedProfiles={selectedProfiles} onProfilesChange={setSelectedProfiles}
-              multiMaterial={multiMaterial} onMultiMaterialChange={(mm) => { setMultiMaterial(mm); localStorage.setItem('slorca_multi_material', JSON.stringify(mm)); }}
-              filamentSlots={filamentSlots} onFilamentSlotsChange={(slots) => { setFilamentSlots(slots); localStorage.setItem('slorca_filament_slots', JSON.stringify(slots)); }}
+              multiMaterial={multiMaterial} onMultiMaterialChange={(mm) => { setMultiMaterial(mm); localStorage.setItem('snorcal_multi_material', JSON.stringify(mm)); }}
+              filamentSlots={filamentSlots} onFilamentSlotsChange={(slots) => { setFilamentSlots(slots); localStorage.setItem('snorcal_filament_slots', JSON.stringify(slots)); }}
             />
           )}
         </div>
@@ -1015,7 +1036,7 @@ export default function App() {
       {/* Top nav */}
       <header className="flex items-center justify-between px-4 py-2 bg-gray-950 border-b border-gray-800 shrink-0 z-20">
         <div className="flex items-center gap-6">
-          <span className="text-base font-semibold tracking-tight">slorca</span>
+          <span className="text-base font-semibold tracking-tight">snorcal</span>
           <nav className="flex gap-1">
             {(['home', 'slice', 'jobs'] as const).map(v => (
               <button key={v} onClick={() => setView(v)}
@@ -1068,7 +1089,7 @@ export default function App() {
           <button onClick={() => setShowSidebar(!showSidebar)} className="p-1.5 rounded-lg bg-gray-700 text-gray-300 hover:bg-gray-600 transition">
             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" /></svg>
           </button>
-          <span className="text-sm font-bold">Slorca</span>
+          <span className="text-sm font-bold">Snorcal</span>
         </div>
 
         {/* 3D Viewer */}

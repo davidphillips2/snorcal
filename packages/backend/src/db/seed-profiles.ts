@@ -14,7 +14,7 @@ interface DefaultProfile {
   settings: Record<string, unknown>;
 }
 
-// Map source dir → slorca engine tag. CrealityPrint JSON format is
+// Map source dir → snorcal engine tag. CrealityPrint JSON format is
 // OrcaSlicer-compatible, so we re-tag its profiles as orcaslicer.
 const ENGINE_MAP: Record<string, string> = {
   orcaslicer: 'orcaslicer',

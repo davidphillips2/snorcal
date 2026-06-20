@@ -1,5 +1,5 @@
 {
-  "name": "slorca",
+  "name": "snorcal",
   "private": true,
   "scripts": {
     "dev": "pnpm --parallel --filter backend --filter frontend run dev",

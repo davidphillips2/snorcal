@@ -135,7 +135,7 @@ export function FacePainter({ mesh, renderer, activeColor, paintMode, onPaint, o
       mouse.x = ((clientX - rect.left) / rect.width) * 2 - 1;
       mouse.y = -((clientY - rect.top) / rect.height) * 2 + 1;
 
-      const camera = (renderer as any).__slorca_camera as THREE.Camera | undefined;
+      const camera = (renderer as any).__snorcal_camera as THREE.Camera | undefined;
       if (!camera) return;
 
       raycaster.setFromCamera(mouse, camera);
@@ -166,7 +166,7 @@ export function FacePainter({ mesh, renderer, activeColor, paintMode, onPaint, o
       mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
       mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
 
-      const camera = (renderer as any).__slorca_camera as THREE.Camera | undefined;
+      const camera = (renderer as any).__snorcal_camera as THREE.Camera | undefined;
       if (!camera) return;
 
       raycaster.setFromCamera(mouse, camera);
@@ -268,8 +268,8 @@ export function FacePainter({ mesh, renderer, activeColor, paintMode, onPaint, o
   }, [mesh]);
 
   useEffect(() => {
-    (window as any).__slorca_undo = undo;
-    return () => { delete (window as any).__slorca_undo; };
+    (window as any).__snorcal_undo = undo;
+    return () => { delete (window as any).__snorcal_undo; };
   }, [undo]);
 
   return null;

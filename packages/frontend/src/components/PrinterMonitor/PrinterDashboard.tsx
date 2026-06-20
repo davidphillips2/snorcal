@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import type { PrinterRecord, PrinterStatus } from '@slorca/shared';
+import type { PrinterRecord, PrinterStatus } from '@snorcal/shared';
 import * as api from '../../api/client';
 import { AddPrinterModal } from './AddPrinterModal';
 

@@ -1,7 +1,7 @@
 import JSZip from 'jszip';
 import { XMLParser } from 'fast-xml-parser';
 import fs from 'node:fs';
-import type { Bounds } from '@slorca/shared';
+import type { Bounds } from '@snorcal/shared';
 
 export interface Parse3MFResult {
   /** Non-indexed positions: 9 floats per face (3 vertices * xyz) */
@@ -663,7 +663,7 @@ export function writePositionsToSTL(positions: Float32Array, filePath: string): 
   const faceCount = positions.length / 9;
   const buf = Buffer.alloc(84 + faceCount * 50);
 
-  buf.write('Slorca 3MF Import', 0, 'ascii');
+  buf.write('Snorcal 3MF Import', 0, 'ascii');
   buf.writeUInt32LE(faceCount, 80);
 
   for (let f = 0; f < faceCount; f++) {

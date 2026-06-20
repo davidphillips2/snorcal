@@ -6,7 +6,7 @@ import type { Db } from '../db/index.js';
 import { discoverDevices } from '../services/ssdp-discovery.js';
 import { printerManager } from '../services/printer-manager.js';
 import { BambuAdapter } from '../services/adapters/bambu-adapter.js';
-import type { PrinterCommand, PrinterProtocol } from '@slorca/shared';
+import type { PrinterCommand, PrinterProtocol } from '@snorcal/shared';
 
 function toPrinterRecord(row: any) {
   return {

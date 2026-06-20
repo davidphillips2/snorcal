@@ -2,6 +2,7 @@ import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import multipart from '@fastify/multipart';
 import path from 'node:path';
+import fs from 'node:fs';
 import { Db } from './db/index.js';
 import { modelRoutes } from './routes/models.js';
 import { sliceRoutes } from './routes/slice.js';
@@ -23,7 +24,12 @@ export async function buildApp() {
   ensureDir(path.join(dataDir, 'output'));
 
   // Database
-  const dbPath = path.join(dataDir, 'slorca.db');
+  const dbPath = path.join(dataDir, 'snorcal.db');
+  // Migrate legacy filename slorca.db → snorcal.db (one-shot)
+  const legacyDbPath = path.join(dataDir, 'slorca.db');
+  if (!fs.existsSync(dbPath) && fs.existsSync(legacyDbPath)) {
+    fs.renameSync(legacyDbPath, dbPath);
+  }
   const db = new Db(dbPath);
 
   // Plugins

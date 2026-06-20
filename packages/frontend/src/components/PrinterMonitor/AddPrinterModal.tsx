@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import * as api from '../../api/client';
-import type { DiscoveredDevice } from '@slorca/shared';
+import type { DiscoveredDevice } from '@snorcal/shared';
 
 interface Props {
   onClose: () => void;

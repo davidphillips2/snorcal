@@ -135,7 +135,7 @@ export const PRINTERS: PrinterPreset[] = [
   },
 ];
 
-const STORAGE_KEY = 'slorca_printer';
+const STORAGE_KEY = 'snorcal_printer';
 
 export function getSavedPrinter(): PrinterPreset | null {
   try {

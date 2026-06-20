@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import * as THREE from 'three';
-import type { ModelKind } from '@slorca/shared';
+import type { ModelKind } from '@snorcal/shared';
 import { geometryToSTL } from '../../lib/stl-export';
 
 type Primitive = 'box' | 'cylinder' | 'sphere';

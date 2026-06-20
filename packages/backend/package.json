@@ -1,5 +1,5 @@
 {
-  "name": "@slorca/backend",
+  "name": "@snorcal/backend",
   "version": "0.1.0",
   "private": true,
   "main": "./dist/index.js",
@@ -12,7 +12,7 @@
     "@fastify/cors": "^10.0.0",
     "@fastify/multipart": "^9.0.0",
     "@fastify/static": "^8.0.0",
-    "@slorca/shared": "workspace:*",
+    "@snorcal/shared": "workspace:*",
     "basic-ftp": "^6.0.1",
     "better-sqlite3": "^11.0.0",
     "bullmq": "^5.0.0",

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useCallback } from 'react';
 import * as THREE from 'three';
 import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
-import type { Scale3D, Mirror3D, ModelKind } from '@slorca/shared';
+import type { Scale3D, Mirror3D, ModelKind } from '@snorcal/shared';
 
 export interface Rotation3D {
   x: number;

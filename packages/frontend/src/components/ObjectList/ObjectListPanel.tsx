@@ -1,5 +1,5 @@
 import { useMemo, useRef } from 'react';
-import type { ModelKind } from '@slorca/shared';
+import type { ModelKind } from '@snorcal/shared';
 import type { ProjectModel } from '../../App';
 import { ModelUploader } from '../ModelUploader';
 

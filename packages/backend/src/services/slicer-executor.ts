@@ -1,8 +1,8 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import path from 'node:path';
 import fs from 'node:fs';
-import { getSlicerBinary } from '@slorca/shared';
-import type { SlicerEngine } from '@slorca/shared';
+import { getSlicerBinary } from '@snorcal/shared';
+import type { SlicerEngine } from '@snorcal/shared';
 
 export interface SliceCommand {
   engine: SlicerEngine;

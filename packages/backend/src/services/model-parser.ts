@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import type { Bounds } from '@slorca/shared';
+import type { Bounds } from '@snorcal/shared';
 
 /**
  * Parse binary STL to extract vertex count, face count, and bounding box.

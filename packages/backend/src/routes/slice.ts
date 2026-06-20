@@ -8,8 +8,8 @@ import { getQueue } from '../jobs/queue.js';
 import { ensureDir, getJobsDir } from '../services/model-parser.js';
 import { build3MF, type ThreeMFModelInput } from '../services/threemf-builder.js';
 import { SlicerExecutor } from '../services/slicer-executor.js';
-import { PROJECT_SETTING_OVERRIDES } from '@slorca/shared';
-import type { SliceRequest, SliceJobData, MultiMaterialConfig, FilamentSlot } from '@slorca/shared';
+import { PROJECT_SETTING_OVERRIDES } from '@snorcal/shared';
+import type { SliceRequest, SliceJobData, MultiMaterialConfig, FilamentSlot } from '@snorcal/shared';
 import os from 'node:os';
 
 // Load the full default project settings template (slicer-exported defaults)

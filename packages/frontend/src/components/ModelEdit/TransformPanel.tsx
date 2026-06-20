@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import type { ProjectModel } from '../../App';
-import type { Scale3D, Mirror3D, ModelKind } from '@slorca/shared';
+import type { Scale3D, Mirror3D, ModelKind } from '@snorcal/shared';
 
 interface TransformPanelProps {
   model: ProjectModel | null;

@@ -56,7 +56,7 @@ export function Scene({ onReady }: SceneProps) {
     // Bed grid now rendered by <Bed> component, sized to target printer.
 
     // Store camera on renderer for FacePainter
-    (renderer as any).__slorca_camera = camera;
+    (renderer as any).__snorcal_camera = camera;
 
     // Notify parent
     onReadyRef.current({ scene, camera, renderer, controls });

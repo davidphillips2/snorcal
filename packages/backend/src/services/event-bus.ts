@@ -1,5 +1,5 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
-import type { PrinterStatus } from '@slorca/shared';
+import type { PrinterStatus } from '@snorcal/shared';
 
 type EventHandler = (type: string, data: unknown) => void;
 

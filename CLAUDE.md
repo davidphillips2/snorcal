@@ -68,7 +68,7 @@ Entry: `src/main.tsx` → `src/App.tsx`
 
 **API client** (`api/client.ts`): Thin fetch wrapper. State in `App.tsx`, no global store.
 
-### Shared (`@slorca/shared`)
+### Shared (`@snorcal/shared`)
 
 Types (`src/types/`): `SliceRequest`, `SliceJobData`, `MultiMaterialConfig`, `SlicerEngine`, model/API types.
 
@@ -90,6 +90,6 @@ Default template: `src/routes/default-project-settings.json`. Backend build must
 
 ## Data Storage
 
-- DB: `~/.slorca/slorca.db` (or `$SLORCA_DATA_DIR/slorca.db`)
-- Models: `~/.slorca/models/`
-- Jobs: `~/.slorca/jobs/<jobId>/` (input.3mf + output/*.gcode)
+- DB: `~/.snorcal/snorcal.db` (or `$SNORCAL_DATA_DIR/snorcal.db`)
+- Models: `~/.snorcal/models/`
+- Jobs: `~/.snorcal/jobs/<jobId>/` (input.3mf + output/*.gcode)

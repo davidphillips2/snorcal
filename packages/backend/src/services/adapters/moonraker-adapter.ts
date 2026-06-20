@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import FormData from 'form-data';
 import WebSocket from 'ws';
-import type { PrinterCommand, PrinterStatus, PrinterState, PrinterConnectionState } from '@slorca/shared';
+import type { PrinterCommand, PrinterStatus, PrinterState, PrinterConnectionState } from '@snorcal/shared';
 import type { PrinterAdapter } from './adapter.js';
 
 export interface MoonrakerAdapterOptions {

@@ -3,7 +3,7 @@ import net from 'node:net';
 import tls from 'node:tls';
 import mqtt from 'mqtt';
 import { Client as FtpClient } from 'basic-ftp';
-import type { PrinterCommand, PrinterStatus, PrinterState, PrinterConnectionState, AmsSlot } from '@slorca/shared';
+import type { PrinterCommand, PrinterStatus, PrinterState, PrinterConnectionState, AmsSlot } from '@snorcal/shared';
 import type { PrinterAdapter } from './adapter.js';
 
 export interface BambuAdapterOptions {
@@ -92,7 +92,7 @@ export class BambuAdapter implements PrinterAdapter {
     return new Promise((resolve, reject) => {
       const brokerUrl = `mqtts://${this.ip}:${this.port}`;
       const client = mqtt.connect(brokerUrl, {
-        clientId: `slorca_${this.serial}_${process.pid}`,
+        clientId: `snorcal_${this.serial}_${process.pid}`,
         username: 'bblp',
         password: this.accessCode,
         protocolVersion: 4,             // MQTT 3.1.1

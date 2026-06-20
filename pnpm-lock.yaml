@@ -23,7 +23,7 @@ importers:
       '@fastify/static':
         specifier: ^8.0.0
         version: 8.3.0
-      '@slorca/shared':
+      '@snorcal/shared':
         specifier: workspace:*
         version: link:../shared
       basic-ftp:
@@ -84,7 +84,7 @@ importers:
 
   packages/frontend:
     dependencies:
-      '@slorca/shared':
+      '@snorcal/shared':
         specifier: workspace:*
         version: link:../shared
       gcode-preview:

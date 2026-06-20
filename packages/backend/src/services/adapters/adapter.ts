@@ -1,4 +1,4 @@
-import type { PrinterCommand, PrinterStatus } from '@slorca/shared';
+import type { PrinterCommand, PrinterStatus } from '@snorcal/shared';
 
 /** Common adapter interface implemented by Moonraker, Bambu, etc. */
 export interface PrinterAdapter {

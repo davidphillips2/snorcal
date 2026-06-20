@@ -1,5 +1,5 @@
 {
-  "name": "@slorca/frontend",
+  "name": "@snorcal/frontend",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -9,7 +9,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@slorca/shared": "workspace:*",
+    "@snorcal/shared": "workspace:*",
     "gcode-preview": "^2.18.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
