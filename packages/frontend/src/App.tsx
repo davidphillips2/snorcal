@@ -245,6 +245,21 @@ export default function App() {
       };
     });
   }, []);
+  // Toggle hollow preset: 0% infill + 0 top/bottom shells + 3 wall loops
+  const toggleHollow = useCallback(() => {
+    setSettings(prev => {
+      const isOn = prev.sparse_infill_density === '0%'
+        && Number(prev.top_shell_layers || 99) === 0
+        && Number(prev.bottom_shell_layers || 99) === 0;
+      return {
+        ...prev,
+        sparse_infill_density: isOn ? '15%' : '0%',
+        top_shell_layers: isOn ? '4' : '0',
+        bottom_shell_layers: isOn ? '3' : '0',
+        wall_loops: isOn ? prev.wall_loops : (prev.wall_loops || '3'),
+      };
+    });
+  }, []);
 
   const handleUndo = useCallback(() => {
     // Project-models undo takes precedence; fall back to face-paint undo
@@ -1329,6 +1344,10 @@ export default function App() {
                 onPaintZRangeChange={setPaintZRange}
                 onToggleBrim={toggleBrim}
                 brimOn={settings.brim_type === 'brim_ears' && Number(settings.brim_width || 0) > 0}
+                onToggleHollow={toggleHollow}
+                hollowOn={settings.sparse_infill_density === '0%'
+                  && Number(settings.top_shell_layers || 99) === 0
+                  && Number(settings.bottom_shell_layers || 99) === 0}
               />
               {paintMode === 'transform' && (
                 <TransformPanel

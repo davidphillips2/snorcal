@@ -23,6 +23,8 @@ interface ViewerToolbarProps {
   onPaintZRangeChange: (r: { min: number; max: number } | null) => void;
   onToggleBrim: () => void;
   brimOn: boolean;
+  onToggleHollow: () => void;
+  hollowOn: boolean;
 }
 
 const PALETTE = [
@@ -151,6 +153,15 @@ function IconBrim() {
   );
 }
 
+function IconHollow() {
+  return (
+    <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10 10-4.5 10-10S17.5 2 12 2z" />
+      <path d="M12 7c-2.8 0-5 2.2-5 5s2.2 5 5 5 5-2.2 5-5-2.2-5-5-5z" strokeDasharray="2 2" />
+    </svg>
+  );
+}
+
 const MODES: { key: PaintMode; label: string; Icon: () => ReactNode }[] = [
   { key: 'orbit', label: 'Orbit', Icon: IconOrbit },
   { key: 'rotate', label: 'Rotate', Icon: IconRotate },
@@ -169,6 +180,7 @@ export function ViewerToolbar({
   supportDiameter, onSupportDiameterChange,
   paintZRange, paintZBounds, onPaintZRangeChange,
   onToggleBrim, brimOn,
+  onToggleHollow, hollowOn,
 }: ViewerToolbarProps) {
   const palette = filamentColors && filamentColors.length > 0 ? filamentColors : PALETTE;
   const isPainting = paintMode === 'paint' || paintMode === 'fill';
@@ -227,6 +239,15 @@ export function ViewerToolbar({
             }`}
           >
             <IconBrim />
+          </button>
+          <button
+            onClick={onToggleHollow}
+            title={hollowOn ? 'Hollow preset on (click to disable)' : 'Hollow preset (0% infill, open shells, 3 walls)'}
+            className={`w-8 h-8 flex items-center justify-center rounded-md transition ${
+              hollowOn ? 'bg-purple-600 text-white' : 'text-gray-300 hover:bg-gray-700'
+            }`}
+          >
+            <IconHollow />
           </button>
 
           {isPainting && (
