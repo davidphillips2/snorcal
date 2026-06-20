@@ -1,8 +1,9 @@
 import { useEffect, useRef, useCallback } from 'react';
 import * as THREE from 'three';
 import type { Rotation3D } from './STLViewer';
+import { rotationFromNormalToDown } from './STLViewer';
 
-export type PaintMode = 'orbit' | 'paint' | 'fill' | 'rotate' | 'lay';
+export type PaintMode = 'orbit' | 'paint' | 'fill' | 'rotate' | 'lay' | 'transform' | 'measure' | 'cut';
 
 interface FacePainterProps {
   mesh: THREE.Mesh | null;
@@ -117,7 +118,9 @@ export function FacePainter({ mesh, renderer, activeColor, paintMode, onPaint, o
   }, [getAdjacency, paintFace]);
 
   useEffect(() => {
-    if (!mesh || !renderer || paintMode === 'orbit' || paintMode === 'rotate') return;
+    if (!mesh || !renderer) return;
+    // Only handle pointer for paint/fill/lay; other modes have their own components
+    if (paintMode !== 'paint' && paintMode !== 'fill' && paintMode !== 'lay') return;
 
     const raycaster = new THREE.Raycaster();
     const mouse = new THREE.Vector2();
@@ -183,20 +186,16 @@ export function FacePainter({ mesh, renderer, activeColor, paintMode, onPaint, o
         const edge1 = new THREE.Vector3().subVectors(v1, v0);
         const edge2 = new THREE.Vector3().subVectors(v2, v0);
         const normal = new THREE.Vector3().crossVectors(edge1, edge2).normalize();
+        // Ensure outward-pointing: compare with face centroid direction from mesh center
+        const centroid = new THREE.Vector3().add(v0).add(v1).add(v2).multiplyScalar(1 / 3);
+        const bbox = new THREE.Box3().setFromBufferAttribute(posAttr);
+        const meshCenter = new THREE.Vector3();
+        bbox.getCenter(meshCenter);
+        const outward = centroid.clone().sub(meshCenter).normalize();
+        if (normal.dot(outward) < 0) normal.negate();
 
-        // We want this face's normal to point DOWN (-Y) so the face sits on the bed
-        const targetDown = new THREE.Vector3(0, -1, 0);
-        const quat = new THREE.Quaternion().setFromUnitVectors(normal, targetDown);
-        const euler = new THREE.Euler().setFromQuaternion(quat);
-        const rad2deg = 180 / Math.PI;
-
-        if (onLayOnFace) {
-          onLayOnFace({
-            x: Math.round(euler.x * rad2deg),
-            y: Math.round(euler.y * rad2deg),
-            z: Math.round(euler.z * rad2deg),
-          });
-        }
+        const rotation = rotationFromNormalToDown(normal);
+        if (onLayOnFace) onLayOnFace(rotation);
         return;
       }
 

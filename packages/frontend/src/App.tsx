@@ -1,9 +1,13 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import * as THREE from 'three';
 import { Scene, type SceneRefs } from './components/Viewer/Scene';
 import { STLViewer, extractFaceColors, autoOrient, type Rotation3D } from './components/Viewer/STLViewer';
 import { FacePainter, type PaintMode } from './components/Viewer/FacePainter';
 import { ViewerToolbar } from './components/Viewer/ViewerToolbar';
+import { TransformPanel } from './components/ModelEdit/TransformPanel';
+import { MeasureTool, type Measurement } from './components/ModelEdit/MeasureTool';
+import { CutTool } from './components/ModelEdit/CutTool';
+import { AddVolumeModal } from './components/ModelEdit/AddVolumeModal';
 import { AxisIndicator } from './components/Viewer/AxisIndicator';
 import { Bed } from './components/Viewer/Bed';
 import { ModelMover } from './components/Viewer/ModelMover';
@@ -17,10 +21,11 @@ import { HomeDashboard } from './components/Home/HomeDashboard';
 import { PrinterDetail } from './components/PrinterMonitor/PrinterDetail';
 import { useSSE } from './hooks/useSSE';
 import * as api from './api/client';
+import type { ModelKind, Scale3D, Mirror3D } from '@slorca/shared';
 
 // --- Types ---
 
-interface ProjectModel {
+export interface ProjectModel {
   modelId: string;
   name: string;
   faceCount: number;
@@ -28,9 +33,17 @@ interface ProjectModel {
   plateId: string; // which plate this model belongs to
   rotation: Rotation3D;
   positionOffset: { x: number; y: number; z: number };
+  scale: Scale3D;                  // default {1,1,1}
+  mirror: Mirror3D;                // default {false,false,false}
   faceColors: Uint8Array | null;
   visible: boolean;
+  kind: ModelKind;                 // default 'model'
+  linkedTo?: string[];             // parent modelId(s) for negative/modifier
+  settings?: Record<string, unknown>; // per-object override (modifier subset)
 }
+
+const DEFAULT_SCALE: Scale3D = { x: 1, y: 1, z: 1 };
+const DEFAULT_MIRROR: Mirror3D = { x: false, y: false, z: false };
 
 interface Job {
   id: string;
@@ -50,19 +63,26 @@ interface Job {
 
 // --- Persistence ---
 
+interface PersistedModel {
+  modelId: string;
+  name: string;
+  faceCount: number;
+  plateCount: number;
+  plateId: string;
+  rotation: Rotation3D;
+  positionOffset: { x: number; y: number; z: number };
+  scale?: Scale3D;
+  mirror?: Mirror3D;
+  visible: boolean;
+  kind?: ModelKind;
+  linkedTo?: string[];
+  settings?: Record<string, unknown>;
+}
+
 interface PersistedState {
   plates: Array<{ id: string; name: string }>;
   activePlateId: string;
-  models: Array<{
-    modelId: string;
-    name: string;
-    faceCount: number;
-    plateCount: number;
-    plateId: string;
-    rotation: Rotation3D;
-    positionOffset: { x: number; y: number; z: number };
-    visible: boolean;
-  }>;
+  models: PersistedModel[];
   activeModelIndex: number | null;
   engine: string;
   settings: Record<string, string>;
@@ -86,6 +106,15 @@ function savePersistedState(state: PersistedState) {
   } catch { /* localStorage full */ }
 }
 
+/** World-space bounding box dimensions in mm for a mesh. */
+function computeMeshBoundsMM(mesh: THREE.Mesh): { x: number; y: number; z: number } {
+  mesh.updateMatrixWorld(true);
+  const box = new THREE.Box3().setFromObject(mesh);
+  const size = new THREE.Vector3();
+  box.getSize(size);
+  return { x: size.x, y: size.y, z: size.z };
+}
+
 // --- App ---
 
 export default function App() {
@@ -95,6 +124,8 @@ export default function App() {
   const uploadInputRef = useRef<HTMLInputElement>(null);
   const sidebarUploadRef = useRef<HTMLInputElement>(null);
   const [paintMode, setPaintMode] = useState<PaintMode>('orbit');
+  const [measurement, setMeasurement] = useState<Measurement | null>(null);
+  const [addVolumeKind, setAddVolumeKind] = useState<'negative' | 'modifier' | null>(null);
   const [activeColor, setActiveColor] = useState('#FF0000');
 
   // Multi-model project state
@@ -163,6 +194,22 @@ export default function App() {
     }).catch(() => {});
   }, [targetPrinterId]);
 
+  // Plate layout: render all plates side-by-side on X axis. plateOffsets maps
+  // plateId → world-space center offset so each plate's bed sits next to others.
+  const bedForLayout = bedVolume ?? { x: 200, y: 200, z: 200 };
+  const PLATE_GAP = 20;
+  const plateOffsets = useMemo(() => {
+    const n = plates.length;
+    const step = bedForLayout.x + PLATE_GAP;
+    const totalWidth = n * bedForLayout.x + (n - 1) * PLATE_GAP;
+    const startX = -totalWidth / 2 + bedForLayout.x / 2;
+    const out: Record<string, { x: number; y: number; z: number }> = {};
+    plates.forEach((p, i) => {
+      out[p.id] = { x: startX + i * step, y: 0, z: 0 };
+    });
+    return out;
+  }, [plates, bedForLayout.x, bedForLayout.y, bedForLayout.z]);
+
   // Gcode preview
   const [previewJobId, setPreviewJobId] = useState<string | null>(null);
   const [gcodeText, setGcodeText] = useState<string | null>(null);
@@ -196,6 +243,9 @@ export default function App() {
       const restored: ProjectModel[] = saved.models.map(m => ({
         ...m,
         plateId: m.plateId || defaultPlateId, // backwards compat
+        scale: m.scale ?? { ...DEFAULT_SCALE },
+        mirror: m.mirror ?? { ...DEFAULT_MIRROR },
+        kind: m.kind ?? 'model',
         faceColors: null, // will be fetched via effect below
       }));
       setProjectModels(restored);
@@ -229,7 +279,9 @@ export default function App() {
         activePlateId,
         models: projectModels.map(m => ({
           modelId: m.modelId, name: m.name, faceCount: m.faceCount, plateCount: m.plateCount,
-          plateId: m.plateId, rotation: m.rotation, positionOffset: m.positionOffset, visible: m.visible,
+          plateId: m.plateId, rotation: m.rotation, positionOffset: m.positionOffset,
+          scale: m.scale, mirror: m.mirror, visible: m.visible,
+          kind: m.kind, linkedTo: m.linkedTo, settings: m.settings,
         })),
         activeModelIndex,
         engine,
@@ -295,8 +347,11 @@ export default function App() {
         plateId: activePlateId,
         rotation: { x: 0, y: 0, z: 0 },
         positionOffset: { x: offset, y: 0, z: 0 },
+        scale: { ...DEFAULT_SCALE },
+        mirror: { ...DEFAULT_MIRROR },
         faceColors: null,
         visible: true,
+        kind: 'model',
       };
       setProjectModels(prev => [...prev, newPm]);
       setActiveModelIndex(projectModels.length); // select new model
@@ -335,7 +390,17 @@ export default function App() {
     const processSettings: Record<string, string> = {};
     Object.assign(processSettings, settings);
     return api.submitSliceJob({
-      models: models.map(pm => ({ modelId: pm.modelId, rotation: pm.rotation, positionOffset: pm.positionOffset })),
+      models: models.map(pm => ({
+        modelId: pm.modelId,
+        rotation: pm.rotation,
+        positionOffset: pm.positionOffset,
+        scale: pm.scale,
+        mirror: pm.mirror,
+        kind: pm.kind,
+        linkedTo: pm.linkedTo,
+        name: pm.name,
+        settings: pm.settings,
+      })),
       engine,
       settings: { process: processSettings, machine: {}, filaments: [{}] },
       profiles: selectedProfiles,
@@ -441,7 +506,7 @@ export default function App() {
     setMeshRevision(prev => prev + 1); // force re-render so activeMesh updates
   }, []);
 
-  // Fit camera to all visible meshes when geometry loads
+  // Fit camera to all visible meshes + full plate layout when geometry loads
   useEffect(() => {
     if (!sceneRefs || projectModels.length === 0) return;
     const visibleMeshes = projectModels
@@ -452,6 +517,16 @@ export default function App() {
     for (const { mesh } of visibleMeshes) {
       mesh!.updateMatrixWorld(true);
       box.expandByObject(mesh!);
+    }
+    // Expand to full plate layout extent so all plates stay in view
+    const n = plates.length;
+    if (n > 0) {
+      const totalWidth = n * bedForLayout.x + (n - 1) * PLATE_GAP;
+      const minX = -totalWidth / 2;
+      const maxX = totalWidth / 2;
+      const hz = bedForLayout.y / 2;
+      box.expandByPoint(new THREE.Vector3(minX, 0, -hz));
+      box.expandByPoint(new THREE.Vector3(maxX, 0, hz));
     }
     const center = new THREE.Vector3();
     const size = new THREE.Vector3();
@@ -464,12 +539,21 @@ export default function App() {
     cam.lookAt(center);
     sceneRefs.controls.target.copy(center);
     sceneRefs.controls.update();
-  }, [meshRevision, sceneRefs]); // only reframe when meshes load, not on position changes
+  }, [meshRevision, sceneRefs, plates.length, bedForLayout.x, bedForLayout.y]);
 
   // Active model helpers — ensure active model is on active plate
   const activeModel = activeModelIndex != null && projectModels[activeModelIndex]?.plateId === activePlateId
     ? projectModels[activeModelIndex] : null;
   const activeMesh = activeModel != null ? meshRefs.current[activeModelIndex!] : null;
+
+  // Active plate world bounds for ModelMover clamp (plate X offset + bed half-size)
+  const activePlateBounds = useMemo(() => {
+    const off = plateOffsets[activePlateId];
+    if (!off) return null;
+    const hx = bedForLayout.x / 2;
+    const hz = bedForLayout.y / 2;  // bed Y → world Z
+    return { minX: off.x - hx, maxX: off.x + hx, minZ: -hz, maxZ: hz };
+  }, [plateOffsets, activePlateId, bedForLayout.x, bedForLayout.y]);
 
   const handleAutoOrient = useCallback(() => {
     if (!activeMesh || activeModelIndex == null) return;
@@ -499,6 +583,142 @@ export default function App() {
       positionOffset: { x: pos.x - rest.x, y: pos.y - rest.y, z: pos.z - rest.z }
     } : p));
   }, [activeModelIndex]);
+
+  // --- Transform ops (mirror / scale / duplicate / array) ---
+
+  const handleUpdateActiveModel = useCallback((patch: Partial<ProjectModel>) => {
+    if (activeModelIndex == null) return;
+    setProjectModels(prev => prev.map((p, i) => i === activeModelIndex ? { ...p, ...patch } : p));
+  }, [activeModelIndex]);
+
+  const handleDuplicate = useCallback(() => {
+    if (!activeModel) return;
+    const dup: ProjectModel = {
+      ...activeModel,
+      positionOffset: {
+        x: activeModel.positionOffset.x + 20,
+        y: activeModel.positionOffset.y,
+        z: activeModel.positionOffset.z,
+      },
+    };
+    setProjectModels(prev => [...prev, dup]);
+    setActiveModelIndex(prev => prev == null ? prev : prev + 1);
+  }, [activeModel]);
+
+  const handleLinearArray = useCallback((count: number, dx: number, dy: number) => {
+    if (!activeModel || count < 2) return;
+    const copies: ProjectModel[] = [];
+    for (let i = 1; i < count; i++) {
+      copies.push({
+        ...activeModel,
+        positionOffset: {
+          x: activeModel.positionOffset.x + dx * i,
+          y: activeModel.positionOffset.y,
+          z: activeModel.positionOffset.z + dy * i,  // Three.js Z = bed Y
+        },
+      });
+    }
+    setProjectModels(prev => [...prev, ...copies]);
+  }, [activeModel]);
+
+  const handleCircularArray = useCallback((count: number, radius: number) => {
+    if (!activeModel || count < 2) return;
+    const copies: ProjectModel[] = [];
+    const cx = activeModel.positionOffset.x;
+    const cz = activeModel.positionOffset.z;
+    for (let i = 1; i < count; i++) {
+      const angle = (i / count) * Math.PI * 2;
+      copies.push({
+        ...activeModel,
+        positionOffset: {
+          x: cx + Math.cos(angle) * radius,
+          y: activeModel.positionOffset.y,
+          z: cz + Math.sin(angle) * radius,
+        },
+        rotation: {
+          x: activeModel.rotation.x,
+          y: activeModel.rotation.y,
+          z: activeModel.rotation.z + (angle * 180 / Math.PI),
+        },
+      });
+    }
+    setProjectModels(prev => [...prev, ...copies]);
+  }, [activeModel]);
+
+  // Cut — CSG halves upload as new models; original active model is removed
+  const handleCutComplete = useCallback(async (files: { file: File; name: string }[]) => {
+    if (files.length === 0) return;
+    setIsUploading(true);
+    try {
+      const uploaded = await Promise.all(files.map(f => api.uploadModel(f.file)));
+      const newModels: ProjectModel[] = uploaded.map(m => ({
+        modelId: m.id,
+        name: m.name,
+        faceCount: m.faceCount,
+        plateCount: m.plateCount ?? 1,
+        plateId: activePlateId,
+        rotation: { x: 0, y: 0, z: 0 },
+        positionOffset: activeModel ? { ...activeModel.positionOffset } : { x: 0, y: 0, z: 0 },
+        scale: { ...DEFAULT_SCALE },
+        mirror: { ...DEFAULT_MIRROR },
+        faceColors: null,
+        visible: true,
+        kind: 'model',
+      }));
+      // Remove the original, append halves
+      setProjectModels(prev => {
+        const without = activeModelIndex == null ? prev : prev.filter((_, i) => i !== activeModelIndex);
+        return [...without, ...newModels];
+      });
+      setActiveModelIndex(prev => {
+        if (prev == null) return prev;
+        const base = activeModelIndex ?? 0;
+        return base + newModels.length - 1;  // select first half
+      });
+      setPaintMode('orbit');
+    } catch (err) {
+      alert(`Cut upload failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setIsUploading(false);
+    }
+  }, [activeModel, activeModelIndex, activePlateId]);
+
+  // Add negative/modifier volume — uploads primitive STL, links to active model
+  const handleAddVolume = useCallback(async (file: File, settings?: Record<string, unknown>) => {
+    const kind = addVolumeKind;
+    if (!kind) return;
+    const parentId = activeModel?.modelId;
+    setAddVolumeKind(null);
+    if (!parentId) {
+      alert('Select a model first to attach a volume.');
+      return;
+    }
+    setIsUploading(true);
+    try {
+      const uploaded = await api.uploadModel(file);
+      const newPm: ProjectModel = {
+        modelId: uploaded.id,
+        name: uploaded.name,
+        faceCount: uploaded.faceCount,
+        plateCount: uploaded.plateCount ?? 1,
+        plateId: activePlateId,
+        rotation: { x: 0, y: 0, z: 0 },
+        positionOffset: activeModel ? { ...activeModel.positionOffset } : { x: 0, y: 0, z: 0 },
+        scale: { ...DEFAULT_SCALE },
+        mirror: { ...DEFAULT_MIRROR },
+        faceColors: null,
+        visible: true,
+        kind,
+        linkedTo: [parentId],
+        settings,
+      };
+      setProjectModels(prev => [...prev, newPm]);
+    } catch (err) {
+      alert(`Add volume failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setIsUploading(false);
+    }
+  }, [addVolumeKind, activeModel, activePlateId]);
 
   const isSlicing = jobs.some(j => j.status === 'running' || j.status === 'queued');
   const hasVisibleModels = activePlateModels.some(m => m.visible);
@@ -538,7 +758,7 @@ export default function App() {
 
   // Click-to-select: in orbit mode, click a mesh to select it as active model
   useEffect(() => {
-    if (!sceneRefs || paintMode !== 'orbit' || activePlateModels.length <= 1) return;
+    if (!sceneRefs || paintMode !== 'orbit' || projectModels.filter(m => m.visible).length <= 1) return;
     const { camera } = sceneRefs;
     const raycaster = new THREE.Raycaster();
     const mouse = new THREE.Vector2();
@@ -557,7 +777,7 @@ export default function App() {
       let closestIdx = -1, closestDist = Infinity;
       for (let i = 0; i < meshRefs.current.length; i++) {
         const mesh = meshRefs.current[i];
-        if (!mesh || !projectModels[i]?.visible || projectModels[i]?.plateId !== activePlateId) continue;
+        if (!mesh || !projectModels[i]?.visible) continue;
         const hits = raycaster.intersectObject(mesh);
         if (hits.length > 0 && hits[0].distance < closestDist) {
           closestDist = hits[0].distance;
@@ -566,6 +786,9 @@ export default function App() {
       }
       if (closestIdx >= 0 && closestIdx !== activeModelIndex) {
         setActiveModelIndex(closestIdx);
+        // Switch active plate to the picked model's plate so sidebar reflects it
+        const pickedPlate = projectModels[closestIdx]?.plateId;
+        if (pickedPlate && pickedPlate !== activePlateId) setActivePlateId(pickedPlate);
       }
     };
     const canvas = sceneRefs.renderer.domElement;
@@ -808,25 +1031,43 @@ export default function App() {
         <div className="flex-1 relative overflow-hidden">
           <Scene onReady={setSceneRefs} />
 
-          {/* Multi-model STL viewers — only active plate */}
-          {sceneRefs && !previewJobId && projectModels.filter(m => m.visible && m.plateId === activePlateId).map((pm, idx) => {
+          {/* Multi-model STL viewers — all visible models across all plates */}
+          {sceneRefs && !previewJobId && projectModels.filter(m => m.visible).map((pm) => {
             const realIdx = projectModels.indexOf(pm);
+            const plateOff = plateOffsets[pm.plateId] ?? { x: 0, y: 0, z: 0 };
+            const combined = new THREE.Vector3(
+              pm.positionOffset.x + plateOff.x,
+              pm.positionOffset.y + plateOff.y,
+              pm.positionOffset.z + plateOff.z,
+            );
             return (
               <STLViewer
-                key={pm.modelId}
+                key={`mesh-${realIdx}`}
                 modelUrl={api.getModelUrl(pm.modelId)}
                 faceColors={pm.faceColors || undefined}
                 rotation={pm.rotation}
-                positionOffset={new THREE.Vector3(pm.positionOffset.x, pm.positionOffset.y, pm.positionOffset.z)}
+                positionOffset={combined}
+                scale={pm.scale}
+                mirror={pm.mirror}
+                kind={pm.kind}
                 sceneRef={{ current: sceneRefs }}
                 onGeometryReady={(geometry, mesh) => handleGeometryReady(realIdx, geometry, mesh)}
               />
             );
           })}
 
-          {/* Bed grid — sized to target printer's bed volume (default 200³ if unknown) */}
+          {/* Bed grids — one per plate, side-by-side; active plate highlighted */}
           {sceneRefs && (
-            <Bed sceneRefs={sceneRefs} size={bedVolume ?? { x: 200, y: 200, z: 200 }} />
+            <Bed
+              sceneRefs={sceneRefs}
+              size={bedVolume ?? { x: 200, y: 200, z: 200 }}
+              plates={plates.map(p => ({
+                id: p.id,
+                offset: plateOffsets[p.id] ?? { x: 0, y: 0, z: 0 },
+                active: p.id === activePlateId,
+              }))}
+              onSelectPlate={setActivePlateId}
+            />
           )}
 
           {/* Active model interaction */}
@@ -837,6 +1078,7 @@ export default function App() {
                 mesh={activeMesh}
                 sceneRefs={sceneRefs}
                 active={paintMode === 'orbit'}
+                bounds={activePlateBounds}
                 onPositionChange={handlePositionChange}
                 onDragEnd={handlePositionChange}
               />
@@ -846,6 +1088,20 @@ export default function App() {
                 activeColor={activeColor}
                 paintMode={paintMode}
                 onLayOnFace={handleLayOnFace}
+              />
+              <MeasureTool
+                sceneRefs={sceneRefs}
+                meshes={meshRefs.current.filter((m): m is THREE.Mesh => !!m)}
+                active={paintMode === 'measure'}
+                onMeasurementChange={setMeasurement}
+              />
+              <CutTool
+                sceneRefs={sceneRefs}
+                mesh={activeMesh}
+                baseName={activeModel?.name}
+                active={paintMode === 'cut'}
+                onCutComplete={handleCutComplete}
+                onCancel={() => setPaintMode('orbit')}
               />
               <ViewerToolbar
                 paintMode={paintMode}
@@ -859,6 +1115,42 @@ export default function App() {
                 onAutoOrient={handleAutoOrient}
                 filamentColors={filamentSlots.map(s => s.color)}
               />
+              {paintMode === 'transform' && (
+                <TransformPanel
+                  model={activeModel}
+                  boundsMM={activeMesh ? computeMeshBoundsMM(activeMesh) : undefined}
+                  onUpdate={handleUpdateActiveModel}
+                  onDuplicate={handleDuplicate}
+                  onLinearArray={handleLinearArray}
+                  onCircularArray={handleCircularArray}
+                  onAddVolume={(k) => setAddVolumeKind(k as 'negative' | 'modifier')}
+                />
+              )}
+
+              {addVolumeKind && (
+                <AddVolumeModal
+                  kind={addVolumeKind}
+                  onAdd={handleAddVolume}
+                  onCancel={() => setAddVolumeKind(null)}
+                />
+              )}
+
+              {paintMode === 'measure' && (
+                <div className="absolute top-14 left-2 bg-gray-800/95 backdrop-blur rounded-lg px-3 py-2 shadow-lg z-20 text-xs text-gray-300 max-w-xs">
+                  {measurement ? (
+                    <div className="space-y-0.5 font-mono">
+                      <div className="text-yellow-300 text-sm font-bold">{measurement.distance.toFixed(2)} mm</div>
+                      <div>ΔX {measurement.dx.toFixed(2)}</div>
+                      <div>ΔY {measurement.dy.toFixed(2)}</div>
+                      <div>ΔZ {measurement.dz.toFixed(2)}</div>
+                      <div>∠XY {measurement.angleXY.toFixed(1)}°</div>
+                      <div className="text-gray-500 mt-1">Right-click / Esc to clear</div>
+                    </div>
+                  ) : (
+                    <div>Click two points on a model</div>
+                  )}
+                </div>
+              )}
             </>
           )}
 

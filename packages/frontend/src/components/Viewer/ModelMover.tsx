@@ -2,15 +2,21 @@ import { useEffect, useRef } from 'react';
 import * as THREE from 'three';
 import type { SceneRefs } from './Scene';
 
+interface Bounds {
+  minX: number; maxX: number;
+  minZ: number; maxZ: number;
+}
+
 interface ModelMoverProps {
   mesh: THREE.Mesh | null;
   sceneRefs: SceneRefs;
   active: boolean;
+  bounds?: Bounds | null;
   onPositionChange: (position: THREE.Vector3) => void;
   onDragEnd?: (position: THREE.Vector3) => void;
 }
 
-export function ModelMover({ mesh, sceneRefs, active, onPositionChange, onDragEnd }: ModelMoverProps) {
+export function ModelMover({ mesh, sceneRefs, active, bounds, onPositionChange, onDragEnd }: ModelMoverProps) {
   const isDraggingRef = useRef(false);
 
   useEffect(() => {
@@ -69,6 +75,10 @@ export function ModelMover({ mesh, sceneRefs, active, onPositionChange, onDragEn
       const planeHits = raycaster.intersectObject(dragPlane);
       if (planeHits.length > 0) {
         const newPos = planeHits[0].point.add(dragOffset);
+        if (bounds) {
+          newPos.x = Math.max(bounds.minX, Math.min(bounds.maxX, newPos.x));
+          newPos.z = Math.max(bounds.minZ, Math.min(bounds.maxZ, newPos.z));
+        }
         mesh.position.x = newPos.x;
         mesh.position.z = newPos.z;
       }
@@ -98,7 +108,7 @@ export function ModelMover({ mesh, sceneRefs, active, onPositionChange, onDragEn
       planeGeo.dispose();
       planeMat.dispose();
     };
-  }, [mesh, active, sceneRefs, onPositionChange]);
+  }, [mesh, active, sceneRefs, onPositionChange, bounds]);
 
   return null;
 }

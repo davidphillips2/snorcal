@@ -24,6 +24,12 @@ export interface SliceModelEntry {
   modelId: string;
   rotation?: Rotation3D;
   positionOffset?: { x: number; y: number; z: number };
+  scale?: { x: number; y: number; z: number };
+  mirror?: { x: boolean; y: boolean; z: boolean };
+  kind?: 'model' | 'negative' | 'modifier';
+  linkedTo?: string[];  // parent modelId(s) for negative/modifier
+  name?: string;
+  settings?: Record<string, unknown>; // per-object override (modifier subset)
 }
 
 export interface SliceRequest {

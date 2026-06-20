@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import type { Db } from '../db/index.js';
 import { getQueue } from '../jobs/queue.js';
 import { ensureDir, getJobsDir } from '../services/model-parser.js';
-import { build3MF } from '../services/threemf-builder.js';
+import { build3MF, type ThreeMFModelInput } from '../services/threemf-builder.js';
 import { SlicerExecutor } from '../services/slicer-executor.js';
 import { PROJECT_SETTING_OVERRIDES } from '@slorca/shared';
 import type { SliceRequest, SliceJobData, MultiMaterialConfig, FilamentSlot } from '@slorca/shared';
@@ -443,12 +443,14 @@ function runSliceDirect(
       }
 
       // Resolve models — support multi-model or single-model requests
-      type ModelEntry = { stlPath: string; faceColors?: Uint8Array; rotation?: { x: number; y: number; z: number }; positionOffset?: { x: number; y: number; z: number } };
-      let buildModels: ModelEntry[];
+      let buildModels: ThreeMFModelInput[];
+
+      // Build index of model entry → its position in the array, so children can reference parents
+      const modelIdToIndex = new Map<string, number>();
 
       if (body.models && body.models.length > 0) {
         // Multi-model: resolve each model's STL path and face colors
-        buildModels = body.models.map(entry => {
+        const rawEntries = body.models.map((entry: any, mi: number) => {
           const rec = db.getModel(entry.modelId);
           const plateIndex = body.plateIndex ?? 1;
           let stlPath = rec?.file_path ?? '';
@@ -462,7 +464,25 @@ function runSliceDirect(
           } else {
             faceColors = rec?.face_colors ? new Uint8Array(rec.face_colors) : undefined;
           }
-          return { stlPath, faceColors, rotation: entry.rotation, positionOffset: entry.positionOffset };
+          if (entry.modelId) modelIdToIndex.set(entry.modelId, mi);
+          const { linkedTo: linkedToIds, ...rest } = entry;
+          return {
+            ...rest,
+            stlPath,
+            faceColors,
+            name: entry.name ?? rec?.name ?? `model_${mi}`,
+            _linkedToIds: linkedToIds,
+          } as ThreeMFModelInput & { _linkedToIds?: string[] };
+        });
+        // Resolve linkedTo (modelId[] → index of first match)
+        buildModels = rawEntries.map(({ _linkedToIds, ...rest }) => {
+          if (_linkedToIds && _linkedToIds.length > 0) {
+            for (const id of _linkedToIds) {
+              const idx = modelIdToIndex.get(id);
+              if (idx != null) { rest.linkedTo = idx; break; }
+            }
+          }
+          return rest;
         });
       } else {
         // Single model (backwards compat)

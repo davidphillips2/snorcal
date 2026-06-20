@@ -13,7 +13,9 @@
     "gcode-preview": "^2.18.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
-    "three": "^0.170.0"
+    "three": "^0.170.0",
+    "three-bvh-csg": "0.0.17",
+    "three-mesh-bvh": "^0.9.10"
   },
   "devDependencies": {
     "@types/react": "^19.0.0",

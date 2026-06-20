@@ -1,6 +1,7 @@
 import { useEffect, useRef, useCallback } from 'react';
 import * as THREE from 'three';
 import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
+import type { Scale3D, Mirror3D, ModelKind } from '@slorca/shared';
 
 export interface Rotation3D {
   x: number;
@@ -13,6 +14,9 @@ interface STLViewerProps {
   faceColors?: Uint8Array;
   rotation?: Rotation3D;
   positionOffset?: THREE.Vector3;
+  scale?: Scale3D;
+  mirror?: Mirror3D;
+  kind?: ModelKind;
   sceneRef: React.MutableRefObject<{
     scene: THREE.Scene;
     camera: THREE.PerspectiveCamera;
@@ -21,7 +25,7 @@ interface STLViewerProps {
   onGeometryReady?: (geometry: THREE.BufferGeometry, mesh: THREE.Mesh) => void;
 }
 
-export function STLViewer({ modelUrl, faceColors, rotation, positionOffset, sceneRef, onGeometryReady }: STLViewerProps) {
+export function STLViewer({ modelUrl, faceColors, rotation, positionOffset, scale, mirror, kind = 'model', sceneRef, onGeometryReady }: STLViewerProps) {
   const meshRef = useRef<THREE.Mesh | null>(null);
   const geometryRef = useRef<THREE.BufferGeometry | null>(null);
   const faceColorsRef = useRef<Uint8Array | undefined>(undefined);
@@ -81,13 +85,7 @@ export function STLViewer({ modelUrl, faceColors, rotation, positionOffset, scen
           geometry.computeBoundingBox();
         }
 
-        const material = new THREE.MeshStandardMaterial({
-          vertexColors: true,
-          flatShading: true,
-          side: THREE.DoubleSide,
-          metalness: 0.1,
-          roughness: 0.6,
-        });
+        const material = makeMaterialForKind(kind);
 
         const mesh = new THREE.Mesh(geometry, material);
         meshRef.current = mesh;
@@ -109,7 +107,7 @@ export function STLViewer({ modelUrl, faceColors, rotation, positionOffset, scen
         console.error('Failed to load STL:', error);
       },
     );
-  }, [modelUrl]);
+  }, [modelUrl, kind]);
 
   // Apply face colors when they change (without reloading geometry)
   useEffect(() => {
@@ -127,6 +125,14 @@ export function STLViewer({ modelUrl, faceColors, rotation, positionOffset, scen
     // Reset position, apply rotation
     mesh.position.set(0, 0, 0);
     mesh.rotation.set(rotation.x * deg2rad, rotation.y * deg2rad, rotation.z * deg2rad);
+    // Apply non-uniform scale + mirror (signed scale)
+    const s = scale ?? { x: 1, y: 1, z: 1 };
+    const m = mirror ?? { x: false, y: false, z: false };
+    mesh.scale.set(
+      s.x * (m.x ? -1 : 1),
+      s.y * (m.y ? -1 : 1),
+      s.z * (m.z ? -1 : 1),
+    );
     mesh.updateMatrixWorld(true);
 
     // Compute world-space bounding box and reposition
@@ -143,20 +149,55 @@ export function STLViewer({ modelUrl, faceColors, rotation, positionOffset, scen
     mesh.position.set(restX + ox, restY + oy, restZ + oz);
     // Store rest position so parent can compute user offset from absolute drag position
     mesh.userData.restPosition = { x: restX, y: restY, z: restZ };
-  }, [rotation, positionOffset]);
+  }, [rotation, positionOffset, scale, mirror]);
 
   return null; // This is a logic-only component, rendering happens in Scene
 }
 
+/** Material per object kind. `model` = solid + vertex colors; others = translucent. */
+function makeMaterialForKind(kind: ModelKind): THREE.Material {
+  if (kind === 'negative') {
+    return new THREE.MeshStandardMaterial({
+      color: 0xff4444,
+      transparent: true,
+      opacity: 0.45,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+      roughness: 0.5,
+    });
+  }
+  if (kind === 'modifier') {
+    return new THREE.MeshStandardMaterial({
+      color: 0x4488ff,
+      transparent: true,
+      opacity: 0.45,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+      roughness: 0.5,
+    });
+  }
+  return new THREE.MeshStandardMaterial({
+    vertexColors: true,
+    flatShading: true,
+    side: THREE.DoubleSide,
+    metalness: 0.1,
+    roughness: 0.6,
+  });
+}
+
 /**
- * Auto-orient: find the largest flat face and place it on the bottom (build plate).
- * Returns rotation in degrees { x, y, z } to apply.
+ * Auto-orient: find the best base face and place it on the bottom (build plate).
+ *
+ * Picks the quantized normal direction maximizing `area × dot(N, -Y)` — i.e.,
+ * total area weighted by how much it already faces down. This biases toward
+ * existing bases (face normal pointing -Y) and never picks a top face (normal
+ * pointing +Y). When no downward-facing direction exists (model on its side),
+ * falls back to the largest direction.
  */
 export function autoOrient(geometry: THREE.BufferGeometry): Rotation3D {
   const posAttr = geometry.attributes.position;
   const faceCount = posAttr.count / 3;
 
-  // Quantize step for grouping similar normals
   const Q = 10;
   const quantize = (v: number) => Math.round(v * Q);
 
@@ -185,38 +226,49 @@ export function autoOrient(geometry: THREE.BufferGeometry): Rotation3D {
 
     const key = `${quantize(normal.x)}_${quantize(normal.y)}_${quantize(normal.z)}`;
     normalAreas.set(key, (normalAreas.get(key) || 0) + area);
-    if (!normalDirs.has(key)) {
-      normalDirs.set(key, normal.clone());
-    }
+    if (!normalDirs.has(key)) normalDirs.set(key, normal.clone());
   }
 
-  // Find the normal with the largest area (best "bottom" candidate)
+  // Score each direction: area × downwardness. -Y → +1, +Y → -1, sides → 0.
   let bestKey = '';
-  let bestArea = 0;
+  let bestScore = -Infinity;
   for (const [key, area] of normalAreas) {
-    if (area > bestArea) {
-      bestArea = area;
-      bestKey = key;
-    }
+    const dir = normalDirs.get(key)!;
+    const score = area * -dir.y;  // -dir.y because dot with (0,-1,0) = -dir.y
+    if (score > bestScore) { bestScore = score; bestKey = key; }
   }
 
   if (!bestKey) return { x: 0, y: 0, z: 0 };
 
   const bestNormal = normalDirs.get(bestKey)!;
-  // We want this face on the bottom, so its normal should point DOWN (-Y)
-  const targetDown = new THREE.Vector3(0, -1, 0);
-
-  // If the normal already points down, no rotation needed
   if (bestNormal.y < -0.999) return { x: 0, y: 0, z: 0 };
+  return rotationFromNormalToDown(bestNormal);
+}
 
-  // Compute quaternion that rotates bestNormal to targetDown
+/**
+ * Stable rotation (degrees XYZ) that maps `normal` to world-down (0,-1,0).
+ * Handles the antiparallel case explicitly by rotating around the axis most
+ * perpendicular to `normal`, avoiding `setFromUnitVectors` axis ambiguity.
+ */
+export function rotationFromNormalToDown(normal: THREE.Vector3): Rotation3D {
+  const target = new THREE.Vector3(0, -1, 0);
+  const dot = normal.dot(target);
+
   const quat = new THREE.Quaternion();
-  quat.setFromUnitVectors(bestNormal, targetDown);
+  if (dot <= -0.999999) {
+    // 180° rotation: pick the world axis least aligned with `normal`
+    const absX = Math.abs(normal.x);
+    const absZ = Math.abs(normal.z);
+    const axis = absX < absZ
+      ? new THREE.Vector3(1, 0, 0)
+      : new THREE.Vector3(0, 0, 1);
+    quat.setFromAxisAngle(axis, Math.PI);
+  } else if (dot < 0.999999) {
+    quat.setFromUnitVectors(normal, target);
+  }
+  // else ~identity
 
-  // Convert to Euler
-  const euler = new THREE.Euler();
-  euler.setFromQuaternion(quat);
-
+  const euler = new THREE.Euler().setFromQuaternion(quat);
   const rad2deg = 180 / Math.PI;
   return {
     x: Math.round(euler.x * rad2deg),

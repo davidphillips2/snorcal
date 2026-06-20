@@ -4,11 +4,19 @@ import fs from 'node:fs';
 
 // --- Types ---
 
+export type ThreeMFObjectKind = 'model' | 'negative' | 'modifier';
+
 export interface ThreeMFModelInput {
   stlPath: string;
   faceColors?: Uint8Array; // RGBA per face (4 bytes * faceCount)
   rotation?: { x: number; y: number; z: number }; // Euler angles in degrees (Three.js Y-up)
   positionOffset?: { x: number; y: number; z: number }; // Three.js Y-up offset
+  scale?: { x: number; y: number; z: number };
+  mirror?: { x: boolean; y: boolean; z: boolean };
+  kind?: ThreeMFObjectKind;
+  linkedTo?: number;  // index of parent model entry (negative/modifier → parent model)
+  name?: string;
+  settings?: Record<string, unknown>; // per-object override (modifier subset)
 }
 
 export interface ThreeMFBuildInput {
@@ -36,6 +44,9 @@ interface ObjectDef {
   extruder: number;
   vertices: Float32Array;
   indices: Uint32Array;
+  kind: ThreeMFObjectKind;
+  parentId?: number;
+  settings?: Record<string, unknown>;
 }
 
 // --- Main builder ---
@@ -56,13 +67,34 @@ export async function build3MF(input: ThreeMFBuildInput): Promise<Buffer> {
 
   // Process each model into 3MF objects (may split by extruder for painted models)
   const allObjects: ObjectDef[] = [];
+  const firstObjIdByModelIndex = new Map<number, number>();
   let nextId = 1;
 
   for (let mi = 0; mi < models.length; mi++) {
     const model = models[mi];
+    const kind: ThreeMFObjectKind = model.kind ?? 'model';
+    const name = model.name ?? `model_${mi}`;
     const geo = processModelGeometry(model, buildVolume);
-    const paintData = processPaintColors(model.faceColors, geo.faceCount, colorToExtruder, defaultColor);
 
+    // Negative/modifier volumes never split by paint — single object
+    if (kind === 'negative' || kind === 'modifier') {
+      const parentId = model.linkedTo != null ? firstObjIdByModelIndex.get(model.linkedTo) : undefined;
+      const id = nextId++;
+      allObjects.push({
+        id,
+        name,
+        extruder: 1,
+        vertices: geo.vertices,
+        indices: geo.indices,
+        kind,
+        parentId,
+        settings: model.settings,
+      });
+      // Children don't go in the top-level <components>; they attach via parent
+      continue;
+    }
+
+    const paintData = processPaintColors(model.faceColors, geo.faceCount, colorToExtruder, defaultColor);
     const hasPaint = model.faceColors && model.faceColors.length > 0 && paintData.some(pc => pc !== null);
 
     if (hasPaint) {
@@ -89,27 +121,43 @@ export async function build3MF(input: ThreeMFBuildInput): Promise<Buffer> {
         }
       }
 
-      for (const [extIdx, sub] of extruderFaces) {
+      const sortedKeys = [...extruderFaces.keys()].sort((a, b) => a - b);
+      for (const extIdx of sortedKeys) {
+        const sub = extruderFaces.get(extIdx)!;
+        if (!firstObjIdByModelIndex.has(mi)) firstObjIdByModelIndex.set(mi, nextId);
         allObjects.push({
           id: nextId++,
-          name: `model_${mi}_ext${extIdx}`,
+          name: `${name}_ext${extIdx}`,
           extruder: extIdx + 1,
           vertices: new Float32Array(sub.verts),
           indices: new Uint32Array(sub.idxs),
+          kind,
         });
       }
     } else {
+      firstObjIdByModelIndex.set(mi, nextId);
       allObjects.push({
         id: nextId++,
-        name: `model_${mi}`,
+        name,
         extruder: 1,
         vertices: geo.vertices,
         indices: geo.indices,
+        kind,
       });
     }
   }
 
   console.log(`[threemf] models=${models.length} objects=${allObjects.length} hasPaint=${allObjects.length > models.length}`);
+
+  // Group children (negative/modifier) by parent object id
+  const childrenOf = new Map<number, ObjectDef[]>();
+  const topLevelObjects = allObjects.filter(o => o.parentId == null);
+  for (const child of allObjects) {
+    if (child.parentId == null) continue;
+    const arr = childrenOf.get(child.parentId) ?? [];
+    arr.push(child);
+    childrenOf.set(child.parentId, arr);
+  }
 
   // Build 3MF XML
   const topId = nextId;
@@ -119,13 +167,13 @@ export async function build3MF(input: ThreeMFBuildInput): Promise<Buffer> {
   <resources>`;
 
   for (const obj of allObjects) {
-    modelXML += buildObjectXML(obj);
+    modelXML += buildObjectXML(obj, childrenOf.get(obj.id));
   }
 
-  // Top-level component object
+  // Top-level component object — references only parent-less objects
   modelXML += `\n    <object id="${topId}" type="model">
       <components>`;
-  for (const obj of allObjects) {
+  for (const obj of topLevelObjects) {
     modelXML += `\n        <component objectid="${obj.id}"/>`;
   }
   modelXML += `\n      </components>
@@ -187,6 +235,20 @@ function processModelGeometry(model: ThreeMFModelInput, buildVolume: { x: number
       vertices[i * 3] = x3;
       vertices[i * 3 + 1] = y3;
       vertices[i * 3 + 2] = z2;
+    }
+  }
+
+  // Apply non-uniform scale + per-axis mirror (signed scale)
+  const s = model.scale ?? { x: 1, y: 1, z: 1 };
+  const m = model.mirror ?? { x: false, y: false, z: false };
+  const sx = s.x * (m.x ? -1 : 1);
+  const sy = s.y * (m.y ? -1 : 1);
+  const sz = s.z * (m.z ? -1 : 1);
+  if (sx !== 1 || sy !== 1 || sz !== 1) {
+    for (let i = 0; i < vertexCount; i++) {
+      vertices[i * 3] *= sx;
+      vertices[i * 3 + 1] *= sy;
+      vertices[i * 3 + 2] *= sz;
     }
   }
 
@@ -269,10 +331,22 @@ function paintColorToExtruder(pc: string | null): number {
 
 // --- XML builders ---
 
-function buildObjectXML(obj: ObjectDef): string {
+function kindTo3MFType(kind: ThreeMFObjectKind): string {
+  if (kind === 'negative') return 'negative_part';
+  if (kind === 'modifier') return 'modifier';
+  return 'model';
+}
+
+function kindToPartSubtype(kind: ThreeMFObjectKind): string {
+  if (kind === 'negative') return 'negative_part';
+  if (kind === 'modifier') return 'modifier';
+  return 'normal_part';
+}
+
+function buildObjectXML(obj: ObjectDef, children?: ObjectDef[]): string {
   const vc = obj.vertices.length / 3;
   const fc = obj.indices.length / 3;
-  let xml = `\n    <object id="${obj.id}" type="model">
+  let xml = `\n    <object id="${obj.id}" type="${kindTo3MFType(obj.kind)}">
       <mesh>
         <vertices>`;
   for (let i = 0; i < vc; i++) {
@@ -284,8 +358,15 @@ function buildObjectXML(obj: ObjectDef): string {
     xml += `\n          <triangle v1="${obj.indices[f * 3]}" v2="${obj.indices[f * 3 + 1]}" v3="${obj.indices[f * 3 + 2]}"/>`;
   }
   xml += `\n        </triangles>
-      </mesh>
-    </object>`;
+      </mesh>`;
+  if (children && children.length > 0) {
+    xml += `\n      <components>`;
+    for (const child of children) {
+      xml += `\n        <component objectid="${child.id}"/>`;
+    }
+    xml += `\n      </components>`;
+  }
+  xml += `\n    </object>`;
   return xml;
 }
 
@@ -299,7 +380,7 @@ function buildModelSettings(objects: ObjectDef[]): string {
     <metadata key="name" value="${obj.name}"/>
     <metadata key="extruder" value="${obj.extruder}"/>
     <metadata face_count="${fc}"/>
-    <part id="${obj.id}" subtype="normal_part">
+    <part id="${obj.id}" subtype="${kindToPartSubtype(obj.kind)}">
       <metadata key="name" value="${obj.name}"/>
       <metadata key="matrix" value="1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1"/>
       <metadata key="source_object_id" value="0"/>
@@ -307,7 +388,14 @@ function buildModelSettings(objects: ObjectDef[]): string {
       <metadata key="source_offset_x" value="0"/>
       <metadata key="source_offset_y" value="0"/>
       <metadata key="source_offset_z" value="0"/>
-      <mesh_stat face_count="${fc}" edges_fixed="0" degenerate_facets="0" facets_removed="0" facets_reversed="0" backwards_edges="0"/>
+      <mesh_stat face_count="${fc}" edges_fixed="0" degenerate_facets="0" facets_removed="0" facets_reversed="0" backwards_edges="0"/>`;
+    if (obj.settings) {
+      for (const [k, v] of Object.entries(obj.settings)) {
+        if (v == null) continue;
+        xml += `\n      <metadata key="${k}" value="${typeof v === 'string' ? v : JSON.stringify(v)}"/>`;
+      }
+    }
+    xml += `
     </part>
   </object>`;
   }

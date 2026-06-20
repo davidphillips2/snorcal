@@ -85,9 +85,41 @@ function IconSave() {
   );
 }
 
+function IconTransform() {
+  return (
+    <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+      <path d="M5 5l4-3 4 3M9 2v20M19 19l-3 4-3-4M13 22V2" />
+    </svg>
+  );
+}
+
+function IconMeasure() {
+  return (
+    <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+      <path d="M3 8h18M3 16h18M8 3v18M16 3v18" />
+      <path d="M8 12h8" strokeDasharray="2 2" />
+    </svg>
+  );
+}
+
+function IconCut() {
+  return (
+    <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="6" cy="6" r="3" />
+      <circle cx="6" cy="18" r="3" />
+      <line x1="20" y1="4" x2="8.12" y2="15.88" />
+      <line x1="14.47" y1="14.48" x2="20" y2="20" />
+      <line x1="8.12" y1="8.12" x2="12" y2="12" />
+    </svg>
+  );
+}
+
 const MODES: { key: PaintMode; label: string; Icon: () => ReactNode }[] = [
   { key: 'orbit', label: 'Orbit', Icon: IconOrbit },
   { key: 'rotate', label: 'Rotate', Icon: IconRotate },
+  { key: 'transform', label: 'Transform', Icon: IconTransform },
+  { key: 'measure', label: 'Measure', Icon: IconMeasure },
+  { key: 'cut', label: 'Cut', Icon: IconCut },
   { key: 'lay', label: 'Lay Flat', Icon: IconLayFlat },
   { key: 'paint', label: 'Paint', Icon: IconPaint },
   { key: 'fill', label: 'Fill', Icon: IconFill },

@@ -1,5 +1,27 @@
 export type ModelFormat = 'stl' | 'step';
 
+/**
+ * Object kind carried through to 3MF as `<object type="...">`.
+ * - `model` — printable geometry
+ * - `negative` — subtractive volume (3MF `negative_part`)
+ * - `modifier` — settings override region (3MF `modifier`)
+ */
+export type ModelKind = 'model' | 'negative' | 'modifier';
+
+/** Non-uniform scale factors per axis. */
+export interface Scale3D {
+  x: number;
+  y: number;
+  z: number;
+}
+
+/** Per-axis mirror flags. */
+export interface Mirror3D {
+  x: boolean;
+  y: boolean;
+  z: boolean;
+}
+
 export interface ModelMetadata {
   id: string;
   name: string;
