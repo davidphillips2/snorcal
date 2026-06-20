@@ -95,8 +95,32 @@ export async function cancelJob(id: string) {
   return apiFetch(`/jobs/${id}/cancel`, { method: 'POST' });
 }
 
-export function getGcodeUrl(jobId: string) {
-  return `${API_BASE}/files/gcode/${jobId}`;
+export function getGcodeUrl(jobId: string, paused?: boolean) {
+  return `${API_BASE}/files/gcode/${jobId}${paused ? '?paused=1' : ''}`;
+}
+
+export interface PausePoint {
+  layer: number;
+  label?: string;
+}
+
+export async function getJobPauses(jobId: string): Promise<PausePoint[]> {
+  const r = await apiFetch(`/jobs/${jobId}/pauses`);
+  const j = await r.json();
+  return j?.data ?? [];
+}
+
+export async function setJobPauses(
+  jobId: string,
+  pauses: PausePoint[],
+  protocol?: 'moonraker' | 'bambu' | 'snapmaker',
+) {
+  const r = await apiFetch(`/jobs/${jobId}/pauses`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ pauses, protocol }),
+  });
+  return r.json();
 }
 
 export function getThreemfUrl(jobId: string) {

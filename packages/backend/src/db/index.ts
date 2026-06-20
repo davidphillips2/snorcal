@@ -309,6 +309,7 @@ export interface DbJob {
   filament_used_g: number | null; filament_cost: number | null;
   error_message: string | null; created_at: string;
   started_at: string | null; completed_at: string | null;
+  printer_id: string | null;
 }
 
 export interface DbProfileSummary {

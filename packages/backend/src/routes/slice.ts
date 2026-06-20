@@ -315,6 +315,69 @@ export async function sliceRoutes(app: FastifyInstance, options: { db: Db }) {
     return { ok: true, data: filaments };
   });
 
+  // GET /api/jobs/:id/pauses — Read stored manual pause points
+  // Returns PausePoint[] (0 = first layer). Empty array if none.
+  app.get<{ Params: { id: string } }>('/api/jobs/:id/pauses', async (req, reply) => {
+    const job = db.getJob(req.params.id);
+    if (!job) return reply.status(404).send({ ok: false, error: 'Job not found' });
+    const pausesFile = path.join(path.dirname(job.output_dir || ''), 'pauses.json');
+    let pauses: any[] = [];
+    if (fs.existsSync(pausesFile)) {
+      try { pauses = JSON.parse(fs.readFileSync(pausesFile, 'utf-8')); } catch { pauses = []; }
+    }
+    return { ok: true, data: pauses };
+  });
+
+  // POST /api/jobs/:id/pauses — Store + inject manual pauses
+  // Body: { pauses: PausePoint[], protocol?: 'moonraker'|'bambu'|'snapmaker' }
+  // Side effects:
+  //   - Writes pauses.json sidecar next to job output
+  //   - Regenerates <name>.paused.gcode with pause blocks injected
+  //   - Returns { pausedGcode: filename }
+  app.post<{ Params: { id: string } }>('/api/jobs/:id/pauses', async (req, reply) => {
+    const job = db.getJob(req.params.id);
+    if (!job) return reply.status(404).send({ ok: false, error: 'Job not found' });
+    if (!job.output_dir) return reply.status(400).send({ ok: false, error: 'No output dir' });
+    if (job.status !== 'completed') {
+      return reply.status(400).send({ ok: false, error: 'Job not completed' });
+    }
+
+    const body = req.body as { pauses: any[]; protocol?: string };
+    const pauses = Array.isArray(body?.pauses) ? body.pauses.filter(p =>
+      p && typeof p === 'object' && typeof p.layer === 'number' && p.layer >= 0
+    ) : [];
+
+    // Resolve protocol: body > job's printer > default moonraker
+    let protocol = body?.protocol as 'moonraker' | 'bambu' | 'snapmaker' | undefined;
+    if (!protocol) {
+      if (job.printer_id) {
+        const printer = db.getPrinter(job.printer_id);
+        if (printer?.protocol) protocol = printer.protocol as 'moonraker' | 'bambu' | 'snapmaker';
+      }
+    }
+    if (!protocol || !['moonraker', 'bambu', 'snapmaker'].includes(protocol)) {
+      protocol = 'moonraker';
+    }
+
+    const workDir = path.dirname(job.output_dir);
+    const pausesFile = path.join(workDir, 'pauses.json');
+    fs.writeFileSync(pausesFile, JSON.stringify(pauses, null, 2));
+
+    const gcodePath = findJobGcode(job.output_dir);
+    if (!gcodePath) return reply.status(400).send({ ok: false, error: 'No gcode file' });
+
+    // Remove stale paused sidecar when pauses cleared
+    const { injectPauses, pausedGcodePath } = await import('../services/gcode-pauses.js');
+    const pausedPath = pausedGcodePath(gcodePath);
+    if (fs.existsSync(pausedPath)) fs.unlinkSync(pausedPath);
+
+    if (pauses.length > 0) {
+      const outPath = await injectPauses(gcodePath, pauses, { protocol });
+      return { ok: true, data: { pausedGcode: path.basename(outPath), count: pauses.length } };
+    }
+    return { ok: true, data: { pausedGcode: null, count: 0 } };
+  });
+
   // POST /api/jobs/:id/cancel — Cancel a job
   app.post<{ Params: { id: string } }>('/api/jobs/:id/cancel', async (req, reply) => {
     const job = db.getJob(req.params.id);

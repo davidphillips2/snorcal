@@ -6,8 +6,8 @@ import type { Db } from '../db/index.js';
 export async function fileRoutes(app: FastifyInstance, options: { db: Db }) {
   const { db } = options;
 
-  // GET /api/files/gcode/:jobId — Download gcode
-  app.get<{ Params: { jobId: string } }>('/api/files/gcode/:jobId', async (req, reply) => {
+  // GET /api/files/gcode/:jobId — Download gcode (?paused=1 serves manual-pause variant)
+  app.get<{ Params: { jobId: string }, Querystring: { paused?: string } }>('/api/files/gcode/:jobId', async (req, reply) => {
     const job = db.getJob(req.params.jobId);
     if (!job) {
       return reply.status(404).send({ ok: false, error: 'Job not found' });
@@ -22,9 +22,10 @@ export async function fileRoutes(app: FastifyInstance, options: { db: Db }) {
       return reply.status(404).send({ ok: false, error: 'Output directory not found' });
     }
 
-    const gcodePath = findGcode(outputDir);
+    const wantPaused = req.query.paused === '1';
+    const gcodePath = wantPaused ? findPausedGcode(outputDir) : findGcode(outputDir);
     if (!gcodePath) {
-      return reply.status(404).send({ ok: false, error: 'G-code file not found' });
+      return reply.status(404).send({ ok: false, error: wantPaused ? 'Paused gcode not generated' : 'G-code file not found' });
     }
 
     const stat = fs.statSync(gcodePath);
@@ -93,9 +94,27 @@ function findGcode(dir: string): string | null {
   for (const file of files) {
     const fullPath = path.join(dir, file);
     const stat = fs.statSync(fullPath);
-    if (stat.isFile() && file.endsWith('.gcode')) return fullPath;
+    // Skip `.paused.gcode` sidecars — those are manual-pause variants,
+    // not the canonical slicer output. Caller fetches them explicitly.
+    if (stat.isFile() && file.endsWith('.gcode') && !file.endsWith('.paused.gcode')) {
+      return fullPath;
+    }
     if (stat.isDirectory()) {
       const found = findGcode(fullPath);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
+function findPausedGcode(dir: string): string | null {
+  const files = fs.readdirSync(dir);
+  for (const file of files) {
+    const fullPath = path.join(dir, file);
+    const stat = fs.statSync(fullPath);
+    if (stat.isFile() && file.endsWith('.paused.gcode')) return fullPath;
+    if (stat.isDirectory()) {
+      const found = findPausedGcode(fullPath);
       if (found) return found;
     }
   }

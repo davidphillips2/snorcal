@@ -32,6 +32,7 @@ import { HomeDashboard } from './components/Home/HomeDashboard';
 import { PrinterDetail } from './components/PrinterMonitor/PrinterDetail';
 import { useSSE } from './hooks/useSSE';
 import * as api from './api/client';
+import type { PausePoint } from './api/client';
 import { shelfPack } from './lib/pack';
 import { extractLayerTypes } from './lib/gcode-stats';
 import type { ModelKind, Scale3D, Mirror3D } from '@snorcal/shared';
@@ -430,6 +431,7 @@ export default function App() {
   const [gcodeColorMode, setGcodeColorMode] = useState<'filament' | 'lineType' | 'speed'>('filament');
   const [isParsingGcode, setIsParsingGcode] = useState(false);
   const [layerCount, setLayerCount] = useState(0);
+  const [jobPauses, setJobPauses] = useState<PausePoint[]>([]);
   const layerTypes = useMemo(() => gcodeText ? extractLayerTypes(gcodeText) : new Map<number, string>(), [gcodeText]);
 
   const handleLayerCountReady = useCallback((count: number) => {
@@ -731,14 +733,39 @@ export default function App() {
     setPreviewJobId(jobId);
     setGcodeText(null);
     setLayerCount(0);
+    setJobPauses([]);
     setShowSidebar(false);
     try {
-      const response = await fetch(api.getGcodeUrl(jobId));
+      const [response, pauses] = await Promise.all([
+        fetch(api.getGcodeUrl(jobId)),
+        api.getJobPauses(jobId).catch(() => []),
+      ]);
       const text = await response.text();
       setGcodeText(text);
+      setJobPauses(pauses);
       setIsParsingGcode(false);
     } catch { setIsParsingGcode(false); setPreviewJobId(null); }
   }, []);
+
+  // Toggle pause at layer N — writes to backend immediately, updates local state on success
+  const handleTogglePause = useCallback(async (layer: number) => {
+    if (!previewJobId) return;
+    const exists = jobPauses.some(p => p.layer === layer);
+    const next = exists
+      ? jobPauses.filter(p => p.layer !== layer)
+      : [...jobPauses, { layer }];
+    // Optimistic update
+    setJobPauses(next);
+    try {
+      // Resolve protocol from selected printer if any
+      const printer = printers.find(p => p.id === targetPrinterId);
+      await api.setJobPauses(previewJobId, next, printer?.protocol as 'moonraker' | 'bambu' | 'snapmaker' | undefined);
+    } catch (err) {
+      // Revert on failure
+      setJobPauses(jobPauses);
+      alert(`Failed to update pauses: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }, [previewJobId, jobPauses, printers, targetPrinterId]);
 
   const [remapJobId, setRemapJobId] = useState<string | null>(null);
 
@@ -770,7 +797,7 @@ export default function App() {
     } catch (err) { alert(`Send failed: ${err instanceof Error ? err.message : String(err)}`); }
   }, [targetPrinterId, printers, printerStatuses]);
 
-  const handleExitPreview = useCallback(() => { setPreviewJobId(null); setGcodeText(null); setCurrentPreviewLayer(0); setLayerCount(0); }, []);
+  const handleExitPreview = useCallback(() => { setPreviewJobId(null); setGcodeText(null); setCurrentPreviewLayer(0); setLayerCount(0); setJobPauses([]); }, []);
 
   // Per-model geometry ready callback
   const [meshRevision, setMeshRevision] = useState(0);
@@ -1511,7 +1538,8 @@ export default function App() {
               {layerCount > 0 && (
                 <GcodeLayerSlider currentLayer={currentPreviewLayer} totalLayers={layerCount} showAllLayers={showAllLayers}
                   onLayerChange={setCurrentPreviewLayer} onShowAllLayersChange={setShowAllLayers} onExit={handleExitPreview}
-                  colorMode={gcodeColorMode} onColorModeChange={setGcodeColorMode} />
+                  colorMode={gcodeColorMode} onColorModeChange={setGcodeColorMode}
+                  pauses={jobPauses} onTogglePause={handleTogglePause} />
               )}
             </>
           )}
