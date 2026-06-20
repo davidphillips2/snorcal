@@ -8,6 +8,9 @@ interface ViewerToolbarProps {
   activeColor: string;
   onColorChange: (color: string) => void;
   onUndo: () => void;
+  onRedo: () => void;
+  canUndo: boolean;
+  canRedo: boolean;
   onSave: () => void;
   rotation: Rotation3D;
   onRotationChange: (rotation: Rotation3D) => void;
@@ -75,6 +78,15 @@ function IconUndo() {
   );
 }
 
+function IconRedo() {
+  return (
+    <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+      <path d="M21 7v6h-6" />
+      <path d="M21 13a9 9 0 0 0-15.4-6.4L3 9" />
+    </svg>
+  );
+}
+
 function IconSave() {
   return (
     <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
@@ -126,7 +138,7 @@ const MODES: { key: PaintMode; label: string; Icon: () => ReactNode }[] = [
 ];
 
 export function ViewerToolbar({
-  paintMode, onModeChange, activeColor, onColorChange, onUndo, onSave,
+  paintMode, onModeChange, activeColor, onColorChange, onUndo, onRedo, canUndo, canRedo, onSave,
   rotation, onRotationChange, onAutoOrient, filamentColors,
 }: ViewerToolbarProps) {
   const palette = filamentColors && filamentColors.length > 0 ? filamentColors : PALETTE;
@@ -156,10 +168,19 @@ export function ViewerToolbar({
 
           <button
             onClick={onUndo}
-            title="Undo"
-            className="w-8 h-8 flex items-center justify-center rounded-md text-gray-300 hover:bg-gray-700 transition"
+            disabled={!canUndo}
+            title="Undo (Ctrl+Z)"
+            className="w-8 h-8 flex items-center justify-center rounded-md text-gray-300 hover:bg-gray-700 transition disabled:opacity-30 disabled:pointer-events-none"
           >
             <IconUndo />
+          </button>
+          <button
+            onClick={onRedo}
+            disabled={!canRedo}
+            title="Redo (Ctrl+Shift+Z)"
+            className="w-8 h-8 flex items-center justify-center rounded-md text-gray-300 hover:bg-gray-700 transition disabled:opacity-30 disabled:pointer-events-none"
+          >
+            <IconRedo />
           </button>
           <button
             onClick={onSave}

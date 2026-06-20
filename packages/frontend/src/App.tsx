@@ -136,6 +136,75 @@ export default function App() {
   const [projectModels, setProjectModels] = useState<ProjectModel[]>([]);
   const [activeModelIndex, setActiveModelIndex] = useState<number | null>(null);
 
+  // --- Undo/redo history (50-step stack of projectModels snapshots) ---
+  const undoStackRef = useRef<ProjectModel[][]>([]);
+  const redoStackRef = useRef<ProjectModel[][]>([]);
+  const projectModelsRef = useRef(projectModels);
+  projectModelsRef.current = projectModels;
+  const [, forceUndoTick] = useState(0);
+
+  const pushUndo = useCallback(() => {
+    undoStackRef.current.push(projectModelsRef.current.map(p => ({ ...p })));
+    if (undoStackRef.current.length > 50) undoStackRef.current.shift();
+    redoStackRef.current = [];
+    forceUndoTick(t => t + 1);
+  }, []);
+
+  // Tracked setter — snapshots current state before applying updater
+  const updateModels = useCallback((updater: ProjectModel[] | ((prev: ProjectModel[]) => ProjectModel[])) => {
+    pushUndo();
+    setProjectModels(updater);
+  }, [pushUndo]);
+
+  const handleUndo = useCallback(() => {
+    // Project-models undo takes precedence; fall back to face-paint undo
+    if (undoStackRef.current.length > 0) {
+      const present = projectModelsRef.current.map(p => ({ ...p }));
+      const past = undoStackRef.current.pop()!;
+      redoStackRef.current.push(present);
+      setProjectModels(past);
+      setActiveModelIndex(null);
+      forceUndoTick(t => t + 1);
+      return;
+    }
+    const paintUndo = (window as any).__slorca_undo as (() => void) | undefined;
+    paintUndo?.();
+  }, []);
+
+  const handleRedo = useCallback(() => {
+    if (redoStackRef.current.length === 0) return;
+    const present = projectModelsRef.current.map(p => ({ ...p }));
+    const future = redoStackRef.current.pop()!;
+    undoStackRef.current.push(present);
+    setProjectModels(future);
+    setActiveModelIndex(null);
+    forceUndoTick(t => t + 1);
+  }, []);
+
+  const canUndo = undoStackRef.current.length > 0;
+  const canRedo = redoStackRef.current.length > 0;
+
+  // Undo/redo keyboard shortcuts (Ctrl/Cmd+Z, Ctrl+Shift+Z, Ctrl+Y)
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const meta = e.metaKey || e.ctrlKey;
+      if (!meta) return;
+      const key = e.key.toLowerCase();
+      if (key !== 'z' && key !== 'y') return;
+      // Ignore when typing in an input/textarea/select or color picker
+      const t = e.target as HTMLElement;
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
+      e.preventDefault();
+      if (key === 'y' || (key === 'z' && e.shiftKey)) {
+        handleRedo();
+      } else {
+        handleUndo();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [handleUndo, handleRedo]);
+
   // Models on the active plate
   const activePlateModels = projectModels.filter(m => m.plateId === activePlateId);
 
@@ -215,6 +284,7 @@ export default function App() {
   const [gcodeText, setGcodeText] = useState<string | null>(null);
   const [currentPreviewLayer, setCurrentPreviewLayer] = useState(0);
   const [showAllLayers, setShowAllLayers] = useState(true);
+  const [gcodeColorMode, setGcodeColorMode] = useState<'filament' | 'lineType' | 'speed'>('filament');
   const [isParsingGcode, setIsParsingGcode] = useState(false);
   const [layerCount, setLayerCount] = useState(0);
 
@@ -353,7 +423,7 @@ export default function App() {
         visible: true,
         kind: 'model',
       };
-      setProjectModels(prev => [...prev, newPm]);
+      updateModels(prev => [...prev, newPm]);
       setActiveModelIndex(projectModels.length); // select new model
     } catch (err) {
       alert(`Upload failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -364,7 +434,7 @@ export default function App() {
 
   // Remove model from project
   const handleRemoveModel = useCallback((idx: number) => {
-    setProjectModels(prev => {
+    updateModels(prev => {
       const target = prev[idx];
       if (!target) return prev;
       // Cascade-delete children linked to this parent (only if removing a model parent)
@@ -467,11 +537,6 @@ export default function App() {
     } catch (err) { console.error('Save failed:', err); }
   }, [activeModelIndex, projectModels]);
 
-  const handleUndo = useCallback(() => {
-    const undo = (window as any).__slorca_undo as (() => void) | undefined;
-    if (undo) undo();
-  }, []);
-
   const handleCancelJob = useCallback(async (jobId: string) => {
     await api.cancelJob(jobId);
     setJobs(prev => prev.map(j => j.id === jobId ? { ...j, status: 'cancelled' } : j));
@@ -566,19 +631,19 @@ export default function App() {
   const handleAutoOrient = useCallback(() => {
     if (!activeMesh || activeModelIndex == null) return;
     const newRotation = autoOrient(activeMesh.geometry);
-    setProjectModels(prev => prev.map((p, i) => i === activeModelIndex ? { ...p, rotation: newRotation } : p));
-  }, [activeMesh, activeModelIndex]);
+    updateModels(prev => prev.map((p, i) => i === activeModelIndex ? { ...p, rotation: newRotation } : p));
+  }, [activeMesh, activeModelIndex, updateModels]);
 
   const handleLayOnFace = useCallback((newRotation: Rotation3D) => {
     if (activeModelIndex == null) return;
-    setProjectModels(prev => prev.map((p, i) => i === activeModelIndex ? { ...p, rotation: newRotation } : p));
+    updateModels(prev => prev.map((p, i) => i === activeModelIndex ? { ...p, rotation: newRotation } : p));
     setPaintMode('orbit');
-  }, [activeModelIndex]);
+  }, [activeModelIndex, updateModels]);
 
   const handleRotationChange = useCallback((rotation: Rotation3D) => {
     if (activeModelIndex == null) return;
-    setProjectModels(prev => prev.map((p, i) => i === activeModelIndex ? { ...p, rotation } : p));
-  }, [activeModelIndex]);
+    updateModels(prev => prev.map((p, i) => i === activeModelIndex ? { ...p, rotation } : p));
+  }, [activeModelIndex, updateModels]);
 
   const handlePositionChange = useCallback((pos: THREE.Vector3) => {
     if (activeModelIndex == null) return;
@@ -586,22 +651,22 @@ export default function App() {
     const rest = mesh?.userData?.restPosition as { x: number; y: number; z: number } | undefined;
     if (!rest) return;
     // pos is absolute mesh position; subtract rest (centering offset) to get pure user offset
-    setProjectModels(prev => prev.map((p, i) => i === activeModelIndex ? {
+    updateModels(prev => prev.map((p, i) => i === activeModelIndex ? {
       ...p,
       positionOffset: { x: pos.x - rest.x, y: pos.y - rest.y, z: pos.z - rest.z }
     } : p));
-  }, [activeModelIndex]);
+  }, [activeModelIndex, updateModels]);
 
   // --- Transform ops (mirror / scale / duplicate / array) ---
 
   const handleUpdateActiveModel = useCallback((patch: Partial<ProjectModel>) => {
     if (activeModelIndex == null) return;
-    setProjectModels(prev => prev.map((p, i) => i === activeModelIndex ? { ...p, ...patch } : p));
-  }, [activeModelIndex]);
+    updateModels(prev => prev.map((p, i) => i === activeModelIndex ? { ...p, ...patch } : p));
+  }, [activeModelIndex, updateModels]);
 
   const handleToggleVisible = useCallback((idx: number) => {
-    setProjectModels(prev => prev.map((p, i) => i === idx ? { ...p, visible: !p.visible } : p));
-  }, []);
+    updateModels(prev => prev.map((p, i) => i === idx ? { ...p, visible: !p.visible } : p));
+  }, [updateModels]);
 
   const handleDuplicate = useCallback(() => {
     if (!activeModel) return;
@@ -613,9 +678,9 @@ export default function App() {
         z: activeModel.positionOffset.z,
       },
     };
-    setProjectModels(prev => [...prev, dup]);
+    updateModels(prev => [...prev, dup]);
     setActiveModelIndex(prev => prev == null ? prev : prev + 1);
-  }, [activeModel]);
+  }, [activeModel, updateModels]);
 
   const handleLinearArray = useCallback((count: number, dx: number, dy: number) => {
     if (!activeModel || count < 2) return;
@@ -630,8 +695,8 @@ export default function App() {
         },
       });
     }
-    setProjectModels(prev => [...prev, ...copies]);
-  }, [activeModel]);
+    updateModels(prev => [...prev, ...copies]);
+  }, [activeModel, updateModels]);
 
   const handleCircularArray = useCallback((count: number, radius: number) => {
     if (!activeModel || count < 2) return;
@@ -654,8 +719,8 @@ export default function App() {
         },
       });
     }
-    setProjectModels(prev => [...prev, ...copies]);
-  }, [activeModel]);
+    updateModels(prev => [...prev, ...copies]);
+  }, [activeModel, updateModels]);
 
   // Cut — CSG halves upload as new models; original active model is removed
   const handleCutComplete = useCallback(async (files: { file: File; name: string }[]) => {
@@ -678,7 +743,7 @@ export default function App() {
         kind: 'model',
       }));
       // Remove the original, append halves
-      setProjectModels(prev => {
+      updateModels(prev => {
         const without = activeModelIndex == null ? prev : prev.filter((_, i) => i !== activeModelIndex);
         return [...without, ...newModels];
       });
@@ -724,13 +789,13 @@ export default function App() {
         linkedTo: [parentId],
         settings,
       };
-      setProjectModels(prev => [...prev, newPm]);
+      updateModels(prev => [...prev, newPm]);
     } catch (err) {
       alert(`Add volume failed: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
       setIsUploading(false);
     }
-  }, [addVolumeKind, activeModel, activePlateId]);
+  }, [addVolumeKind, activeModel, activePlateId, updateModels]);
 
   const isSlicing = jobs.some(j => j.status === 'running' || j.status === 'queued');
   const hasVisibleModels = activePlateModels.some(m => m.visible);
@@ -1088,6 +1153,9 @@ export default function App() {
                 activeColor={activeColor}
                 onColorChange={setActiveColor}
                 onUndo={handleUndo}
+                onRedo={handleRedo}
+                canUndo={canUndo}
+                canRedo={canRedo}
                 onSave={handleSaveColors}
                 rotation={activeModel?.rotation || { x: 0, y: 0, z: 0 }}
                 onRotationChange={handleRotationChange}
@@ -1137,10 +1205,12 @@ export default function App() {
           {previewJobId && gcodeText && (
             <>
               <GcodePreviewCanvas gcode={gcodeText} layer={currentPreviewLayer} singleLayerMode={!showAllLayers}
-                extrusionColors={filamentSlots.map(s => s.color)} buildVolume={bedVolume ?? undefined} onLayerCountReady={handleLayerCountReady} />
+                extrusionColors={filamentSlots.map(s => s.color)} buildVolume={bedVolume ?? undefined}
+                colorMode={gcodeColorMode} onLayerCountReady={handleLayerCountReady} />
               {layerCount > 0 && (
                 <GcodeLayerSlider currentLayer={currentPreviewLayer} totalLayers={layerCount} showAllLayers={showAllLayers}
-                  onLayerChange={setCurrentPreviewLayer} onShowAllLayersChange={setShowAllLayers} onExit={handleExitPreview} />
+                  onLayerChange={setCurrentPreviewLayer} onShowAllLayersChange={setShowAllLayers} onExit={handleExitPreview}
+                  colorMode={gcodeColorMode} onColorModeChange={setGcodeColorMode} />
               )}
             </>
           )}
