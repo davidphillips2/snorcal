@@ -422,6 +422,23 @@ export class SnapmakerAdapter implements PrinterAdapter {
         await this.rpc('server.files.start_local_print', params);
         return;
       }
+      case 'set_ams_filament': {
+        // Snapmaker JSON-RPC: printer.ams.set_filament
+        // Per-tray write — same shape conceptually as Bambu's ams_filament_setting.
+        const amsId = Number(cmd.args?.amsId);
+        const trayId = Number(cmd.args?.trayId);
+        if (!Number.isInteger(amsId) || !Number.isInteger(trayId)) {
+          throw new Error('amsId and trayId required for set_ams_filament');
+        }
+        await this.rpc('printer.ams.set_filament', {
+          ams_id: amsId,
+          tray_id: trayId,
+          type: String(cmd.args?.type ?? 'PLA'),
+          color: String(cmd.args?.color ?? 'FFFFFFFF'),
+          brand: String(cmd.args?.brand ?? ''),
+        });
+        return;
+      }
       default: throw new Error(`Unsupported command: ${cmd.command}`);
     }
   }

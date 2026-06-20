@@ -81,7 +81,8 @@ export type PrinterCommandName =
   | 'set_temp'        // args.heater ('bed'|'hotend'), args.value
   | 'jog'             // args.axis ('x'|'y'|'z'), args.amount
   | 'home'            // args.axes?: string[]
-  | 'send_gcode';     // args.script
+  | 'send_gcode'      // args.script
+  | 'set_ams_filament'; // args.amsId, args.trayId, args.type?, args.color?, args.brand?
 
 export interface PrinterCommand {
   printerId: string;

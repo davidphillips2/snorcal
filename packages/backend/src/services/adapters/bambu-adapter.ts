@@ -302,6 +302,34 @@ export class BambuAdapter implements PrinterAdapter {
         });
         return;
       }
+      case 'set_ams_filament': {
+        // Bambu MQTT ams_filament_setting — writes tray metadata on the printer.
+        // Required: amsId (0-based AMS unit index), trayId (1-4).
+        // Optional: type ('PLA'/'PETG'/...), color (8-hex FFFFFFFF), brand.
+        const amsId = Number(cmd.args?.amsId);
+        const trayId = Number(cmd.args?.trayId);
+        if (!Number.isInteger(amsId) || !Number.isInteger(trayId)) {
+          throw new Error('amsId and trayId required for set_ams_filament');
+        }
+        const payload: Record<string, unknown> = {
+          sequence_id: '0',
+          command: 'ams_filament_setting',
+          ams_id: amsId,
+          tray_id: trayId,
+          tray_info_idx: '',     // Bambu spool catalog id (empty = custom)
+          tray_type: String(cmd.args?.type ?? 'PLA'),
+          tray_sub_brands: String(cmd.args?.brand ?? ''),
+          tray_color: String(cmd.args?.color ?? 'FFFFFFFF'),
+          nozzle_temp_min: 190,
+          nozzle_temp_max: 240,
+          tray_diameter: '1.75',
+          setting_id: '',
+          tray_uuid: '',
+          ctype: 0,
+        };
+        this.publish({ print: payload });
+        return;
+      }
       case 'jog':
       case 'home':
         throw new Error(`${cmd.command} requires manual mode — Bambu does not support remote jog`);

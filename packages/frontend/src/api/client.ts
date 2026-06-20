@@ -207,6 +207,20 @@ export async function sendPrinterCommand(printerId: string, command: string, arg
   });
 }
 
+/**
+ * Set a single AMS tray's filament metadata on the printer.
+ * amsId is 0-indexed unit; trayId is 1-indexed slot within that unit.
+ * Color must be 8-hex (RRGGBBAA) — caller is responsible for format.
+ */
+export async function setAmsFilament(
+  printerId: string,
+  amsId: number,
+  trayId: number,
+  data: { type?: string; color?: string; brand?: string },
+) {
+  return sendPrinterCommand(printerId, 'set_ams_filament', { amsId, trayId, ...data });
+}
+
 export async function sendToRegisteredPrinter(printerId: string, jobId: string, startPrint = true, filamentMapping?: number[]) {
   return apiFetch(`/printers/${printerId}/send`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },

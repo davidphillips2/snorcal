@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
-import type { PrinterRecord, PrinterStatus } from '@snorcal/shared';
+import type { AmsSlot, PrinterRecord, PrinterStatus } from '@snorcal/shared';
 import * as api from '../../api/client';
 import { CameraView } from './CameraView';
+import { AmsEditor } from './AmsEditor';
 
 interface Props {
   id: string;
@@ -14,6 +15,7 @@ export function PrinterDetail({ id, onBack }: Props) {
   const [gcode, setGcode] = useState('');
   const [hotend, setHotend] = useState(status?.temps?.hotendTarget ?? 200);
   const [bed, setBed] = useState(status?.temps?.bedTarget ?? 60);
+  const [editingSlot, setEditingSlot] = useState<AmsSlot | null>(null);
 
   useEffect(() => {
     api.listPrinters().then(list => {
@@ -129,21 +131,25 @@ export function PrinterDetail({ id, onBack }: Props) {
         </div>
 
         {/* AMS */}
-        {printer.protocol === 'bambu' && status?.ams && status.ams.length > 0 && (
+        {status?.ams && status.ams.length > 0 && (
           <Section title="AMS">
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
               {status.ams.map((slot, i) => (
-                <div key={i} className="bg-gray-800 rounded p-2 flex items-center gap-2">
+                <button key={i}
+                  onClick={() => setEditingSlot(slot)}
+                  className="bg-gray-800 hover:bg-gray-700 rounded p-2 flex items-center gap-2 text-left transition-colors"
+                >
                   <span className="w-6 h-6 rounded border border-gray-600 flex-shrink-0"
                     style={{ backgroundColor: slot.color ? `#${slot.color.slice(0, 6)}` : '#444' }} />
-                  <div className="min-w-0">
+                  <div className="min-w-0 flex-1">
                     <div className="text-xs text-white truncate">{slot.type ?? 'unknown'}</div>
-                    <div className="text-[10px] text-gray-500">
-                      {slot.brand && <span className="truncate">{slot.brand} </span>}
+                    <div className="text-[10px] text-gray-500 truncate">
+                      {slot.brand && <span>{slot.brand} </span>}
                       {slot.remain !== undefined && <span>{slot.remain}%</span>}
                     </div>
                   </div>
-                </div>
+                  <span className="text-gray-600 text-xs">✎</span>
+                </button>
               ))}
             </div>
           </Section>
@@ -232,6 +238,14 @@ export function PrinterDetail({ id, onBack }: Props) {
           </div>
         </Section>
       </div>
+
+      {editingSlot && (
+        <AmsEditor
+          printerId={printer.id}
+          slot={editingSlot}
+          onClose={() => setEditingSlot(null)}
+        />
+      )}
     </div>
   );
 }
