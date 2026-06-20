@@ -130,3 +130,47 @@ export function formatDuration(seconds: number): string {
   if (m > 0) return `${m}m ${s}s`;
   return `${s}s`;
 }
+
+/**
+ * Walk gcode, map each `;LAYER_CHANGE` (or `;LAYER:N`) marker to the dominant
+ * `;TYPE:` that follows until the next layer marker. Used by the layer
+ * filmstrip to color ticks by section.
+ */
+export function extractLayerTypes(gcode: string): Map<number, string> {
+  const out = new Map<number, string>();
+  const typeCounts = new Map<string, number>();
+  let currentLayer = 0;
+  let pendingLayer: number | null = null;
+
+  const flush = () => {
+    if (pendingLayer === null) return;
+    let dominant = '';
+    let max = 0;
+    for (const [t, c] of typeCounts) if (c > max) { max = c; dominant = t; }
+    if (dominant) out.set(pendingLayer, dominant);
+    pendingLayer = null;
+    typeCounts.clear();
+  };
+
+  for (const rawLine of gcode.split('\n')) {
+    const line = rawLine.trim();
+    if (!line.startsWith(';')) {
+      // Count ;TYPE: only matters for non-comment moves; we just need the current type
+      continue;
+    }
+    const layerMatch = line.match(/^;LAYER(?:_CHANGE)?:?\s*(\d+)/i);
+    if (layerMatch) {
+      flush();
+      pendingLayer = parseInt(layerMatch[1], 10);
+      currentLayer = pendingLayer ?? currentLayer;
+      continue;
+    }
+    const typeMatch = line.match(/^;TYPE:\s*(.+)/i);
+    if (typeMatch) {
+      const t = typeMatch[1].trim().toLowerCase();
+      typeCounts.set(t, (typeCounts.get(t) ?? 0) + 1);
+    }
+  }
+  flush();
+  return out;
+}

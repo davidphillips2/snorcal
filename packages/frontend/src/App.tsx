@@ -20,6 +20,7 @@ import { SettingsPanel } from './components/Settings/SettingsPanel';
 import { GcodePreviewCanvas } from './components/Viewer/GcodePreviewCanvas';
 import { GcodeLayerSlider } from './components/Viewer/GcodeLayerSlider';
 import { GcodeTimeBreakdown } from './components/Viewer/GcodeTimeBreakdown';
+import { GcodeLayerStrip } from './components/Viewer/GcodeLayerStrip';
 import { PrinterDashboard } from './components/PrinterMonitor/PrinterDashboard';
 import { MultiPrinterFit } from './components/PrinterMonitor/MultiPrinterFit';
 import { LiveMonitorOverlay } from './components/PrinterMonitor/LiveMonitorOverlay';
@@ -29,6 +30,7 @@ import { PrinterDetail } from './components/PrinterMonitor/PrinterDetail';
 import { useSSE } from './hooks/useSSE';
 import * as api from './api/client';
 import { shelfPack } from './lib/pack';
+import { extractLayerTypes } from './lib/gcode-stats';
 import type { ModelKind, Scale3D, Mirror3D } from '@snorcal/shared';
 
 // --- Types ---
@@ -420,6 +422,7 @@ export default function App() {
   const [gcodeColorMode, setGcodeColorMode] = useState<'filament' | 'lineType' | 'speed'>('filament');
   const [isParsingGcode, setIsParsingGcode] = useState(false);
   const [layerCount, setLayerCount] = useState(0);
+  const layerTypes = useMemo(() => gcodeText ? extractLayerTypes(gcodeText) : new Map<number, string>(), [gcodeText]);
 
   const handleLayerCountReady = useCallback((count: number) => {
     setLayerCount(count);
@@ -1462,6 +1465,12 @@ export default function App() {
                 extrusionColors={filamentSlots.map(s => s.color)} buildVolume={bedVolume ?? undefined}
                 colorMode={gcodeColorMode} onLayerCountReady={handleLayerCountReady} />
               <GcodeTimeBreakdown gcode={gcodeText} />
+              <GcodeLayerStrip
+                currentLayer={currentPreviewLayer}
+                totalLayers={layerCount}
+                layerTypes={layerTypes}
+                onLayerChange={setCurrentPreviewLayer}
+              />
               <LiveMonitorOverlay
                 statuses={printerStatuses}
                 names={Object.fromEntries(printers.map(p => [p.id, p.name]))}
