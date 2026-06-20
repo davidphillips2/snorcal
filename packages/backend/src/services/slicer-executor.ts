@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import path from 'node:path';
 import fs from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { getSlicerBinary } from '@snorcal/shared';
 import type { SlicerEngine } from '@snorcal/shared';
 
@@ -30,8 +31,87 @@ const isLinux = process.platform === 'linux';
 
 export class SlicerExecutor {
   private child: ChildProcess | null = null;
+  private sliceId: string | null = null;
+  private useHttp = !!process.env.SLICER_URL;
 
   async execute(cmd: SliceCommand, onProgress?: ProgressCallback): Promise<SliceResult> {
+    if (this.useHttp) return this.executeHttp(cmd, onProgress);
+    return this.executeLocal(cmd, onProgress);
+  }
+
+  private async executeHttp(cmd: SliceCommand, onProgress?: ProgressCallback): Promise<SliceResult> {
+    const baseUrl = process.env.SLICER_URL!;
+    this.sliceId = randomUUID();
+    const body = {
+      id: this.sliceId,
+      engine: cmd.engine,
+      input3mf: cmd.input3mf,
+      outputDir: cmd.outputDir,
+      plateIndex: cmd.plateIndex,
+      workDir: cmd.workDir,
+      dataDir: cmd.dataDir,
+    };
+
+    const ctrl = new AbortController();
+    this.cancelHttp = () => ctrl.abort();
+
+    const res = await fetch(`${baseUrl}/slice`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: ctrl.signal,
+    });
+
+    if (!res.ok || !res.body) {
+      return { gcodePath: '', gcodeSize: 0, exitCode: 1, stdout: '', stderr: `Sidecar HTTP ${res.status}` };
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let stdout = '';
+    let stderr = '';
+    let exitCode = 1;
+    let gcodePath = '';
+    let gcodeSize = 0;
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const events = buffer.split('\n\n');
+      buffer = events.pop() ?? '';
+      for (const evt of events) {
+        const lines = evt.split('\n');
+        let event = 'message';
+        let data = '';
+        for (const ln of lines) {
+          if (ln.startsWith('event:')) event = ln.slice(6).trim();
+          else if (ln.startsWith('data:')) data = ln.slice(5).trim();
+        }
+        if (!data || event === 'message') continue;
+        let parsed: any;
+        try { parsed = JSON.parse(data); } catch { continue; }
+        if (event === 'progress' && onProgress) {
+          onProgress(parsed.progress ?? 0, parsed.step ?? '');
+        } else if (event === 'done') {
+          exitCode = parsed.exitCode ?? 1;
+          stdout = parsed.stdout ?? '';
+          stderr = parsed.stderr ?? '';
+          gcodePath = parsed.gcodePath ?? '';
+          gcodeSize = parsed.gcodeSize ?? 0;
+        } else if (event === 'error') {
+          stderr += `\n${parsed.message ?? 'Unknown sidecar error'}`;
+        }
+      }
+    }
+
+    return { gcodePath, gcodeSize, exitCode, stdout, stderr };
+  }
+
+  private cancelHttp: (() => void) | null = null;
+
+  private async executeLocal(cmd: SliceCommand, onProgress?: ProgressCallback): Promise<SliceResult> {
     const binary = getSlicerBinary(cmd.engine);
 
     fs.mkdirSync(cmd.outputDir, { recursive: true });
@@ -129,6 +209,13 @@ export class SlicerExecutor {
   }
 
   cancel() {
+    if (this.useHttp) {
+      if (this.cancelHttp) this.cancelHttp();
+      if (this.sliceId && process.env.SLICER_URL) {
+        fetch(`${process.env.SLICER_URL}/cancel/${this.sliceId}`, { method: 'POST' }).catch(() => {});
+      }
+      return;
+    }
     if (this.child && !this.child.killed) {
       this.child.kill('SIGTERM');
       setTimeout(() => {

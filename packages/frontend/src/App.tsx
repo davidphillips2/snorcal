@@ -25,6 +25,7 @@ import { PrinterDashboard } from './components/PrinterMonitor/PrinterDashboard';
 import { InventoryPanel } from './components/Inventory/InventoryPanel';
 import { MultiPrinterFit } from './components/PrinterMonitor/MultiPrinterFit';
 import { LiveMonitorOverlay } from './components/PrinterMonitor/LiveMonitorOverlay';
+import { SetupWizard } from './components/Onboarding/SetupWizard';
 import type { PrinterStatus } from '@snorcal/shared';
 import { HomeDashboard } from './components/Home/HomeDashboard';
 import { PrinterDetail } from './components/PrinterMonitor/PrinterDetail';
@@ -346,6 +347,8 @@ export default function App() {
   const [showJobs, setShowJobs] = useState(false);
   const [showPrinters, setShowPrinters] = useState(false);
   const [showInventory, setShowInventory] = useState(false);
+  const [showWizard, setShowWizard] = useState(false);
+  const [wizardDismissed, setWizardDismissed] = useState(() => localStorage.getItem('snorcal_onboarded') === '1');
 
   // Registered printers (for target picker + Send)
   const [printers, setPrinters] = useState<Array<{ id: string; name: string; model?: string | null; protocol: string; bedVolume?: { x: number; y: number; z: number } | null; cameraSnapshotUrl?: string | null; protocolCamId?: string }>>([]);
@@ -362,9 +365,11 @@ export default function App() {
           localStorage.setItem('snorcal_target_printer', resolved);
           return resolved;
         });
+      } else if (!wizardDismissed) {
+        setShowWizard(true);
       }
     }).catch(() => {});
-  }, []);
+  }, [wizardDismissed]);
 
   // Sync bed volume from target printer's record
   useEffect(() => {
@@ -1532,6 +1537,23 @@ export default function App() {
 
       {showPrinters && <PrinterDashboard onClose={() => setShowPrinters(false)} />}
       {showInventory && <InventoryPanel onClose={() => setShowInventory(false)} />}
+      {showWizard && (
+        <SetupWizard
+          onClose={() => {
+            setShowWizard(false);
+            localStorage.setItem('snorcal_onboarded', '1');
+            setWizardDismissed(true);
+          }}
+          onAdded={() => {
+            setShowWizard(false);
+            localStorage.setItem('snorcal_onboarded', '1');
+            setWizardDismissed(true);
+            api.listPrinters().then(list => {
+              setPrinters(list.map(p => ({ id: p.id, name: p.name, model: p.model, protocol: p.protocol, bedVolume: p.bedVolume ?? null, cameraSnapshotUrl: p.cameraSnapshotUrl ?? null })));
+            }).catch(() => {});
+          }}
+        />
+      )}
     </div>
   );
 }

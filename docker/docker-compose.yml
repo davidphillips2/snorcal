@@ -2,7 +2,7 @@ services:
   app:
     build:
       context: ..
-      dockerfile: docker/Dockerfile
+      dockerfile: docker/Dockerfile.app
     ports:
       - "${PORT:-3000}:3000"
     volumes:
@@ -10,13 +10,38 @@ services:
     depends_on:
       redis:
         condition: service_healthy
+      slicer:
+        condition: service_healthy
     environment:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
       - DATA_DIR=/data
       - NODE_ENV=production
-      - DISPLAY=:99
+      - SLICER_URL=http://slicer:3001
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  slicer:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.slicer
+    volumes:
+      - snorcal-data:/data
+    environment:
+      - DISPLAY=:99
+      - DATA_DIR=/data
+      - SLICER_PORT=3001
+      - SLICER_HOST=0.0.0.0
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:3001/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
     deploy:
       resources:
         limits:
