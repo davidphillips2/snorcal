@@ -214,6 +214,7 @@ export class SnapmakerAdapter implements PrinterAdapter {
               print_stats: ['state', 'filename', 'total_duration', 'print_duration', 'info'],
               display_status: ['progress', 'message'],
               fan: ['speed'],
+              ams: null,              // Snapmaker AMS extension (mirrors bambu shape on push)
             },
           }).catch(() => { /* non-fatal */ });
           resolve();
@@ -294,8 +295,37 @@ export class SnapmakerAdapter implements PrinterAdapter {
       this.status.temps = { ...this.status.temps, bed: patch.heater_bed.temperature, bedTarget: patch.heater_bed.target };
     }
     if (patch.fan?.speed !== undefined) this.status.fanSpeed = Math.round(patch.fan.speed * 100);
+    if (patch.ams !== undefined) this.status.ams = this.parseAms(patch.ams);
     this.status.updatedAt = new Date().toISOString();
     this.emitStatus();
+  }
+
+  /**
+   * Snapmaker AMS shape (mirrors bambu):
+   *   { ams_exist_bits, tray_now, ams: [{ id, tray: [{ id, tray_type, tray_color,
+   *                                                 tray_sub_brands, remain, ... }] }] }
+   * Wire uses 0-indexed tray ids. Normalize to 1-indexed to match bambu convention
+   * (AmsSlot.trayId = wire id + 1). set_ams_filament converts back to wire id.
+   */
+  private parseAms(ams: any): AmsSlot[] | undefined {
+    if (!ams || !Array.isArray(ams.ams) || ams.ams.length === 0) return undefined;
+    const slots: AmsSlot[] = [];
+    for (const unit of ams.ams) {
+      const unitId = Number(unit.id ?? 0);
+      const trays = Array.isArray(unit.tray) ? unit.tray : [];
+      for (const tray of trays) {
+        if (!tray || tray.id === undefined) continue;
+        slots.push({
+          id: unitId,
+          trayId: Number(tray.id) + 1,   // wire 0-3 → slot 1-4
+          type: tray.tray_type,
+          color: typeof tray.tray_color === 'string' ? tray.tray_color.replace(/^#/, '') : undefined,
+          brand: tray.tray_sub_brands,
+          remain: typeof tray.remain === 'number' ? tray.remain : undefined,
+        });
+      }
+    }
+    return slots.length ? slots : undefined;
   }
 
   /** Send JSON-RPC request via MQTTS publish to <sn>/request. */
@@ -425,9 +455,10 @@ export class SnapmakerAdapter implements PrinterAdapter {
       case 'set_ams_filament': {
         // Snapmaker JSON-RPC: printer.ams.set_filament
         // Per-tray write — same shape conceptually as Bambu's ams_filament_setting.
+        // trayId comes in 1-indexed (AmsSlot convention); wire wants 0-indexed.
         const amsId = Number(cmd.args?.amsId);
-        const trayId = Number(cmd.args?.trayId);
-        if (!Number.isInteger(amsId) || !Number.isInteger(trayId)) {
+        const trayId = Number(cmd.args?.trayId) - 1;
+        if (!Number.isInteger(amsId) || trayId < 0) {
           throw new Error('amsId and trayId required for set_ams_filament');
         }
         await this.rpc('printer.ams.set_filament', {
