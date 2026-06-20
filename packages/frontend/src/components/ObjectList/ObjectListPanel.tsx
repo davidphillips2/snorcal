@@ -12,6 +12,7 @@ interface ObjectListPanelProps {
   onToggleVisible: (globalIdx: number) => void;
   onUpload: (file: File) => void;
   onUploadMany?: (files: File[]) => void;
+  onAutoArrange?: () => void;
   isUploading: boolean;
 }
 
@@ -59,7 +60,7 @@ function buildHierarchy(plateModels: ProjectModel[], allModels: ProjectModel[]):
 }
 
 export function ObjectListPanel({
-  models, allModels, activeIndex, onSelect, onRemove, onToggleVisible, onUpload, onUploadMany, isUploading,
+  models, allModels, activeIndex, onSelect, onRemove, onToggleVisible, onUpload, onUploadMany, onAutoArrange, isUploading,
 }: ObjectListPanelProps) {
   const hierarchy = useMemo(() => buildHierarchy(models, allModels), [models, allModels]);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -74,14 +75,25 @@ export function ObjectListPanel({
         <label className="text-xs font-medium text-gray-400 uppercase tracking-wider">
           Objects ({models.length})
         </label>
-        <button
-          onClick={() => fileRef.current?.click()}
-          disabled={isUploading}
-          className="px-2 py-0.5 rounded text-xs bg-gray-700 text-gray-300 hover:bg-gray-600 transition"
-          title="Upload model"
-        >
-          + Add
-        </button>
+        <div className="flex items-center gap-1">
+          {onAutoArrange && models.length > 1 && (
+            <button
+              onClick={onAutoArrange}
+              className="px-2 py-0.5 rounded text-xs bg-gray-700 text-gray-300 hover:bg-gray-600 transition"
+              title="Auto-arrange models on plate (shelf pack)"
+            >
+              Arrange
+            </button>
+          )}
+          <button
+            onClick={() => fileRef.current?.click()}
+            disabled={isUploading}
+            className="px-2 py-0.5 rounded text-xs bg-gray-700 text-gray-300 hover:bg-gray-600 transition"
+            title="Upload model"
+          >
+            + Add
+          </button>
+        </div>
         <input
           ref={fileRef}
           type="file"

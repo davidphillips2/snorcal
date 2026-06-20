@@ -26,6 +26,7 @@ import { HomeDashboard } from './components/Home/HomeDashboard';
 import { PrinterDetail } from './components/PrinterMonitor/PrinterDetail';
 import { useSSE } from './hooks/useSSE';
 import * as api from './api/client';
+import { shelfPack } from './lib/pack';
 import type { ModelKind, Scale3D, Mirror3D } from '@snorcal/shared';
 
 // --- Types ---
@@ -245,7 +246,6 @@ export default function App() {
       };
     });
   }, []);
-  // Toggle hollow preset: 0% infill + 0 top/bottom shells + 3 wall loops
   const toggleHollow = useCallback(() => {
     setSettings(prev => {
       const isOn = prev.sparse_infill_density === '0%'
@@ -367,6 +367,31 @@ export default function App() {
       setBedVolume(p?.bedVolume ?? null);
     }).catch(() => {});
   }, [targetPrinterId]);
+
+  // Auto-arrange visible models on active plate via shelf packing
+  const handleAutoArrange = useCallback(() => {
+    if (!bedVolume) return;
+    const items: Array<{ id: string; globalIdx: number; width: number; depth: number }> = [];
+    for (let i = 0; i < meshRefs.current.length; i++) {
+      const mesh = meshRefs.current[i];
+      const pm = projectModels[i];
+      if (!mesh || !pm || pm.plateId !== activePlateId || !pm.visible) continue;
+      mesh.updateMatrixWorld(true);
+      const box = new THREE.Box3().setFromObject(mesh);
+      const size = new THREE.Vector3();
+      box.getSize(size);
+      items.push({ id: pm.modelId, globalIdx: i, width: size.x, depth: size.z });
+    }
+    if (items.length === 0) return;
+    const { positions } = shelfPack(items, bedVolume.x, bedVolume.y, 5);
+    updateModels(prev => prev.map(pm => {
+      const p = positions.get(pm.modelId);
+      if (!p) return pm;
+      // Bed X → world X, bed Y → world Z (same convention as plate layout)
+      // shelfPack centers packed region on bed center; positions returned relative to bed origin (top-left → bottom-right)
+      return { ...pm, positionOffset: { x: p.x - bedVolume.x / 2, y: 0, z: p.z - bedVolume.y / 2 } };
+    }));
+  }, [projectModels, activePlateId, bedVolume, updateModels]);
 
   // Plate layout: render all plates side-by-side on X axis. plateOffsets maps
   // plateId → world-space center offset so each plate's bed sits next to others.
@@ -1095,6 +1120,7 @@ export default function App() {
           onToggleVisible={handleToggleVisible}
           onUpload={handleUpload}
           onUploadMany={handleUploadMany}
+          onAutoArrange={handleAutoArrange}
           isUploading={isUploading}
         />
 
