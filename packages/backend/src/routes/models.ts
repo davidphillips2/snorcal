@@ -293,9 +293,13 @@ export async function modelRoutes(app: FastifyInstance, options: { db: Db }) {
     }
 
     const colorsBuffer = Buffer.from(body.faceColors, 'base64');
-    const plateIndex = req.query.plate ? parseInt(req.query.plate) : undefined;
+    const plateIndex = req.query.plate ? parseInt(req.query.plate) : 1;
 
-    if (model.plate_count > 1 && plateIndex) {
+    // Mirror GET preference: if a plate row exists (3MF uploads always have one),
+    // write there so subsequent reads see the user's paint. STL has no plate row,
+    // so fall back to model.face_colors.
+    const plate = db.getPlate(req.params.id, plateIndex);
+    if (plate) {
       db.updatePlateColors(req.params.id, plateIndex, colorsBuffer);
     } else {
       db.updateModelColors(req.params.id, colorsBuffer);

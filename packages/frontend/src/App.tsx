@@ -42,6 +42,7 @@ import type { ModelKind, Scale3D, Mirror3D } from '@snorcal/shared';
 // --- Types ---
 
 export interface ProjectModel {
+  uid: string; // stable instance id (survives array reorders) — used as React key + meshRefs key
   modelId: string;
   name: string;
   faceCount: number;
@@ -80,6 +81,7 @@ interface Job {
 // --- Persistence ---
 
 interface PersistedModel {
+  uid?: string; // optional for backwards compat (older saves lack this)
   modelId: string;
   name: string;
   faceCount: number;
@@ -171,7 +173,7 @@ function computeMeshBoundsMM(mesh: THREE.Mesh): { x: number; y: number; z: numbe
 export default function App() {
   const [isUploading, setIsUploading] = useState(false);
   const [sceneRefs, setSceneRefs] = useState<SceneRefs | null>(null);
-  const meshRefs = useRef<(THREE.Mesh | null)[]>([]);
+  const meshRefs = useRef<Record<string, THREE.Mesh | null>>({});
   const uploadInputRef = useRef<HTMLInputElement>(null);
 
   // Multi-model project state
@@ -402,21 +404,21 @@ export default function App() {
   // Auto-arrange visible models on active plate via shelf packing
   const handleAutoArrange = useCallback(() => {
     if (!bedVolume) return;
-    const items: Array<{ id: string; globalIdx: number; width: number; depth: number }> = [];
-    for (let i = 0; i < meshRefs.current.length; i++) {
-      const mesh = meshRefs.current[i];
-      const pm = projectModels[i];
-      if (!mesh || !pm || pm.plateId !== activePlateId || !pm.visible) continue;
+    const items: Array<{ id: string; width: number; depth: number }> = [];
+    for (const pm of projectModels) {
+      if (pm.plateId !== activePlateId || !pm.visible) continue;
+      const mesh = meshRefs.current[pm.uid];
+      if (!mesh) continue;
       mesh.updateMatrixWorld(true);
       const box = new THREE.Box3().setFromObject(mesh);
       const size = new THREE.Vector3();
       box.getSize(size);
-      items.push({ id: pm.modelId, globalIdx: i, width: size.x, depth: size.z });
+      items.push({ id: pm.uid, width: size.x, depth: size.z });
     }
     if (items.length === 0) return;
     const { positions } = shelfPack(items, bedVolume.x, bedVolume.y, 5);
     updateModels(prev => prev.map(pm => {
-      const p = positions.get(pm.modelId);
+      const p = positions.get(pm.uid);
       if (!p) return pm;
       // Bed X → world X, bed Y → world Z (same convention as plate layout)
       // shelfPack centers packed region on bed center; positions returned relative to bed origin (top-left → bottom-right)
@@ -475,6 +477,7 @@ export default function App() {
     if (saved && saved.models.length > 0) {
       const restored: ProjectModel[] = saved.models.map(m => ({
         ...m,
+        uid: m.uid ?? crypto.randomUUID(), // backwards compat: old saves lack uid
         plateId: m.plateId || defaultPlateId, // backwards compat
         scale: m.scale ?? { ...DEFAULT_SCALE },
         mirror: m.mirror ?? { ...DEFAULT_MIRROR },
@@ -511,7 +514,7 @@ export default function App() {
         plates,
         activePlateId,
         models: projectModels.map(m => ({
-          modelId: m.modelId, name: m.name, faceCount: m.faceCount, plateCount: m.plateCount,
+          uid: m.uid, modelId: m.modelId, name: m.name, faceCount: m.faceCount, plateCount: m.plateCount,
           plateId: m.plateId, rotation: m.rotation, positionOffset: m.positionOffset,
           scale: m.scale, mirror: m.mirror, visible: m.visible,
           kind: m.kind, linkedTo: m.linkedTo, settings: m.settings,
@@ -589,6 +592,7 @@ export default function App() {
       const model = await api.uploadModel(file);
       const offset = projectModels.length * 50;
       const newPm: ProjectModel = {
+        uid: crypto.randomUUID(),
         modelId: model.id,
         name: model.name,
         faceCount: model.faceCount,
@@ -625,6 +629,7 @@ export default function App() {
           const model = await api.uploadModel(file);
           const offset = projectModels.length * 50;
           const newPm: ProjectModel = {
+            uid: crypto.randomUUID(),
             modelId: model.id,
             name: model.name,
             faceCount: model.faceCount,
@@ -655,6 +660,7 @@ export default function App() {
       const meta = await api.getModel(m.modelId) as any;
       const offset = projectModels.length * 50;
       const newPm: ProjectModel = {
+        uid: crypto.randomUUID(),
         modelId: m.modelId,
         name: m.name,
         faceCount: meta?.faceCount ?? 0,
@@ -723,9 +729,12 @@ export default function App() {
       const childIds = target.kind === 'model'
         ? new Set(prev.filter(m => m.linkedTo?.includes(target.modelId)).map(m => m.modelId))
         : new Set<string>();
-      return prev.filter((p, i) => i !== idx && !childIds.has(p.modelId));
+      const removed = prev.filter((p, i) => i !== idx && !childIds.has(p.modelId));
+      // Cleanup meshRefs for removed entries
+      const removedUids = new Set(prev.filter((p, i) => i === idx || childIds.has(p.modelId)).map(p => p.uid));
+      for (const uid of removedUids) delete meshRefs.current[uid];
+      return removed;
     });
-    meshRefs.current = meshRefs.current.filter((_, i) => i !== idx);
     setActiveModelIndex(prev => {
       if (prev === null) return null;
       if (prev === idx) return prev > 0 ? prev - 1 : (prev < projectModels.length - 2 ? prev : null);
@@ -735,20 +744,26 @@ export default function App() {
 
   // Slice: send first visible model (multi-model slicing to be added later)
   const saveAllColors = useCallback(async () => {
-    for (let i = 0; i < projectModels.length; i++) {
-      const mesh = meshRefs.current[i];
-      const pm = projectModels[i];
-      if (mesh && pm.visible && pm.plateId === activePlateId) {
-        const colors = extractFaceColors(mesh.geometry);
-        if (colors.length > 0) api.saveFaceColors(pm.modelId, colors).catch(() => {});
+    const plateIndex = plates.findIndex(p => p.id === activePlateId) + 1 || 1;
+    for (const pm of projectModels) {
+      if (pm.plateId !== activePlateId || !pm.visible) continue;
+      const mesh = meshRefs.current[pm.uid];
+      if (!mesh) continue;
+      const colors = extractFaceColors(mesh.geometry);
+      if (colors.length > 0) {
+        api.saveFaceColors(pm.modelId, colors, pm.plateCount > 1 ? plateIndex : undefined).catch(() => {});
       }
     }
-  }, [projectModels, activePlateId]);
+  }, [projectModels, activePlateId, plates]);
 
   const sliceModels = useCallback(async (models: ProjectModel[]) => {
     if (models.length === 0) return;
     const processSettings: Record<string, string> = {};
     Object.assign(processSettings, settings);
+    // Derive 1-based plate index from the first model's plateId so multi-plate
+    // 3MFs read the correct plate's colors + STL during slice.
+    const firstPlateIdx = plates.findIndex(p => p.id === models[0].plateId) + 1 || 1;
+    const anyMultiPlate = models.some(m => m.plateCount > 1);
     return api.submitSliceJob({
       models: models.map(pm => ({
         modelId: pm.modelId,
@@ -762,13 +777,14 @@ export default function App() {
         settings: pm.settings,
       })),
       engine,
+      plateIndex: anyMultiPlate ? firstPlateIdx : undefined,
       settings: { process: processSettings, machine: {}, filaments: [{}] },
       profiles: selectedProfiles,
       multiMaterial: multiMaterial.enabled ? multiMaterial : undefined,
       filamentSlots: filamentSlots.length > 1 ? filamentSlots : undefined,
       buildVolume: bedVolume ?? undefined,
     });
-  }, [engine, settings, selectedProfiles, multiMaterial, filamentSlots, bedVolume]);
+  }, [engine, settings, selectedProfiles, multiMaterial, filamentSlots, bedVolume, plates]);
 
   const handleSlicePlate = useCallback(async () => {
     const visible = activePlateModels.filter(m => m.visible);
@@ -810,14 +826,16 @@ export default function App() {
   const handleSaveColors = useCallback(async () => {
     const idx = activeModelIndex;
     if (idx == null) return;
-    const mesh = meshRefs.current[idx];
     const pm = projectModels[idx];
-    if (!mesh || !pm) return;
+    if (!pm) return;
+    const mesh = meshRefs.current[pm.uid];
+    if (!mesh) return;
     try {
       const colors = extractFaceColors(mesh.geometry);
-      await api.saveFaceColors(pm.modelId, colors);
+      const plateIndex = plates.findIndex(p => p.id === pm.plateId) + 1 || 1;
+      await api.saveFaceColors(pm.modelId, colors, pm.plateCount > 1 ? plateIndex : undefined);
     } catch (err) { console.error('Save failed:', err); }
-  }, [activeModelIndex, projectModels]);
+  }, [activeModelIndex, projectModels, plates]);
 
   const handleCancelJob = useCallback(async (jobId: string) => {
     await api.cancelJob(jobId);
@@ -900,8 +918,8 @@ export default function App() {
 
   // Per-model geometry ready callback
   const [meshRevision, setMeshRevision] = useState(0);
-  const handleGeometryReady = useCallback((idx: number, geometry: THREE.BufferGeometry, mesh: THREE.Mesh) => {
-    meshRefs.current[idx] = mesh;
+  const handleGeometryReady = useCallback((uid: string, geometry: THREE.BufferGeometry, mesh: THREE.Mesh) => {
+    meshRefs.current[uid] = mesh;
     setMeshRevision(prev => prev + 1); // force re-render so activeMesh updates
   }, []);
 
@@ -909,7 +927,7 @@ export default function App() {
   useEffect(() => {
     if (!sceneRefs || projectModels.length === 0) return;
     const visibleMeshes = projectModels
-      .map((pm, i) => ({ pm, mesh: meshRefs.current[i] }))
+      .map(pm => ({ pm, mesh: meshRefs.current[pm.uid] }))
       .filter(({ pm, mesh }) => pm.visible && mesh);
     if (visibleMeshes.length === 0) return;
     const box = new THREE.Box3();
@@ -943,7 +961,7 @@ export default function App() {
   // Active model helpers — ensure active model is on active plate
   const activeModel = activeModelIndex != null && projectModels[activeModelIndex]?.plateId === activePlateId
     ? projectModels[activeModelIndex] : null;
-  const activeMesh = activeModel != null ? meshRefs.current[activeModelIndex!] : null;
+  const activeMesh = activeModel != null ? meshRefs.current[activeModel.uid] : null;
 
   // Active plate world bounds for ModelMover clamp (plate X offset + bed half-size)
   const activePlateBounds = useMemo(() => {
@@ -959,10 +977,10 @@ export default function App() {
     let minX = Infinity, minY = Infinity, minZ = Infinity;
     let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
     let found = false;
-    for (let i = 0; i < meshRefs.current.length; i++) {
-      const mesh = meshRefs.current[i];
-      const pm = projectModels[i];
-      if (!mesh || !pm || pm.plateId !== activePlateId || !pm.visible) continue;
+    for (const pm of projectModels) {
+      if (pm.plateId !== activePlateId || !pm.visible) continue;
+      const mesh = meshRefs.current[pm.uid];
+      if (!mesh) continue;
       mesh.updateMatrixWorld(true);
       const box = new THREE.Box3().setFromObject(mesh);
       if (!isFinite(box.min.x)) continue;
@@ -994,7 +1012,9 @@ export default function App() {
 
   const handlePositionChange = useCallback((pos: THREE.Vector3) => {
     if (activeModelIndex == null) return;
-    const mesh = meshRefs.current[activeModelIndex];
+    const pm = projectModels[activeModelIndex];
+    if (!pm) return;
+    const mesh = meshRefs.current[pm.uid];
     const rest = mesh?.userData?.restPosition as { x: number; y: number; z: number } | undefined;
     if (!rest) return;
     // pos is absolute mesh position; subtract rest (centering offset) to get pure user offset
@@ -1002,7 +1022,7 @@ export default function App() {
       ...p,
       positionOffset: { x: pos.x - rest.x, y: pos.y - rest.y, z: pos.z - rest.z }
     } : p));
-  }, [activeModelIndex, updateModels]);
+  }, [activeModelIndex, projectModels, updateModels]);
 
   // --- Transform ops (mirror / scale / duplicate / array) ---
 
@@ -1076,6 +1096,7 @@ export default function App() {
     try {
       const uploaded = await Promise.all(files.map(f => api.uploadModel(f.file)));
       const newModels: ProjectModel[] = uploaded.map(m => ({
+        uid: crypto.randomUUID(),
         modelId: m.id,
         name: m.name,
         faceCount: m.faceCount,
@@ -1121,6 +1142,7 @@ export default function App() {
     try {
       const uploaded = await api.uploadModel(file);
       const newPm: ProjectModel = {
+        uid: crypto.randomUUID(),
         modelId: uploaded.id,
         name: uploaded.name,
         faceCount: uploaded.faceCount,
@@ -1160,6 +1182,7 @@ export default function App() {
       const uploaded = await api.uploadModel(file);
       const parentPm = projectModels.find(p => p.modelId === parentModelId);
       const newPm: ProjectModel = {
+        uid: crypto.randomUUID(),
         modelId: uploaded.id,
         name: uploaded.name,
         faceCount: uploaded.faceCount,
@@ -1237,9 +1260,11 @@ export default function App() {
       raycaster.setFromCamera(mouse, camera);
       // Check all meshes, find closest hit
       let closestIdx = -1, closestDist = Infinity;
-      for (let i = 0; i < meshRefs.current.length; i++) {
-        const mesh = meshRefs.current[i];
-        if (!mesh || !projectModels[i]?.visible) continue;
+      for (let i = 0; i < projectModels.length; i++) {
+        const pm = projectModels[i];
+        if (!pm.visible) continue;
+        const mesh = meshRefs.current[pm.uid];
+        if (!mesh) continue;
         const hits = raycaster.intersectObject(mesh);
         if (hits.length > 0 && hits[0].distance < closestDist) {
           closestDist = hits[0].distance;
@@ -1491,7 +1516,6 @@ export default function App() {
 
           {/* Multi-model STL viewers — all visible models across all plates */}
           {sceneRefs && !previewJobId && projectModels.filter(m => m.visible).map((pm) => {
-            const realIdx = projectModels.indexOf(pm);
             const plateOff = plateOffsets[pm.plateId] ?? { x: 0, y: 0, z: 0 };
             const combined = new THREE.Vector3(
               pm.positionOffset.x + plateOff.x,
@@ -1500,7 +1524,7 @@ export default function App() {
             );
             return (
               <STLViewer
-                key={`mesh-${realIdx}`}
+                key={pm.uid}
                 modelUrl={api.getModelUrl(pm.modelId)}
                 faceColors={pm.faceColors || undefined}
                 rotation={pm.rotation}
@@ -1509,7 +1533,7 @@ export default function App() {
                 mirror={pm.mirror}
                 kind={pm.kind}
                 sceneRef={{ current: sceneRefs }}
-                onGeometryReady={(geometry, mesh) => handleGeometryReady(realIdx, geometry, mesh)}
+                onGeometryReady={(geometry, mesh) => handleGeometryReady(pm.uid, geometry, mesh)}
               />
             );
           })}
@@ -1550,13 +1574,13 @@ export default function App() {
               />
               <MeasureTool
                 sceneRefs={sceneRefs}
-                meshes={meshRefs.current.filter((m): m is THREE.Mesh => !!m)}
+                meshes={Object.values(meshRefs.current).filter((m): m is THREE.Mesh => !!m)}
                 active={paintMode === 'measure'}
                 onMeasurementChange={setMeasurement}
               />
               <SupportPainter
                 sceneRefs={sceneRefs}
-                meshes={meshRefs.current.filter((m): m is THREE.Mesh => !!m)}
+                meshes={Object.values(meshRefs.current).filter((m): m is THREE.Mesh => !!m)}
                 projectModels={projectModels}
                 active={paintMode === 'support'}
                 pillarDiameter={supportDiameter}
