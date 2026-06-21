@@ -1,0 +1,76 @@
+# Example production deployment using prebuilt images.
+#
+# Pulls from GitHub Container Registry. Override the image tags via env vars
+# (see .env.example) or edit directly.
+#
+#   docker compose -f docker/docker-compose.example.yml up -d
+#
+# Requirements:
+#   - All three containers share the `snorcal-data` volume so the app can
+#     read what the slicer writes. Keep the volume mount path identical
+#     (/data) in both app + slicer.
+
+services:
+  app:
+    image: ghcr.io/davidphillips2/snorcal:${SNORCAL_TAG:-latest}
+    ports:
+      - "${PORT:-3000}:3000"
+    volumes:
+      - snorcal-data:/data
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - DATA_DIR=/data
+      - NODE_ENV=production
+      - SLICER_URL=http://slicer:3001
+      # - DEBUG_PRINTER=1
+    depends_on:
+      redis:
+        condition: service_healthy
+      slicer:
+        condition: service_healthy
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  slicer:
+    image: ghcr.io/davidphillips2/snorcal-slicer:${SNORCAL_TAG:-latest}
+    volumes:
+      - snorcal-data:/data
+    environment:
+      - DISPLAY=:99
+      - DATA_DIR=/data
+      - SLICER_PORT=3001
+      - SLICER_HOST=0.0.0.0
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:3001/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+
+  redis:
+    image: redis:7-alpine
+    volumes:
+      - snorcal-redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+
+volumes:
+  snorcal-data:
+  snorcal-redis:

@@ -1,0 +1,50 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>snorcal-slicer</Name>
+  <Repository>ghcr.io/davidphillips2/snorcal-slicer:latest</Repository>
+  <Registry>https://github.com/davidphillips2/snorcal/pkgs/container/snorcal-slicer</Registry>
+  <Branch>
+    <Tag>latest</Tag>
+    <TagCategory>Slicer</TagCategory>
+  </Branch>
+  <Network>bridge</Network>
+  <MyIP/>
+  <Shell>sh</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/davidphillips2/snorcal/issues</Support>
+  <Project>https://github.com/davidphillips2/snorcal</Project>
+  <Overview>Companion slicer sidecar for snorcal. Runs OrcaSlicer / BambuStudio / Snapmaker Orca under Xvfb on Ubuntu 22.04 and exposes them over HTTP on port 3001.&#13;
+&#13;
+This container does NOT serve the web UI — install the `snorcal` template for that. Both containers must share the same /data volume path so the app can read gcode produced by the slicer.&#13;
+&#13;
+amd64 only — the upstream slicer binaries are x86_64 AppImages. Will not run on arm64 hosts.</Overview>
+  <Category>Productivity: Tools:</Category>
+  <WebUI>http://[IP]:[PORT:3001]/health</WebUI>
+  <TemplateURL>https://raw.githubusercontent.com/davidphillips2/snorcal/main/docker/unraid/my-snorcal-slicer.xml</TemplateURL>
+  <Icon>https://raw.githubusercontent.com/davidphillips2/snorcal/main/docker/unraid/snorcal-slicer.png</Icon>
+  <ExtraParams/>
+  <PostArgs/>
+  <CPUset/>
+  <Date>2026-06-21</Date>
+  <Requires>Must share the same /data host path as the snorcal app container. Attach both to a shared custom Docker network so the app can resolve this container as `snorcal-slicer`.</Requires>
+
+  <Config Name="Slicer Port" Target="3001" Default="3001" Mode="tcp"
+          Description="Host port for the slicer HTTP API. Set SLICER_URL on the snorcal app container to http://snorcal-slicer:3001."
+          Type="Port" Display="always" Required="true" Mask="false">3001</Config>
+
+  <Config Name="Shared Data" Target="/data" Default="/mnt/user/appdata/snorcal" Mode="rw"
+          Description="MUST be the same host path as the snorcal app container's App Data path. Models + generated gcode flow through here."
+          Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/snorcal</Config>
+
+  <Config Name="SLICER_PORT" Target="SLICER_PORT" Default="3001" Mode=""
+          Description="Port the sidecar listens on internally."
+          Type="Variable" Display="advanced" Required="true" Mask="false">3001</Config>
+
+  <Config Name="SLICER_HOST" Target="SLICER_HOST" Default="0.0.0.0" Mode=""
+          Description="Bind address inside the container. Leave as 0.0.0.0."
+          Type="Variable" Display="advanced" Required="true" Mask="false">0.0.0.0</Config>
+
+  <Config Name="DISPLAY" Target="DISPLAY" Default=":99" Mode=""
+          Description="X display started by the entrypoint via Xvfb. Change only if you know the entrypoint already starts Xvfb on a different display."
+          Type="Variable" Display="advanced" Required="true" Mask="false">:99</Config>
+</Container>
