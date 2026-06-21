@@ -544,14 +544,16 @@ function runSliceDirect(
           const plateIndex = body.plateIndex ?? 1;
           let stlPath = rec?.file_path ?? '';
           let faceColors: Uint8Array | undefined;
-          if (rec && rec.plate_count > 1) {
-            const plate = db.getPlate(entry.modelId, plateIndex);
-            if (plate) {
-              stlPath = plate.file_path;
-              faceColors = plate.face_colors ? new Uint8Array(plate.face_colors) : undefined;
-            }
-          } else {
-            faceColors = rec?.face_colors ? new Uint8Array(rec.face_colors) : undefined;
+          // Mirror PUT/GET preference: plate row wins if it exists. Single-plate
+          // 3MFs have a plate row too, so paint saved via the PUT route (which
+          // also prefers plate) lands here. Without this, plate_count==1 falls
+          // through to rec.face_colors and the paint is silently lost.
+          const plate = db.getPlate(entry.modelId, plateIndex);
+          if (plate) {
+            stlPath = plate.file_path;
+            faceColors = plate.face_colors ? new Uint8Array(plate.face_colors) : undefined;
+          } else if (rec) {
+            faceColors = rec.face_colors ? new Uint8Array(rec.face_colors) : undefined;
           }
           if (entry.modelId) modelIdToIndex.set(entry.modelId, mi);
           parentModelIds[mi] = entry.modelId;
@@ -580,14 +582,13 @@ function runSliceDirect(
         const plateIndex = (body.plateIndex ?? 1);
         let stlPath = modelFilePath;
         let faceColors: Uint8Array | undefined;
-        if (modelRecord && modelRecord.plate_count > 1) {
-          const plate = db.getPlate(body.modelId!, plateIndex);
-          if (plate) {
-            stlPath = plate.file_path;
-            faceColors = plate.face_colors ? new Uint8Array(plate.face_colors) : undefined;
-          }
-        } else {
-          faceColors = modelRecord?.face_colors ? new Uint8Array(modelRecord.face_colors) : undefined;
+        // Same plate-first preference as the multi-model branch above.
+        const plate = db.getPlate(body.modelId!, plateIndex);
+        if (plate) {
+          stlPath = plate.file_path;
+          faceColors = plate.face_colors ? new Uint8Array(plate.face_colors) : undefined;
+        } else if (modelRecord) {
+          faceColors = modelRecord.face_colors ? new Uint8Array(modelRecord.face_colors) : undefined;
         }
         buildModels = [{ stlPath, faceColors, rotation: body.rotation, positionOffset: body.positionOffset }];
         parentModelIds[0] = body.modelId;
