@@ -57,9 +57,9 @@ function expandFilamentSlots(
   const targetCount = Math.max(n, machineExtruderCount);
 
   // Set filament_colour/type from slots, pad to targetCount
-  const colours = slots.map(s => s.color);
-  while (colours.length < targetCount) colours.push(colours[colours.length - 1] || '#FFFFFF');
-  projectSettings['filament_colour'] = colours;
+  const colors = slots.map(s => s.color);
+  while (colors.length < targetCount) colors.push(colors[colors.length - 1] || '#FFFFFF');
+  projectSettings['filament_colour'] = colors;
 
   const types = slots.map(s => s.type);
   while (types.length < targetCount) types.push(types[types.length - 1] || 'PLA');
@@ -115,8 +115,8 @@ function expandFilamentSlots(
     projectSettings['single_extruder_multi_material'] = '1';
     projectSettings['enable_prime_tower'] = '1';
     // Critical: extruder_colour must match machine extruder count
-    projectSettings['extruder_colour'] = colours;
-    projectSettings['default_filament_colour'] = colours;
+    projectSettings['extruder_colour'] = colors;
+    projectSettings['default_filament_colour'] = colors;
     projectSettings['extruder_offset'] = Array.from({ length: targetCount }, () => '0x0');
     // Wiping volumes targetCount x targetCount (flat row-major, 70ml default)
     const wv: string[] = [];
@@ -515,10 +515,10 @@ function runSliceDirect(
 
         projectSettings['single_extruder_multi_material'] = '1';
         projectSettings['enable_prime_tower'] = '1';
-        const extColours = body.filamentSlots.map(s => s.color);
-        while (extColours.length < tc) extColours.push(extColours[extColours.length - 1] || '#FFFFFF');
-        projectSettings['extruder_colour'] = extColours;
-        projectSettings['default_filament_colour'] = extColours;
+        const extColors = body.filamentSlots.map(s => s.color);
+        while (extColors.length < tc) extColors.push(extColors[extColors.length - 1] || '#FFFFFF');
+        projectSettings['extruder_colour'] = extColors;
+        projectSettings['default_filament_colour'] = extColors;
         projectSettings['extruder_offset'] = Array.from({ length: tc }, () => '0x0');
         // Pad nozzle_diameter to match machine extruder count
         const nd = projectSettings['nozzle_diameter'] as any[] | undefined;

@@ -674,15 +674,33 @@ export default function App() {
       // Gcode keys (`*_gcode`) are EXCLUDED — source printer's start/end/layer-change
       // macros are firmware-specific (Bambu vs Snapmaker vs Klipper) and would emit
       // commands the user's printer can't parse. User's existing gcode stays intact.
+      //
+      // filament_colour / filament_type arrays populate the per-slot UI directly
+      // (filamentSlots state) — settings.filament_colour stays as the slicer-
+      // consumed array, but the UI needs the slot list updated to match.
       const sourceSettings = await api.getModelSourceSettings(m.modelId);
       if (sourceSettings && typeof sourceSettings === 'object') {
         const coerced: Record<string, string> = {};
         for (const [k, v] of Object.entries(sourceSettings)) {
           if (v == null) continue;
           if (k.endsWith('_gcode')) continue;  // preserve user's printer-specific macros
+          // Keep arrays as JSON strings — slice route overwrites filament_colour
+          // from filamentSlots anyway, so these are just informational.
           coerced[k] = typeof v === 'string' ? v : JSON.stringify(v);
         }
         setSettings(prev => ({ ...prev, ...coerced }));
+
+        // filament_colour / filament_type arrays populate the per-slot UI
+        // directly — that's the path the slice route reads for slicer config.
+        const colors = sourceSettings.filament_colour;
+        const types = sourceSettings.filament_type;
+        if (Array.isArray(colors) && colors.length > 0) {
+          const newSlots = colors.map((c: unknown, i: number) => ({
+            color: typeof c === 'string' ? c : '#FFFFFF',
+            type: Array.isArray(types) && typeof types[i] === 'string' ? (types[i] as string) : 'PLA',
+          }));
+          setFilamentSlots(newSlots);
+        }
       }
     } catch (err) {
       alert(`MakerWorld import failed: ${err instanceof Error ? err.message : String(err)}`);

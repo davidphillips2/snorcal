@@ -66,9 +66,9 @@ export async function build3MF(input: ThreeMFBuildInput): Promise<Buffer> {
     positionOffset: input.positionOffset,
   }];
 
-  const filamentColours = input.projectSettings?.filament_colour as string[] | undefined;
-  const defaultColor = filamentColours?.[0]?.toUpperCase() ?? '#FFFFFF';
-  const colorToExtruder = buildColorToExtruderMap(filamentColours);
+  const filamentColors = input.projectSettings?.filament_colour as string[] | undefined;
+  const defaultColor = filamentColors?.[0]?.toUpperCase() ?? '#FFFFFF';
+  const colorToExtruder = buildColorToExtruderMap(filamentColors);
   const buildVolume = input.buildVolume ?? { x: 270, y: 270, z: 200 };
 
   // Process each model into 3MF objects (may split by extruder for painted models)
@@ -306,15 +306,15 @@ function processChildGeometry(stlPath: string, parentOffset?: { x: number; y: nu
 
 // --- Paint color processing ---
 
-function buildColorToExtruderMap(filamentColours?: string[]): Map<string, number> {
+function buildColorToExtruderMap(filamentColors?: string[]): Map<string, number> {
   const map = new Map<string, number>();
-  if (filamentColours) {
-    for (let i = 0; i < filamentColours.length; i++) {
+  if (filamentColors) {
+    for (let i = 0; i < filamentColors.length; i++) {
       // First occurrence wins — OrcaSlicer pads filament_colour to machine
       // extruder count by repeating the last entry, which would otherwise
       // overwrite the real slot index (e.g. [#FF0000,#0000FF,#0000FF,#0000FF]
       // would map blue → 4 instead of 2).
-      const key = filamentColours[i].toUpperCase();
+      const key = filamentColors[i].toUpperCase();
       if (!map.has(key)) map.set(key, i + 1);
     }
   }

@@ -326,48 +326,7 @@ export function SettingsPanel({
     <div className="space-y-3">
       {/* Engine selector moved to App-level Settings panel */}
 
-      {/* Advanced toggle */}
-      <button
-        onClick={() => setShowAdvanced(s => !s)}
-        className="w-full flex items-center justify-between text-xs font-medium text-gray-400 uppercase tracking-wider py-1 hover:text-gray-200"
-      >
-        <span>Advanced</span>
-        <span className="text-gray-500 text-xs">{showAdvanced ? '\u2212' : '+'}</span>
-      </button>
-
-      {showAdvanced && (
-        <>
-      {/* Profile selectors */}
-      <div className="space-y-2">
-        <div className="flex items-center justify-between">
-          <span className="text-sm font-medium text-gray-300">Profiles</span>
-          <div>
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept=".json,.zip"
-              multiple
-              onChange={handleImport}
-              className="hidden"
-              id="profile-import"
-            />
-            <label
-              htmlFor="profile-import"
-              className={`px-2 py-1 rounded text-xs cursor-pointer ${
-                importing
-                  ? 'bg-gray-600 text-gray-400'
-                  : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-              }`}
-            >
-              {importing ? 'Importing...' : 'Import'}
-            </label>
-          </div>
-        </div>
-        {renderProfileSelect('Machine', 'machine', machineFiltered)}
-        {renderProfileSelect('Process', 'process', processProfiles)}
-      </div>
-
-      {/* Filament Slots */}
+      {/* Filament Slots — always visible (changed every print, not "advanced") */}
       <div className="space-y-2">
         <div className="flex items-center justify-between">
           <span className="text-sm font-medium text-gray-300">Filaments</span>
@@ -449,6 +408,47 @@ export function SettingsPanel({
             </select>
           </div>
         ))}
+      </div>
+
+      {/* Advanced toggle */}
+      <button
+        onClick={() => setShowAdvanced(s => !s)}
+        className="w-full flex items-center justify-between text-xs font-medium text-gray-400 uppercase tracking-wider py-1 hover:text-gray-200"
+      >
+        <span>Advanced</span>
+        <span className="text-gray-500 text-xs">{showAdvanced ? '\u2212' : '+'}</span>
+      </button>
+
+      {showAdvanced && (
+        <>
+      {/* Profile selectors */}
+      <div className="space-y-2">
+        <div className="flex items-center justify-between">
+          <span className="text-sm font-medium text-gray-300">Profiles</span>
+          <div>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".json,.zip"
+              multiple
+              onChange={handleImport}
+              className="hidden"
+              id="profile-import"
+            />
+            <label
+              htmlFor="profile-import"
+              className={`px-2 py-1 rounded text-xs cursor-pointer ${
+                importing
+                  ? 'bg-gray-600 text-gray-400'
+                  : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+              }`}
+            >
+              {importing ? 'Importing...' : 'Import'}
+            </label>
+          </div>
+        </div>
+        {renderProfileSelect('Machine', 'machine', machineFiltered)}
+        {renderProfileSelect('Process', 'process', processProfiles)}
       </div>
 
       {/* Multi-Material Support */}

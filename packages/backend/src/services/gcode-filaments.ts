@@ -28,7 +28,7 @@ export interface FilamentInfo {
 export function parseGcodeFilaments(gcodePath: string): FilamentInfo[] {
   if (!fs.existsSync(gcodePath)) return [];
 
-  // Read header (first 256KB) for filament_type/colour metadata +
+  // Read header (first 256KB) for filament_type/color metadata +
   // tail (last 64KB) for filament-used summaries (always at end of file).
   const fd = fs.openSync(gcodePath, 'r');
   const stat = fs.fstatSync(fd);

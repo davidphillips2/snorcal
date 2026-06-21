@@ -109,10 +109,10 @@ test('painted 2-filament slice emits T1 toolchange in gcode', async () => {
 
   // Sanity: extruder_colour metadata should list both configured colors.
   // OrcaSlicer emits uppercase hex; lowercase the comparison.
-  const colourLine = gcode.match(/^; extruder_colour = (.+)$/m);
-  expect(colourLine, 'extruder_colour metadata should exist').toBeTruthy();
-  expect(colourLine![1].toLowerCase(), 'should contain red').toContain('#ff0000');
-  expect(colourLine![1].toLowerCase(), 'should contain blue').toContain('#0000ff');
+  const colorLine = gcode.match(/^; extruder_colour = (.+)$/m);
+  expect(colorLine, 'extruder_colour metadata should exist').toBeTruthy();
+  expect(colorLine![1].toLowerCase(), 'should contain red').toContain('#ff0000');
+  expect(colorLine![1].toLowerCase(), 'should contain blue').toContain('#0000ff');
 
   // Cleanup
   await fetch(`${apiBase}/models/${model.id}`, { method: 'DELETE' });

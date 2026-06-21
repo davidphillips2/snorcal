@@ -105,10 +105,10 @@ test('painted face colors propagate to extruder_colour in gcode', async () => {
 
   // Header metadata — extruder_colour is a ;-del list of hex codes per slot.
   // OrcaSlicer emits uppercase; lowercase the comparison.
-  const colourLine = gcode.match(/^; extruder_colour = (.+)$/m);
-  expect(colourLine, 'extruder_colour metadata should exist').toBeTruthy();
-  const parts = colourLine![1].split(';').map(s => s.trim().toLowerCase());
-  expect(parts.length, 'should list at least 2 extruder colours').toBeGreaterThanOrEqual(2);
+  const colorLine = gcode.match(/^; extruder_colour = (.+)$/m);
+  expect(colorLine, 'extruder_colour metadata should exist').toBeTruthy();
+  const parts = colorLine![1].split(';').map(s => s.trim().toLowerCase());
+  expect(parts.length, 'should list at least 2 extruder colors').toBeGreaterThanOrEqual(2);
   // Both configured colors must appear (paintStripe uses both slots).
   expect(parts, 'should contain green #00ff00').toContain('#00ff00');
   expect(parts, 'should contain orange #ff8800').toContain('#ff8800');
