@@ -1,6 +1,7 @@
 {
   "name": "snorcal",
   "private": true,
+  "license": "AGPL-3.0-only",
   "scripts": {
     "dev": "pnpm --parallel --filter backend --filter frontend run dev",
     "build": "pnpm --filter shared build && pnpm --parallel --filter backend --filter frontend run build",

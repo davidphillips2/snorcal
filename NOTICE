@@ -1,0 +1,45 @@
+Snorcal
+Copyright (C) 2026 David Phillips
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as published
+by the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+---
+
+Snorcal integrates with the following upstream projects. Their code is not
+included in this repository; snorcal talks to them over HTTP (sidecar mode)
+or invokes their binaries as subprocesses (local dev mode). Each project
+retains its own license and copyright.
+
+  bambuddy (maziggy/bambuddy)
+    Slicer sidecar runtime exposing OrcaSlicer + BambuStudio over HTTP.
+    Used as prebuilt container images:
+      ghcr.io/maziggy/orca-slicer-api:latest
+      ghcr.io/maziggy/bambu-studio-api:latest
+    License: GNU Affero General Public License v3.0
+    Source:   https://github.com/maziggy/bambuddy
+
+  OrcaSlicer (SoftFever/OrcaSlicer)
+    Slicer engine invoked via the sidecar or as a local binary.
+    License: GNU Affero General Public License v3.0
+    Source:   https://github.com/SoftFever/OrcaSlicer
+
+  BambuStudio (bambulab/BambuStudio)
+    Slicer engine invoked via the sidecar or as a local binary.
+    License: GNU Affero General Public License v3.0
+    Source:   https://github.com/bambulab/BambuStudio
+
+  orca-slicer-api (AFKFelix/orca-slicer-api)
+    Reference HTTP API design that informed snorcal's sidecar integration.
+    License: GNU Affero General Public License v3.0
+    Source:   https://github.com/AFKFelix/orca-slicer-api
