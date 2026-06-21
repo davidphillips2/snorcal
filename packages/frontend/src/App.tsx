@@ -80,6 +80,21 @@ interface Job {
 
 // --- Persistence ---
 
+// crypto.randomUUID requires a secure context (https or localhost). LAN IPs
+// over plain http don't qualify on Safari, so fall back to getRandomValues.
+function makeUid(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  const buf = new Uint8Array(16);
+  if (typeof crypto !== 'undefined' && crypto.getRandomValues) {
+    crypto.getRandomValues(buf);
+  } else {
+    for (let i = 0; i < 16; i++) buf[i] = Math.floor(Math.random() * 256);
+  }
+  return Array.from(buf, b => b.toString(16).padStart(2, '0')).join('');
+}
+
 interface PersistedModel {
   uid?: string; // optional for backwards compat (older saves lack this)
   modelId: string;
@@ -477,7 +492,7 @@ export default function App() {
     if (saved && saved.models.length > 0) {
       const restored: ProjectModel[] = saved.models.map(m => ({
         ...m,
-        uid: m.uid ?? crypto.randomUUID(), // backwards compat: old saves lack uid
+        uid: m.uid ?? makeUid(), // backwards compat: old saves lack uid
         plateId: m.plateId || defaultPlateId, // backwards compat
         scale: m.scale ?? { ...DEFAULT_SCALE },
         mirror: m.mirror ?? { ...DEFAULT_MIRROR },
@@ -592,7 +607,7 @@ export default function App() {
       const model = await api.uploadModel(file);
       const offset = projectModels.length * 50;
       const newPm: ProjectModel = {
-        uid: crypto.randomUUID(),
+        uid: makeUid(),
         modelId: model.id,
         name: model.name,
         faceCount: model.faceCount,
@@ -629,7 +644,7 @@ export default function App() {
           const model = await api.uploadModel(file);
           const offset = projectModels.length * 50;
           const newPm: ProjectModel = {
-            uid: crypto.randomUUID(),
+            uid: makeUid(),
             modelId: model.id,
             name: model.name,
             faceCount: model.faceCount,
@@ -660,7 +675,7 @@ export default function App() {
       const meta = await api.getModel(m.modelId) as any;
       const offset = projectModels.length * 50;
       const newPm: ProjectModel = {
-        uid: crypto.randomUUID(),
+        uid: makeUid(),
         modelId: m.modelId,
         name: m.name,
         faceCount: meta?.faceCount ?? 0,
@@ -1096,7 +1111,7 @@ export default function App() {
     try {
       const uploaded = await Promise.all(files.map(f => api.uploadModel(f.file)));
       const newModels: ProjectModel[] = uploaded.map(m => ({
-        uid: crypto.randomUUID(),
+        uid: makeUid(),
         modelId: m.id,
         name: m.name,
         faceCount: m.faceCount,
@@ -1142,7 +1157,7 @@ export default function App() {
     try {
       const uploaded = await api.uploadModel(file);
       const newPm: ProjectModel = {
-        uid: crypto.randomUUID(),
+        uid: makeUid(),
         modelId: uploaded.id,
         name: uploaded.name,
         faceCount: uploaded.faceCount,
@@ -1182,7 +1197,7 @@ export default function App() {
       const uploaded = await api.uploadModel(file);
       const parentPm = projectModels.find(p => p.modelId === parentModelId);
       const newPm: ProjectModel = {
-        uid: crypto.randomUUID(),
+        uid: makeUid(),
         modelId: uploaded.id,
         name: uploaded.name,
         faceCount: uploaded.faceCount,
