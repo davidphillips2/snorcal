@@ -16,7 +16,9 @@ import { printerManager } from './services/printer-manager.js';
 import { ensureDir, getDataDir } from './services/model-parser.js';
 
 export async function buildApp() {
-  const app = Fastify({ logger: true });
+  // bodyLimit covers JSON payloads (face-color PUT can reach several MB on
+  // high-poly models). Multipart has its own 500MB limit below.
+  const app = Fastify({ logger: true, bodyLimit: 50 * 1024 * 1024 });
 
   // Ensure data directories exist
   const dataDir = getDataDir();

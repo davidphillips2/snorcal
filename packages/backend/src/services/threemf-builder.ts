@@ -47,6 +47,9 @@ interface ObjectDef {
   kind: ThreeMFObjectKind;
   parentId?: number;
   settings?: Record<string, unknown>;
+  // Per-triangle OrcaSlicer paint_color strings ('5C','6C',...). null = unpainted.
+  // When present, buildObjectXML emits paint_color="..." on each <triangle>.
+  paintData?: (string | null)[];
 }
 
 // --- Main builder ---
@@ -97,57 +100,24 @@ export async function build3MF(input: ThreeMFBuildInput): Promise<Buffer> {
     const paintData = processPaintColors(model.faceColors, geo.faceCount, colorToExtruder, defaultColor);
     const hasPaint = model.faceColors && model.faceColors.length > 0 && paintData.some(pc => pc !== null);
 
-    if (hasPaint) {
-      // Find unique extruders used
-      const extruderFaces = new Map<number, { verts: number[]; idxs: number[] }>();
-      for (let f = 0; f < geo.faceCount; f++) {
-        const extIdx = paintColorToExtruder(paintData[f]);
-        if (!extruderFaces.has(extIdx)) extruderFaces.set(extIdx, { verts: [], idxs: [] });
-        const sub = extruderFaces.get(extIdx)!;
-        const vMap = new Map<number, number>();
-        for (let v = 0; v < 3; v++) {
-          const oldIdx = geo.indices[f * 3 + v];
-          let newIdx = vMap.get(oldIdx);
-          if (newIdx === undefined) {
-            newIdx = sub.verts.length / 3;
-            vMap.set(oldIdx, newIdx);
-            sub.verts.push(
-              geo.vertices[oldIdx * 3],
-              geo.vertices[oldIdx * 3 + 1],
-              geo.vertices[oldIdx * 3 + 2],
-            );
-          }
-          sub.idxs.push(newIdx);
-        }
-      }
-
-      const sortedKeys = [...extruderFaces.keys()].sort((a, b) => a - b);
-      for (const extIdx of sortedKeys) {
-        const sub = extruderFaces.get(extIdx)!;
-        if (!firstObjIdByModelIndex.has(mi)) firstObjIdByModelIndex.set(mi, nextId);
-        allObjects.push({
-          id: nextId++,
-          name: `${name}_ext${extIdx}`,
-          extruder: extIdx + 1,
-          vertices: new Float32Array(sub.verts),
-          indices: new Uint32Array(sub.idxs),
-          kind,
-        });
-      }
-    } else {
-      firstObjIdByModelIndex.set(mi, nextId);
-      allObjects.push({
-        id: nextId++,
-        name,
-        extruder: 1,
-        vertices: geo.vertices,
-        indices: geo.indices,
-        kind,
-      });
-    }
+    // OrcaSlicer expects painted faces encoded as per-triangle paint_color
+    // attributes on a SINGLE mesh object — NOT split into one object per
+    // extruder. Splitting produces non-manifold sub-meshes that OrcaSlicer
+    // rejects with "found slicing or export error".
+    if (!firstObjIdByModelIndex.has(mi)) firstObjIdByModelIndex.set(mi, nextId);
+    allObjects.push({
+      id: nextId++,
+      name,
+      extruder: 1,
+      vertices: geo.vertices,
+      indices: geo.indices,
+      kind,
+      paintData: hasPaint ? paintData : undefined,
+    });
   }
 
-  console.log(`[threemf] models=${models.length} objects=${allObjects.length} hasPaint=${allObjects.length > models.length}`);
+  const paintedCount = allObjects.filter(o => o.paintData && o.paintData.some(p => p !== null)).length;
+  console.log(`[threemf] models=${models.length} objects=${allObjects.length} painted=${paintedCount}`);
 
   // Group children (negative/modifier) by parent object id
   const childrenOf = new Map<number, ObjectDef[]>();
@@ -292,7 +262,12 @@ function buildColorToExtruderMap(filamentColours?: string[]): Map<string, number
   const map = new Map<string, number>();
   if (filamentColours) {
     for (let i = 0; i < filamentColours.length; i++) {
-      map.set(filamentColours[i].toUpperCase(), i + 1);
+      // First occurrence wins — OrcaSlicer pads filament_colour to machine
+      // extruder count by repeating the last entry, which would otherwise
+      // overwrite the real slot index (e.g. [#FF0000,#0000FF,#0000FF,#0000FF]
+      // would map blue → 4 instead of 2).
+      const key = filamentColours[i].toUpperCase();
+      if (!map.has(key)) map.set(key, i + 1);
     }
   }
   return map;
@@ -319,14 +294,6 @@ function processPaintColors(
     paintColors.push(extruderToPaintColor(extIdx));
   }
   return paintColors;
-}
-
-/** Decode paint_color string to 0-based extruder index */
-function paintColorToExtruder(pc: string | null): number {
-  if (pc === '4') return 0;
-  if (pc === '8') return 1;
-  if (pc) return 0;
-  return 0; // unpainted → extruder 0
 }
 
 // --- XML builders ---
@@ -357,7 +324,12 @@ function buildObjectXML(obj: ObjectDef, children?: ObjectDef[]): string {
   xml += `\n        </vertices>
         <triangles>`;
   for (let f = 0; f < fc; f++) {
-    xml += `\n          <triangle v1="${obj.indices[f * 3]}" v2="${obj.indices[f * 3 + 1]}" v3="${obj.indices[f * 3 + 2]}"/>`;
+    const pc = obj.paintData?.[f];
+    if (pc) {
+      xml += `\n          <triangle v1="${obj.indices[f * 3]}" v2="${obj.indices[f * 3 + 1]}" v3="${obj.indices[f * 3 + 2]}" paint_color="${pc}"/>`;
+    } else {
+      xml += `\n          <triangle v1="${obj.indices[f * 3]}" v2="${obj.indices[f * 3 + 1]}" v3="${obj.indices[f * 3 + 2]}"/>`;
+    }
   }
   xml += `\n        </triangles>
       </mesh>`;
@@ -426,11 +398,15 @@ function toHex(n: number): string {
   return n.toString(16).padStart(2, '0').toUpperCase();
 }
 
-/** OrcaSlicer TriangleSelector encoding for non-split leaf triangle */
+/**
+ * OrcaSlicer TriangleSelector encoding for non-split leaf triangles.
+ * Empirically derived from OrcaSlicer-exported painted 3MFs:
+ *   extruder 1 → "5C", extruder 2 → "6C", extruder 3 → "7C", ...
+ * Formula: 0x5C + (extruderIndex - 1) * 0x10
+ * (extruderIndex is 1-based; matches colorToExtruder map values.)
+ */
 function extruderToPaintColor(extruderIndex: number): string {
-  if (extruderIndex === 1) return '4';
-  if (extruderIndex === 2) return '8';
-  return (extruderIndex - 3).toString(16).toUpperCase() + 'C';
+  return (0x5C + (extruderIndex - 1) * 0x10).toString(16).toUpperCase();
 }
 
 export function writeFaceColors(filePath: string, colors: Uint8Array): void {

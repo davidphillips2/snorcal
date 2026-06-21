@@ -6,3 +6,7 @@ data/
 .env
 .DS_Store
 *.log
+
+# Playwright artifacts
+test-results/
+tests/*.png
