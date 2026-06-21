@@ -484,3 +484,10 @@ export async function getSystemInfo(): Promise<SystemInfo> {
 export async function testSidecar(): Promise<{ redis: 'ok' | 'down'; slicer?: 'ok' | 'down' | 'unset' }> {
   return apiFetch('/system/test-sidecar');
 }
+
+export async function getAvailableEngines(): Promise<string[]> {
+  try {
+    const data = await apiFetch('/system/engines') as { engines: string[] };
+    return Array.isArray(data.engines) ? data.engines : [];
+  } catch { return []; }
+}

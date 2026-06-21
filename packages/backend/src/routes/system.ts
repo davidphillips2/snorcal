@@ -5,6 +5,8 @@ import os from 'node:os';
 import type { Db } from '../db/index.js';
 import { getDataDir } from '../services/model-parser.js';
 import { isQueueAvailable } from '../jobs/queue.js';
+import { SLICER_BINARIES, getSlicerBinary } from '@snorcal/shared';
+import type { SlicerEngine } from '@snorcal/shared';
 
 function dirSize(dir: string): number {
   let total = 0;
@@ -121,5 +123,35 @@ export async function systemRoutes(app: FastifyInstance, options: { db: Db }) {
     }
 
     return { ok: true, data: results };
+  });
+
+  // GET /api/system/engines — slicer engines actually available on this host.
+  // In sidecar mode, proxies to the sidecar's /engines endpoint. In local mode,
+  // checks binary paths directly. Empty array = nothing installed (UI will show
+  // a placeholder + the Settings link).
+  app.get('/api/system/engines', async () => {
+    const slicerUrl = process.env.SLICER_URL;
+    if (slicerUrl) {
+      try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 3000);
+        const res = await fetch(`${slicerUrl}/engines`, { signal: controller.signal });
+        clearTimeout(timeout);
+        if (res.ok) {
+          const json = await res.json() as { engines?: SlicerEngine[] };
+          return { ok: true, data: { engines: Array.isArray(json.engines) ? json.engines : [] } };
+        }
+      } catch {
+        // fall through to local check
+      }
+    }
+    const engines = (Object.keys(SLICER_BINARIES) as SlicerEngine[]).filter(engine => {
+      try {
+        return fs.existsSync(getSlicerBinary(engine).binaryPath);
+      } catch {
+        return false;
+      }
+    });
+    return { ok: true, data: { engines } };
   });
 }

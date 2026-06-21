@@ -3,6 +3,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { getSlicerBinary } from '@snorcal/shared';
+import { SLICER_BINARIES } from '@snorcal/shared';
 import type { SlicerEngine } from '@snorcal/shared';
 
 interface SliceRequest {
@@ -133,6 +134,17 @@ async function runSlice(cmd: SliceRequest, send: (event: string, data: unknown) 
 const app = Fastify({ logger: true });
 
 app.get('/health', async () => ({ ok: true, timestamp: new Date().toISOString() }));
+
+// Report which slicer engines have a discoverable binary on this host.
+// Used by the main app to filter the engine dropdown to engines that can
+// actually slice — no point offering bambustudio if its binary isn't installed.
+app.get('/engines', async () => {
+  const engines = (Object.keys(SLICER_BINARIES) as SlicerEngine[]).filter(engine => {
+    const binary = getSlicerBinary(engine);
+    return fs.existsSync(binary.binaryPath);
+  });
+  return { ok: true, engines };
+});
 
 app.post('/slice', async (req, reply) => {
   const cmd = req.body as SliceRequest;
