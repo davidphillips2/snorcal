@@ -248,7 +248,7 @@ async function processSliceJob(job: Job<SliceJobData>, db: Db): Promise<void> {
     fs.writeFileSync(input3mfPath, threemfWithSettings);
 
     await job.updateProgress(15);
-    db.updateJobProgress(jobId, 15, 'Starting slicer...');
+    db.updateJobProgress(jobId, 15, 'Spawning slicer...');
 
     const outputDir = path.join(workDir, 'output');
     fs.mkdirSync(outputDir, { recursive: true });
@@ -265,8 +265,9 @@ async function processSliceJob(job: Job<SliceJobData>, db: Db): Promise<void> {
         workDir,
         dataDir: process.env.SLICER_DATADIR || path.join(os.homedir(), 'Library', 'Application Support', 'Snapmaker_Orca'),
       },
+      // Executor emits final-scale progress (0-100). Map into 15-95 band.
       (progress: number, step: string) => {
-        const mapped = Math.round(15 + (progress / 100) * 80);
+        const mapped = Math.max(15, Math.min(95, progress));
         job.updateProgress(mapped);
         db.updateJobProgress(jobId, mapped, step);
       },

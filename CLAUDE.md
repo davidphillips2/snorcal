@@ -90,6 +90,15 @@ Default template: `src/routes/default-project-settings.json`. Backend build must
 
 ## Data Storage
 
-- DB: `~/.snorcal/snorcal.db` (or `$SNORCAL_DATA_DIR/snorcal.db`)
-- Models: `~/.snorcal/models/`
-- Jobs: `~/.snorcal/jobs/<jobId>/` (input.3mf + output/*.gcode)
+Resolved by `getDataDir()` in `packages/backend/src/services/model-parser.ts`:
+`process.env.DATA_DIR || path.resolve(process.cwd(), 'data')`.
+
+When running `pnpm --filter backend dev` from the repo, cwd = `packages/backend/`, so data lives at:
+
+- DB: `packages/backend/data/snorcal.db`
+- Models: `packages/backend/data/models/`
+- Jobs: `packages/backend/data/jobs/<jobId>/` (input.3mf + output/*.gcode)
+
+Override by setting `DATA_DIR=/some/path` before starting backend.
+
+Print-history photos always write to `~/.snorcal/print-photos/` regardless (see `inventory.ts`).

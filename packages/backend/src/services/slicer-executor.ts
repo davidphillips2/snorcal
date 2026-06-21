@@ -136,6 +136,8 @@ export class SlicerExecutor {
       let stdout = '';
       let stderr = '';
       let killed = false;
+      let sawOutput = false;
+      let sawGcodeFile = false;
 
       // Build spawn options
       const spawnArgs = isLinux && !process.env.DISPLAY
@@ -150,6 +152,8 @@ export class SlicerExecutor {
         ? ['--auto-servernum', '--server-args=-screen 0 1024x768x24', binaryPath, ...args]
         : args;
 
+      onProgress?.(5, 'Spawning slicer...');
+
       this.child = spawn(spawnCmd, finalArgs, {
         cwd: cmd.workDir,
         env: {
@@ -159,25 +163,49 @@ export class SlicerExecutor {
         stdio: ['pipe', 'pipe', 'pipe'],
       });
 
+      // OrcaSlicer CLI emits no parseable progress markers. Poll the output
+      // dir for the gcode file as the only reliable phase signal — when it
+      // appears, slicer has finished computing and is streaming gcode out.
+      const gcodePoll = setInterval(() => {
+        if (sawGcodeFile || killed) return;
+        try {
+          const files = fs.readdirSync(cmd.outputDir);
+          if (files.some(f => f.endsWith('.gcode'))) {
+            sawGcodeFile = true;
+            onProgress?.(90, 'Writing gcode...');
+          }
+        } catch { /* dir may briefly not exist */ }
+      }, 1000);
+
       this.child.stdout?.on('data', (data: Buffer) => {
         const str = data.toString();
         stdout += str;
+        if (!sawOutput) {
+          sawOutput = true;
+          if (!sawGcodeFile) onProgress?.(20, 'Slicing...');
+        }
         this.parseProgress(str, onProgress);
       });
 
       this.child.stderr?.on('data', (data: Buffer) => {
         const line = data.toString();
         stderr += line;
+        if (!sawOutput) {
+          sawOutput = true;
+          if (!sawGcodeFile) onProgress?.(20, 'Slicing...');
+        }
         this.parseProgress(line, onProgress);
       });
 
       this.child.on('error', (err) => {
+        clearInterval(gcodePoll);
         if (!killed) {
           reject(new Error(`Failed to spawn slicer: ${err.message}`));
         }
       });
 
       this.child.on('close', (exitCode) => {
+        clearInterval(gcodePoll);
         this.child = null;
 
         if (killed) {

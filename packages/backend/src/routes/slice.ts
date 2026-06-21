@@ -605,7 +605,7 @@ function runSliceDirect(
       const outputDir = path.join(workDir, 'output');
       fs.mkdirSync(outputDir, { recursive: true });
 
-      db.updateJobProgress(jobId, 15, 'Starting slicer...');
+      db.updateJobProgress(jobId, 15, 'Spawning slicer...');
       const result = await executor.execute(
         {
           engine: body.engine,
@@ -619,7 +619,7 @@ function runSliceDirect(
           dataDir: process.env.SLICER_DATADIR || getDefaultDataDir(body.engine),
         },
         (progress: number, step: string) => {
-          const mapped = Math.round(15 + (progress / 100) * 80);
+          const mapped = Math.max(15, Math.min(95, progress));
           db.updateJobProgress(jobId, mapped, step);
         },
       );

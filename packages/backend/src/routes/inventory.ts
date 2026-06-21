@@ -47,7 +47,7 @@ export async function inventoryRoutes(app: FastifyInstance, opts: Options) {
   app.get('/api/inventory/spools', async (req, reply) => {
     const archived = (req.query as { archived?: string }).archived === 'true';
     const rows = db.listSpools(archived);
-    return rows.map(toSpool);
+    return { ok: true, data: rows.map(toSpool) };
   });
 
   app.post('/api/inventory/spools', async (req) => {
@@ -62,7 +62,7 @@ export async function inventoryRoutes(app: FastifyInstance, opts: Options) {
       total_weight_g: b.totalWeightG, remaining_weight_g: b.remainingWeightG ?? b.totalWeightG,
       cost_per_kg: b.costPerKg ?? 0, purchased_at: b.purchasedAt ?? null, notes: b.notes ?? null,
     });
-    return toSpool(db.getSpool(id));
+    return { ok: true, data: toSpool(db.getSpool(id)) };
   });
 
   app.put('/api/inventory/spools/:id', async (req) => {
@@ -83,26 +83,26 @@ export async function inventoryRoutes(app: FastifyInstance, opts: Options) {
       ...(b.notes !== undefined ? { notes: b.notes } : {}),
       ...(b.archived !== undefined ? { archived: b.archived ? 1 : 0 } : {}),
     });
-    return toSpool(db.getSpool(id));
+    return { ok: true, data: toSpool(db.getSpool(id)) };
   });
 
   app.delete('/api/inventory/spools/:id', async (req) => {
     const { id } = req.params as { id: string };
     db.deleteSpool(id);
-    return { ok: true };
+    return { ok: true, data: { ok: true } };
   });
 
   // --- Print history ---
 
   app.get('/api/inventory/print-history', async (req) => {
     const limit = parseInt((req.query as { limit?: string }).limit ?? '100', 10);
-    return db.listPrintHistory(limit).map(toPrintHistory);
+    return { ok: true, data: db.listPrintHistory(limit).map(toPrintHistory) };
   });
 
   app.get('/api/inventory/print-history/:id', async (req) => {
     const { id } = req.params as { id: string };
     const h = db.getPrintHistory(id);
-    return h ? toPrintHistory(h) : null;
+    return { ok: true, data: h ? toPrintHistory(h) : null };
   });
 
   app.post('/api/inventory/print-history', async (req) => {
@@ -115,7 +115,7 @@ export async function inventoryRoutes(app: FastifyInstance, opts: Options) {
       id, job_id: b.jobId, printer_id: b.printerId, model_name: b.modelName,
       rating: b.rating ?? null, notes: b.notes ?? null, completed_at: b.completedAt,
     });
-    return toPrintHistory(db.getPrintHistory(id));
+    return { ok: true, data: toPrintHistory(db.getPrintHistory(id)) };
   });
 
   app.put('/api/inventory/print-history/:id', async (req) => {
@@ -130,7 +130,7 @@ export async function inventoryRoutes(app: FastifyInstance, opts: Options) {
       ...(b.notes !== undefined ? { notes: b.notes } : {}),
       ...(b.printerId !== undefined ? { printer_id: b.printerId } : {}),
     });
-    return toPrintHistory(db.getPrintHistory(id));
+    return { ok: true, data: toPrintHistory(db.getPrintHistory(id)) };
   });
 
   app.delete('/api/inventory/print-history/:id', async (req) => {
@@ -140,14 +140,14 @@ export async function inventoryRoutes(app: FastifyInstance, opts: Options) {
       try { fs.unlinkSync(h.photo_path); } catch { /* ignore */ }
     }
     db.deletePrintHistory(id);
-    return { ok: true };
+    return { ok: true, data: { ok: true } };
   });
 
   // Photo upload (multipart)
   app.post('/api/inventory/print-history/:id/photo', async (req, reply) => {
     const { id } = req.params as { id: string };
     const data = await req.file();
-    if (!data) return reply.code(400).send({ error: 'No file' });
+    if (!data) return reply.code(400).send({ ok: false, error: 'No file' });
     const dir = path.join(process.env.HOME || '/tmp', '.snorcal', 'print-photos');
     fs.mkdirSync(dir, { recursive: true });
     const ext = path.extname(data.filename || '.jpg') || '.jpg';
@@ -159,7 +159,7 @@ export async function inventoryRoutes(app: FastifyInstance, opts: Options) {
       data.file.on('error', reject);
     });
     db.updatePrintHistory(id, { photo_path: filePath });
-    return toPrintHistory(db.getPrintHistory(id));
+    return { ok: true, data: toPrintHistory(db.getPrintHistory(id)) };
   });
 
   // Photo download
