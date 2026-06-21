@@ -11,6 +11,8 @@ import { fileRoutes } from './routes/files.js';
 import { eventRoutes } from './routes/events.js';
 import { printerRoutes } from './routes/printers.js';
 import { inventoryRoutes } from './routes/inventory.js';
+import { makerworldRoutes } from './routes/makerworld.js';
+import { systemRoutes } from './routes/system.js';
 import { setupQueue } from './jobs/queue.js';
 import { printerManager } from './services/printer-manager.js';
 import { ensureDir, getDataDir } from './services/model-parser.js';
@@ -56,6 +58,8 @@ export async function buildApp() {
   app.register(eventRoutes);
   app.register(printerRoutes, { db });
   app.register(inventoryRoutes, { db });
+  app.register(makerworldRoutes, { db });
+  app.register(systemRoutes, { db });
 
   // Health check
   app.get('/api/health', async () => ({ ok: true, timestamp: new Date().toISOString() }));

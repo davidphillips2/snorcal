@@ -1,15 +1,50 @@
 const API_BASE = '/api';
 
+// Retries transient backend downtime (dev-mode tsx restart, proxy 502/503/504,
+// network "Failed to fetch"). Without this, any click during a backend restart
+// surfaces a hard error in the UI and forces a manual frontend reload.
+const RETRYABLE_STATUS = new Set([502, 503, 504]);
+const MAX_RETRIES = 5;
+const BASE_DELAY_MS = 300;
+
+function sleep(ms: number) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
 async function apiFetch(path: string, options?: RequestInit) {
-  const res = await fetch(`${API_BASE}${path}`, options);
-  if (!res.ok) {
-    let msg = `HTTP ${res.status}`;
-    try { const t = await res.text(); if (t) msg = t; } catch {}
-    throw new Error(msg);
+  let lastErr: unknown;
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      const res = await fetch(`${API_BASE}${path}`, options);
+      // Retry transient proxy/gateway errors (backend mid-restart)
+      if (RETRYABLE_STATUS.has(res.status) && attempt < MAX_RETRIES) {
+        await sleep(BASE_DELAY_MS * Math.pow(2, attempt));
+        continue;
+      }
+      if (!res.ok) {
+        let msg = `HTTP ${res.status}`;
+        try { const t = await res.text(); if (t) msg = t; } catch {}
+        throw new Error(msg);
+      }
+      const json = await res.json();
+      if (!json.ok) throw new Error(json.error || 'Unknown error');
+      return json.data;
+    } catch (err) {
+      lastErr = err;
+      // TypeError = fetch itself failed (backend down, ECONNREFUSED via proxy).
+      // Other Errors come from explicit throw above (HTTP status) — only retry
+      // while we still have attempts left AND it's not a known-permanent case.
+      const isNetworkErr = err instanceof TypeError;
+      const httpMsg = err instanceof Error ? err.message : '';
+      const isRetryableStatus = /^\s*(502|503|504)\b/.test(httpMsg);
+      if ((isNetworkErr || isRetryableStatus) && attempt < MAX_RETRIES) {
+        await sleep(BASE_DELAY_MS * Math.pow(2, attempt));
+        continue;
+      }
+      throw err;
+    }
   }
-  const json = await res.json();
-  if (!json.ok) throw new Error(json.error || 'Unknown error');
-  return json.data;
+  throw lastErr;
 }
 
 export async function uploadModel(file: File) {
@@ -28,6 +63,12 @@ export async function listModels() {
 
 export async function getModel(id: string) {
   return apiFetch(`/models/${id}`);
+}
+
+export async function getModelSourceSettings(id: string): Promise<Record<string, unknown> | null> {
+  try {
+    return await apiFetch(`/models/${id}/source-settings`);
+  } catch { return null; }
 }
 
 export async function saveFaceColors(modelId: string, faceColors: Uint8Array, plate?: number) {
@@ -340,4 +381,106 @@ export async function uploadPrintHistoryPhoto(id: string, file: File) {
 
 export async function deletePrintHistory(id: string) {
   return apiFetch(`/inventory/print-history/${id}`, { method: 'DELETE' }) as Promise<{ ok: boolean }>;
+}
+
+// --- MakerWorld import ---
+
+export interface MakerWorldInstance {
+  profileId: string;
+  name: string;
+  coverUrl: string;
+  thumbUrl: string;
+}
+
+export interface ResolvedMakerworld {
+  numericId: string;
+  alphanumericId: string;
+  title: string;
+  creator: string;
+  coverUrl: string;
+  summary: string;
+  instances: MakerWorldInstance[];
+  profileId?: string;
+}
+
+export async function resolveMakerworld(url: string): Promise<ResolvedMakerworld> {
+  return apiFetch('/makerworld/resolve', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url }),
+  });
+}
+
+export async function importMakerworld(args: {
+  numericId: string; alphanumericId: string; profileId: string; name?: string;
+}): Promise<{ modelId: string; name: string; plateCount: number; deduped: boolean }> {
+  return apiFetch('/makerworld/import', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(args),
+  });
+}
+
+export function makerworldThumbnailUrl(url: string): string {
+  return `${API_BASE}/makerworld/thumbnail?url=${encodeURIComponent(url)}`;
+}
+
+export async function getCloudTokenHint(): Promise<string | null> {
+  try {
+    const data = await apiFetch('/settings/key/bambu_cloud_token') as { value: string | null; hint: string | null };
+    return data.hint ?? data.value ?? null;
+  } catch { return null; }
+}
+
+export async function setCloudToken(token: string): Promise<void> {
+  await apiFetch('/settings/key/bambu_cloud_token', {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ value: token }),
+  });
+}
+
+export interface BambuLoginResult {
+  success: boolean;
+  token?: string;
+  needsTfa?: boolean;
+  tfaKey?: string;
+  needsEmailCode?: boolean;
+  message?: string;
+}
+
+export async function bambuLogin(email: string, password?: string, code?: string): Promise<BambuLoginResult> {
+  const data = await apiFetch('/makerworld/login', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, password, code }),
+  });
+  return data as BambuLoginResult;
+}
+
+// --- System info ---
+
+export interface SystemInfo {
+  storage: {
+    dataDir: string;
+    dbSize: number | null;
+    modelsSize: number;
+    jobsSize: number;
+    diskFree: number | null;
+    diskTotal: number | null;
+  };
+  counts: { models: number; jobs: number; printers: number };
+  queue: { state: 'connected' | 'fallback'; redisHost: string; redisPort: number };
+  slicer: { sidecarUrl: string | null; datadir: string | null; local: boolean };
+  host: {
+    hostname: string;
+    platform: string;
+    arch: string;
+    nodeVersion: string;
+    uptime: number;
+  };
+}
+
+export async function getSystemInfo(): Promise<SystemInfo> {
+  return apiFetch('/system/info') as Promise<SystemInfo>;
+}
+
+export async function testSidecar(): Promise<{ redis: 'ok' | 'down'; slicer?: 'ok' | 'down' | 'unset' }> {
+  return apiFetch('/system/test-sidecar');
 }

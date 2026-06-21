@@ -217,4 +217,30 @@ export function runSchemaMigrations(db: Database.Database) {
       )
     `);
   } catch { /* already exists */ }
+
+  // app_settings — key/value, runtime-editable (e.g. bambu_cloud_token)
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS app_settings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      )
+    `);
+  } catch { /* already exists */ }
+
+  // Models provenance (MakerWorld dedup + display)
+  try {
+    const mCols = db.prepare("PRAGMA table_info(models)").all() as { name: string }[];
+    if (!mCols.some(c => c.name === 'source_type')) {
+      db.exec("ALTER TABLE models ADD COLUMN source_type TEXT");
+    }
+    if (!mCols.some(c => c.name === 'source_url')) {
+      db.exec("ALTER TABLE models ADD COLUMN source_url TEXT");
+    }
+    if (!mCols.some(c => c.name === 'source_settings')) {
+      db.exec("ALTER TABLE models ADD COLUMN source_settings TEXT");
+    }
+    db.exec("CREATE INDEX IF NOT EXISTS idx_models_source_url ON models(source_url)");
+  } catch { /* migration not needed */ }
 }

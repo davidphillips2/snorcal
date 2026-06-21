@@ -14,6 +14,7 @@ interface ObjectListPanelProps {
   onUploadMany?: (files: File[]) => void;
   onAutoArrange?: () => void;
   isUploading: boolean;
+  onOpenMakerworld?: () => void;
 }
 
 interface HierarchyNode {
@@ -61,12 +62,27 @@ function buildHierarchy(plateModels: ProjectModel[], allModels: ProjectModel[]):
 
 export function ObjectListPanel({
   models, allModels, activeIndex, onSelect, onRemove, onToggleVisible, onUpload, onUploadMany, onAutoArrange, isUploading,
+  onOpenMakerworld,
 }: ObjectListPanelProps) {
   const hierarchy = useMemo(() => buildHierarchy(models, allModels), [models, allModels]);
   const fileRef = useRef<HTMLInputElement>(null);
 
   if (models.length === 0) {
-    return <ModelUploader onUpload={onUpload} onUploadMany={onUploadMany} isUploading={isUploading} />;
+    return (
+      <>
+        <ModelUploader onUpload={onUpload} onUploadMany={onUploadMany} isUploading={isUploading} />
+        {onOpenMakerworld && (
+          <div className="mt-2">
+            <button
+              onClick={onOpenMakerworld}
+              className="w-full py-1 rounded text-xs bg-gray-700 text-gray-300 hover:bg-gray-600 transition"
+            >
+              Import from MakerWorld
+            </button>
+          </div>
+        )}
+      </>
+    );
   }
 
   return (
@@ -83,6 +99,15 @@ export function ObjectListPanel({
               title="Auto-arrange models on plate (shelf pack)"
             >
               Arrange
+            </button>
+          )}
+          {onOpenMakerworld && (
+            <button
+              onClick={onOpenMakerworld}
+              className="px-2 py-0.5 rounded text-xs bg-emerald-700 text-emerald-100 hover:bg-emerald-600 transition"
+              title="Import from MakerWorld"
+            >
+              MW
             </button>
           )}
           <button

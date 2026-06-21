@@ -284,6 +284,34 @@ export class Db {
     this.db.prepare('DELETE FROM print_history WHERE id = ?').run(id);
   }
 
+  // --- App settings (key/value, e.g. bambu_cloud_token) ---
+
+  getSetting(key: string): string | null {
+    const row = this.db.prepare('SELECT value FROM app_settings WHERE key = ?').get(key) as { value: string } | undefined;
+    return row?.value ?? null;
+  }
+
+  setSetting(key: string, value: string) {
+    this.db.prepare(`
+      INSERT INTO app_settings (key, value, updated_at) VALUES (?, ?, datetime('now'))
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')
+    `).run(key, value);
+  }
+
+  // --- Model provenance (MakerWorld dedup) ---
+
+  findModelBySourceUrl(sourceUrl: string): DbModel | undefined {
+    return this.db.prepare('SELECT * FROM models WHERE source_url = ?').get(sourceUrl) as DbModel | undefined;
+  }
+
+  updateModelSource(id: string, sourceType: string, sourceUrl: string) {
+    this.db.prepare('UPDATE models SET source_type = ?, source_url = ? WHERE id = ?').run(sourceType, sourceUrl, id);
+  }
+
+  updateModelSourceSettings(id: string, settingsJson: string) {
+    this.db.prepare('UPDATE models SET source_settings = ? WHERE id = ?').run(settingsJson, id);
+  }
+
   close() {
     this.db.close();
   }
@@ -295,6 +323,9 @@ export interface DbModel {
   format: string; face_count: number; face_colors: Buffer | null;
   bounds_x: number; bounds_y: number; bounds_z: number;
   plate_count: number; created_at: string;
+  source_type: string | null;
+  source_url: string | null;
+  source_settings: string | null;
 }
 
 export interface DbModelSummary {

@@ -25,6 +25,11 @@ export function getQueue(): Queue {
   return queue;
 }
 
+/** True when Redis-backed queue is connected; false when running in fallback mode. */
+export function isQueueAvailable(): boolean {
+  return queue !== null;
+}
+
 export function setupQueue(db: Db): { queue: Queue; worker: Worker } | null {
   const redisHost = process.env.REDIS_HOST || 'localhost';
   const redisPort = parseInt(process.env.REDIS_PORT || '6379');

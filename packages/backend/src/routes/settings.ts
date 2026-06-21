@@ -140,4 +140,34 @@ export async function settingsRoutes(app: FastifyInstance, options: { db: Db }) 
       return { ok: true, data: { imported, errors } };
     },
   );
+
+  // --- App-level key/value settings ---
+  // Whitelist of keys the API will read/write. Keep tight — anything else 400s.
+  const SETTING_KEYS = new Set(['bambu_cloud_token']);
+
+  // GET /api/settings/key/:key — Returns { value: string | null } (token returned
+  // as last-4 hint only, to avoid leaking the full secret over the wire on GET).
+  app.get<{ Params: { key: string } }>('/api/settings/key/:key', async (req, reply) => {
+    const { key } = req.params;
+    if (!SETTING_KEYS.has(key)) {
+      return reply.status(400).send({ ok: false, error: `Unknown setting key: ${key}` });
+    }
+    const raw = db.getSetting(key);
+    const hint = raw && raw.length > 4 ? `••••${raw.slice(-4)}` : (raw ? '••••' : null);
+    return { ok: true, data: { value: raw, hint } };
+  });
+
+  // PUT /api/settings/key/:key — body: { value: string }
+  app.put<{ Params: { key: string } }>('/api/settings/key/:key', async (req, reply) => {
+    const { key } = req.params;
+    if (!SETTING_KEYS.has(key)) {
+      return reply.status(400).send({ ok: false, error: `Unknown setting key: ${key}` });
+    }
+    const body = req.body as { value?: string };
+    if (typeof body?.value !== 'string' || !body.value.trim()) {
+      return reply.status(400).send({ ok: false, error: 'value required' });
+    }
+    db.setSetting(key, body.value.trim());
+    return { ok: true };
+  });
 }

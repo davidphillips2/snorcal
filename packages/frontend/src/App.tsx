@@ -10,6 +10,7 @@ import { CutTool } from './components/ModelEdit/CutTool';
 import { AddVolumeModal } from './components/ModelEdit/AddVolumeModal';
 import { SupportPainter } from './components/ModelEdit/SupportPainter';
 import { ObjectListPanel } from './components/ObjectList/ObjectListPanel';
+import { MakerworldImportModal } from './components/ModelUploader/MakerworldImportModal';
 import { PlateTabs } from './components/Plates/PlateTabs';
 import { AxisIndicator } from './components/Viewer/AxisIndicator';
 import { Bed } from './components/Viewer/Bed';
@@ -17,6 +18,7 @@ import { ModelMover } from './components/Viewer/ModelMover';
 import { ModelUploader } from './components/ModelUploader';
 import { JobList } from './components/Jobs/JobList';
 import { SettingsPanel } from './components/Settings/SettingsPanel';
+import { AppSettingsPanel } from './components/Settings/AppSettingsPanel';
 import { GcodePreviewCanvas } from './components/Viewer/GcodePreviewCanvas';
 import { GcodeLayerSlider } from './components/Viewer/GcodeLayerSlider';
 import { GcodeTimeBreakdown } from './components/Viewer/GcodeTimeBreakdown';
@@ -104,6 +106,20 @@ interface PersistedState {
   filamentSlots: Array<{ color: string; type: string; profile?: string }>;
   multiMaterial: { enabled: boolean; supportFilament: string; supportInterfaceFilament: string };
   printerIp: string;
+  // UI state — restored across reloads so user lands where they left off
+  view?: 'home' | 'slice' | 'jobs' | 'printer' | 'settings';
+  showSidebar?: boolean;
+  showSettings?: boolean;
+  showJobs?: boolean;
+  showInventory?: boolean;
+  paintMode?: string;
+  activeColor?: string;
+  selectedPrinterId?: string | null;
+  targetPrinterId?: string | null;
+  previewJobId?: string | null;
+  gcodeColorMode?: 'filament' | 'lineType' | 'speed';
+  showAllLayers?: boolean;
+  currentPreviewLayer?: number;
 }
 
 // Migrate legacy slorca_* localStorage keys → snorcal_* (one-shot per key)
@@ -157,14 +173,14 @@ export default function App() {
   const [sceneRefs, setSceneRefs] = useState<SceneRefs | null>(null);
   const meshRefs = useRef<(THREE.Mesh | null)[]>([]);
   const uploadInputRef = useRef<HTMLInputElement>(null);
-  const [paintMode, setPaintMode] = useState<PaintMode>('orbit');
-  const [measurement, setMeasurement] = useState<Measurement | null>(null);
-  const [addVolumeKind, setAddVolumeKind] = useState<'negative' | 'modifier' | null>(null);
-  const [activeColor, setActiveColor] = useState('#FF0000');
 
   // Multi-model project state
   const persisted = useRef(loadPersistedState());
   const defaultPlateId = 'plate-1';
+  const [paintMode, setPaintMode] = useState<PaintMode>(() => (persisted.current?.paintMode as PaintMode) || 'orbit');
+  const [measurement, setMeasurement] = useState<Measurement | null>(null);
+  const [addVolumeKind, setAddVolumeKind] = useState<'negative' | 'modifier' | null>(null);
+  const [activeColor, setActiveColor] = useState(() => persisted.current?.activeColor || '#FF0000');
   const [plates, setPlates] = useState<Array<{ id: string; name: string }>>(() => persisted.current?.plates ?? [{ id: defaultPlateId, name: 'Plate 1' }]);
   const [activePlateId, setActivePlateId] = useState(() => persisted.current?.activePlateId ?? defaultPlateId);
   const [projectModels, setProjectModels] = useState<ProjectModel[]>([]);
@@ -342,13 +358,14 @@ export default function App() {
   );
 
   // UI
-  const [view, setView] = useState<'home' | 'slice' | 'jobs' | 'printer'>('home');
-  const [selectedPrinterId, setSelectedPrinterId] = useState<string | null>(null);
-  const [showSidebar, setShowSidebar] = useState(false);
-  const [showSettings, setShowSettings] = useState(true);
-  const [showJobs, setShowJobs] = useState(false);
+  const [view, setView] = useState<'home' | 'slice' | 'jobs' | 'printer' | 'settings'>(() => persisted.current?.view ?? 'home');
+  const [selectedPrinterId, setSelectedPrinterId] = useState<string | null>(() => persisted.current?.selectedPrinterId ?? null);
+  const [showSidebar, setShowSidebar] = useState(() => persisted.current?.showSidebar ?? false);
+  const [showSettings, setShowSettings] = useState(() => persisted.current?.showSettings ?? true);
+  const [showJobs, setShowJobs] = useState(() => persisted.current?.showJobs ?? false);
   const [showPrinters, setShowPrinters] = useState(false);
-  const [showInventory, setShowInventory] = useState(false);
+  const [showInventory, setShowInventory] = useState(() => persisted.current?.showInventory ?? false);
+  const [showMwImport, setShowMwImport] = useState(false);
   const [showWizard, setShowWizard] = useState(false);
   const [wizardDismissed, setWizardDismissed] = useState(() => localStorage.getItem('snorcal_onboarded') === '1');
 
@@ -424,11 +441,11 @@ export default function App() {
   }, [plates, bedForLayout.x, bedForLayout.y, bedForLayout.z]);
 
   // Gcode preview
-  const [previewJobId, setPreviewJobId] = useState<string | null>(null);
+  const [previewJobId, setPreviewJobId] = useState<string | null>(() => persisted.current?.previewJobId ?? null);
   const [gcodeText, setGcodeText] = useState<string | null>(null);
-  const [currentPreviewLayer, setCurrentPreviewLayer] = useState(0);
-  const [showAllLayers, setShowAllLayers] = useState(true);
-  const [gcodeColorMode, setGcodeColorMode] = useState<'filament' | 'lineType' | 'speed'>('filament');
+  const [currentPreviewLayer, setCurrentPreviewLayer] = useState(() => persisted.current?.currentPreviewLayer ?? 0);
+  const [showAllLayers, setShowAllLayers] = useState(() => persisted.current?.showAllLayers ?? true);
+  const [gcodeColorMode, setGcodeColorMode] = useState<'filament' | 'lineType' | 'speed'>(() => persisted.current?.gcodeColorMode ?? 'filament');
   const [isParsingGcode, setIsParsingGcode] = useState(false);
   const [layerCount, setLayerCount] = useState(0);
   const [jobPauses, setJobPauses] = useState<PausePoint[]>([]);
@@ -506,10 +523,23 @@ export default function App() {
         filamentSlots,
         multiMaterial,
         printerIp,
+        view,
+        showSidebar,
+        showSettings,
+        showJobs,
+        showInventory,
+        paintMode,
+        activeColor,
+        selectedPrinterId,
+        targetPrinterId,
+        previewJobId,
+        gcodeColorMode,
+        showAllLayers,
+        currentPreviewLayer,
       });
     }, 500);
     return () => clearTimeout(timer);
-  }, [projectModels, plates, activePlateId, activeModelIndex, engine, settings, selectedProfiles, filamentSlots, multiMaterial, printerIp]);
+  }, [projectModels, plates, activePlateId, activeModelIndex, engine, settings, selectedProfiles, filamentSlots, multiMaterial, printerIp, view, showSidebar, showSettings, showJobs, showInventory, paintMode, activeColor, selectedPrinterId, targetPrinterId, previewJobId, gcodeColorMode, showAllLayers, currentPreviewLayer]);
 
   // SSE updates
   useEffect(() => {
@@ -612,6 +642,50 @@ export default function App() {
       }
     } finally {
       setIsUploading(false);
+    }
+  }, [projectModels.length, activePlateId, updateModels]);
+
+  // MakerWorld import — backend already registered the 3MF, just fetch metadata + add to scene
+  const handleMakerworldImported = useCallback(async (m: { modelId: string; name: string; plateCount: number }) => {
+    try {
+      const meta = await api.getModel(m.modelId) as any;
+      const offset = projectModels.length * 50;
+      const newPm: ProjectModel = {
+        modelId: m.modelId,
+        name: m.name,
+        faceCount: meta?.faceCount ?? 0,
+        plateCount: meta?.plateCount ?? m.plateCount ?? 1,
+        plateId: activePlateId,
+        rotation: { x: 0, y: 0, z: 0 },
+        positionOffset: { x: offset, y: 0, z: 0 },
+        scale: { ...DEFAULT_SCALE },
+        mirror: { ...DEFAULT_MIRROR },
+        faceColors: null,
+        visible: true,
+        kind: 'model',
+      };
+      updateModels(prev => [...prev, newPm]);
+      setActiveModelIndex(projectModels.length);
+
+      // Auto-apply captured MW source settings — overwrite current project settings.
+      // MakerWorld's bundle contains full slicer config (printer_model, filament_colour,
+      // layer_height, etc). User explicitly opted into this by importing.
+      //
+      // Gcode keys (`*_gcode`) are EXCLUDED — source printer's start/end/layer-change
+      // macros are firmware-specific (Bambu vs Snapmaker vs Klipper) and would emit
+      // commands the user's printer can't parse. User's existing gcode stays intact.
+      const sourceSettings = await api.getModelSourceSettings(m.modelId);
+      if (sourceSettings && typeof sourceSettings === 'object') {
+        const coerced: Record<string, string> = {};
+        for (const [k, v] of Object.entries(sourceSettings)) {
+          if (v == null) continue;
+          if (k.endsWith('_gcode')) continue;  // preserve user's printer-specific macros
+          coerced[k] = typeof v === 'string' ? v : JSON.stringify(v);
+        }
+        setSettings(prev => ({ ...prev, ...coerced }));
+      }
+    } catch (err) {
+      alert(`MakerWorld import failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   }, [projectModels.length, activePlateId, updateModels]);
 
@@ -1186,6 +1260,7 @@ export default function App() {
           onUploadMany={handleUploadMany}
           onAutoArrange={handleAutoArrange}
           isUploading={isUploading}
+          onOpenMakerworld={() => setShowMwImport(true)}
         />
 
         {/* Target printer picker */}
@@ -1247,6 +1322,7 @@ export default function App() {
               selectedProfiles={selectedProfiles} onProfilesChange={setSelectedProfiles}
               multiMaterial={multiMaterial} onMultiMaterialChange={(mm) => { setMultiMaterial(mm); localStorage.setItem('snorcal_multi_material', JSON.stringify(mm)); }}
               filamentSlots={filamentSlots} onFilamentSlotsChange={(slots) => { setFilamentSlots(slots); localStorage.setItem('snorcal_filament_slots', JSON.stringify(slots)); }}
+              targetPrinterModel={printers.find(p => p.id === targetPrinterId)?.model ?? null}
             />
           )}
         </div>
@@ -1312,7 +1388,7 @@ export default function App() {
         <div className="flex items-center gap-6">
           <span className="text-base font-semibold tracking-tight">snorcal</span>
           <nav className="flex gap-1">
-            {(['home', 'slice', 'jobs'] as const).map(v => (
+            {(['home', 'slice', 'settings'] as const).map(v => (
               <button key={v} onClick={() => setView(v)}
                 className={`px-3 py-1.5 rounded text-sm capitalize ${
                   view === v ? 'bg-gray-700 text-white' : 'text-gray-400 hover:text-white hover:bg-gray-800'
@@ -1331,6 +1407,18 @@ export default function App() {
           onSlice={() => setView('slice')}
           onOpenJob={(jobId) => { setPreviewJobId(jobId); setView('slice'); }}
           onOpenPrinter={(id) => { setSelectedPrinterId(id); setView('printer'); }}
+          onImportMakerworld={() => setShowMwImport(true)}
+        />
+      )}
+
+      {showMwImport && (
+        <MakerworldImportModal
+          onClose={() => setShowMwImport(false)}
+          onImported={(m) => {
+            setShowMwImport(false);
+            handleMakerworldImported(m);
+            setView('slice');
+          }}
         />
       )}
 
@@ -1344,6 +1432,12 @@ export default function App() {
             onDownloadThreemf={handleDownloadThreemf}
             onPreview={(jid) => { setPreviewJobId(jid); setView('slice'); }}
             onSendToPrinter={handleSendToPrinter} />
+        </div>
+      )}
+
+      {view === 'settings' && (
+        <div className="flex-1 overflow-y-auto p-6 max-w-3xl mx-auto w-full">
+          <AppSettingsPanel />
         </div>
       )}
 

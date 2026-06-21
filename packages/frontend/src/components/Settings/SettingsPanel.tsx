@@ -47,6 +47,7 @@ interface SettingsPanelProps {
   onMultiMaterialChange: (config: MultiMaterialConfig) => void;
   filamentSlots: FilamentSlotConfig[];
   onFilamentSlotsChange: (slots: FilamentSlotConfig[]) => void;
+  targetPrinterModel?: string | null;
 }
 
 const MATERIAL_TYPES = ['PLA', 'PETG', 'ABS', 'ASA', 'TPU', 'PA (Nylon)', 'PC', 'PVA', 'HIPS', 'CF (Carbon Fiber)'];
@@ -112,6 +113,7 @@ export function SettingsPanel({
   engine, onEngineChange, settings, onSettingsChange,
   selectedProfiles, onProfilesChange, multiMaterial, onMultiMaterialChange,
   filamentSlots, onFilamentSlotsChange,
+  targetPrinterModel,
 }: SettingsPanelProps) {
   // Initialize collapsed state from group defaults
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>(() => {
@@ -138,11 +140,13 @@ export function SettingsPanel({
   const machineProfilesAll = profiles.filter(p => p.profile_type === 'machine');
   const filamentProfiles = profiles.filter(p => p.profile_type === 'filament');
 
-  // Filter machine dropdown to profiles matching a connected printer's `model`.
-  // Model is stored as a family name (no nozzle suffix); match by prefix so all
-  // nozzle variants of that family show up. Printers with no model = ignored.
+  // Filter machine dropdown to profiles matching the TARGET printer's `model`.
+  // Falls back to union of all connected printers' models when no target set
+  // (preserves multi-printer flow). Printers with no model = ignored.
+  const effectiveModel = targetPrinterModel?.trim() || null;
   const printerModels = Array.from(new Set(
-    printers.map(p => p.model).filter((m): m is string => !!m && m.trim().length > 0)
+    (effectiveModel ? [effectiveModel] : printers.map(p => p.model))
+      .filter((m): m is string => !!m && m.trim().length > 0)
   ));
   const machineFiltered = printerModels.length === 0
     ? machineProfilesAll
@@ -151,19 +155,41 @@ export function SettingsPanel({
       );
   const machineProfiles = machineFiltered.length > 0 ? machineFiltered : machineProfilesAll;
 
-  // Auto-select: if no machine picked yet and exactly one printer has a model,
-  // default to that family's 0.4 nozzle variant (most common).
+  // Auto-select: when target printer's family has profiles, default to that
+  // family's 0.4 nozzle variant. If the user's current selection is outside
+  // the target family (e.g., switched target from P1S to U1), auto-switch.
   useEffect(() => {
-    if (selectedProfiles.machine) return;
-    if (printerModels.length !== 1) return;
-    const family = printerModels[0];
+    if (!effectiveModel) {
+      // No target: only auto-pick on first load with single connected printer
+      if (selectedProfiles.machine) return;
+      if (printerModels.length !== 1) return;
+      const family = printerModels[0];
+      const candidates = machineProfilesAll.filter(p =>
+        p.name === family || p.name.startsWith(family + ' ') || p.name.startsWith(family + '(')
+      );
+      if (candidates.length === 0) return;
+      const prefer04 = candidates.find(p => /0\.4.*nozzle/i.test(p.name));
+      onProfilesChange({ ...selectedProfiles, machine: (prefer04 ?? candidates[0]).name });
+      return;
+    }
+
     const candidates = machineProfilesAll.filter(p =>
-      p.name === family || p.name.startsWith(family + ' ') || p.name.startsWith(family + '(')
+      p.name === effectiveModel || p.name.startsWith(effectiveModel + ' ') || p.name.startsWith(effectiveModel + '(')
     );
     if (candidates.length === 0) return;
+
+    // Current selection already in family → keep
+    const inFamily = selectedProfiles.machine && (
+      selectedProfiles.machine === effectiveModel ||
+      selectedProfiles.machine.startsWith(effectiveModel + ' ') ||
+      selectedProfiles.machine.startsWith(effectiveModel + '(')
+    );
+    if (inFamily) return;
+
+    // Switch to 0.4 nozzle variant of target family
     const prefer04 = candidates.find(p => /0\.4.*nozzle/i.test(p.name));
     onProfilesChange({ ...selectedProfiles, machine: (prefer04 ?? candidates[0]).name });
-  }, [printerModels.join('|'), machineProfilesAll.length, selectedProfiles.machine]);
+  }, [effectiveModel, machineProfilesAll.length, selectedProfiles.machine]);
 
   // Process filter: key off the SELECTED machine profile, not all printers.
   // Extract distinctive tokens (drop brand words + pure numbers) and match process names.

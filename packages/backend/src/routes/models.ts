@@ -6,6 +6,83 @@ import type { Db } from '../db/index.js';
 import { parseSTL, ensureDir, getModelsDir } from '../services/model-parser.js';
 import { parse3MF, writePositionsToSTL, countPlates } from '../services/threemf-parser.js';
 
+const MAX_FACES = 1_500_000;
+
+export async function register3MFModel(
+  buffer: Buffer,
+  filename: string,
+  db: Db,
+): Promise<{ id: string; name: string; faceCount: number; bounds: { x: number; y: number; z: number }; plateCount: number }> {
+  const id = uuid();
+  const modelDir = path.join(getModelsDir(), id);
+  ensureDir(modelDir);
+
+  try {
+    const plateCount = await countPlates(buffer);
+    const originalPath = path.join(modelDir, filename);
+    fs.writeFileSync(originalPath, buffer);
+
+    const plateData: { index: number; faceCount: number; bounds: { x: number; y: number; z: number }; positions: Float32Array; faceColors?: Uint8Array }[] = [];
+
+    let faceCount = 0;
+    let bounds = { x: 0, y: 0, z: 0 };
+    let filePath = '';
+
+    for (let p = 1; p <= plateCount; p++) {
+      const parsed = await parse3MF(buffer, p);
+
+      if (parsed.faceCount > MAX_FACES) {
+        fs.rmSync(modelDir, { recursive: true, force: true });
+        throw new Error(`Plate ${p} has ${parsed.faceCount.toLocaleString()} faces (max ${MAX_FACES.toLocaleString()}).`);
+      }
+
+      const platePath = path.join(modelDir, `plate_${p}.stl`);
+      writePositionsToSTL(parsed.positions, platePath);
+
+      plateData.push({ index: p, faceCount: parsed.faceCount, bounds: parsed.bounds, positions: parsed.positions, faceColors: parsed.faceColors ?? undefined });
+
+      if (p === 1) {
+        faceCount = parsed.faceCount;
+        bounds = parsed.bounds;
+        filePath = platePath;
+      }
+    }
+
+    db.insertModel({
+      id,
+      name: filename,
+      filePath,
+      fileSize: buffer.length,
+      format: '3mf',
+      faceCount,
+      boundsX: bounds.x,
+      boundsY: bounds.y,
+      boundsZ: bounds.z,
+      plateCount,
+    });
+
+    for (const pd of plateData) {
+      db.insertPlate({
+        modelId: id,
+        plateIndex: pd.index,
+        filePath: path.join(modelDir, `plate_${pd.index}.stl`),
+        faceCount: pd.faceCount,
+        boundsX: pd.bounds.x,
+        boundsY: pd.bounds.y,
+        boundsZ: pd.bounds.z,
+      });
+      if (pd.faceColors) {
+        db.updatePlateColors(id, pd.index, Buffer.from(pd.faceColors));
+      }
+    }
+
+    return { id, name: filename, faceCount, bounds, plateCount };
+  } catch (err) {
+    fs.rmSync(modelDir, { recursive: true, force: true });
+    throw err;
+  }
+}
+
 export async function modelRoutes(app: FastifyInstance, options: { db: Db }) {
   const { db } = options;
 
@@ -23,97 +100,29 @@ export async function modelRoutes(app: FastifyInstance, options: { db: Db }) {
       return reply.status(400).send({ ok: false, error: 'Only STL, STEP, and 3MF files are supported' });
     }
 
-    const id = uuid();
-    const modelDir = path.join(getModelsDir(), id);
-    ensureDir(modelDir);
-
     const buffer = await data.toBuffer();
     const format = ext === '.stp' ? 'step' : ext.slice(1);
 
-    let faceCount = 0;
-    let bounds = { x: 0, y: 0, z: 0 };
-    let faceColors: Buffer | null = null;
-    let filePath: string;
-
-    let plateCount = 1;
-
     if (format === '3mf') {
-      // Parse 3MF — extract geometry, colors for all plates
       try {
-        plateCount = await countPlates(buffer);
-
-        // Save original 3MF for slicing
-        const originalPath = path.join(modelDir, filename);
-        fs.writeFileSync(originalPath, buffer);
-
-        const MAX_FACES = 1_500_000;
-
-        // Collect plate data first (before DB insert)
-        const plateData: { index: number; faceCount: number; bounds: { x: number; y: number; z: number }; positions: Float32Array; faceColors?: Uint8Array }[] = [];
-
-        for (let p = 1; p <= plateCount; p++) {
-          const parsed = await parse3MF(buffer, p);
-
-          if (parsed.faceCount > MAX_FACES) {
-            fs.rmSync(modelDir, { recursive: true, force: true });
-            return reply.status(400).send({
-              ok: false,
-              error: `Plate ${p} has ${parsed.faceCount.toLocaleString()} faces (max ${MAX_FACES.toLocaleString()}).`,
-            });
-          }
-
-          const platePath = path.join(modelDir, `plate_${p}.stl`);
-          writePositionsToSTL(parsed.positions, platePath);
-
-          plateData.push({ index: p, faceCount: parsed.faceCount, bounds: parsed.bounds, positions: parsed.positions, faceColors: parsed.faceColors ?? undefined });
-
-          if (p === 1) {
-            faceCount = parsed.faceCount;
-            bounds = parsed.bounds;
-            filePath = platePath;
-          }
-        }
-
-        // Insert model row first so foreign key constraints pass
-        db.insertModel({
-          id,
-          name: filename,
-          filePath: filePath!,
-          fileSize: buffer.length,
-          format,
-          faceCount,
-          boundsX: bounds.x,
-          boundsY: bounds.y,
-          boundsZ: bounds.z,
-          plateCount,
-        });
-
-        // Now insert plate rows
-        for (const pd of plateData) {
-          db.insertPlate({
-            modelId: id,
-            plateIndex: pd.index,
-            filePath: path.join(modelDir, `plate_${pd.index}.stl`),
-            faceCount: pd.faceCount,
-            boundsX: pd.bounds.x,
-            boundsY: pd.bounds.y,
-            boundsZ: pd.bounds.z,
-          });
-          if (pd.faceColors) {
-            db.updatePlateColors(id, pd.index, Buffer.from(pd.faceColors));
-          }
-        }
+        const result = await register3MFModel(buffer, filename, db);
+        return reply.send({ ok: true, data: result });
       } catch (err) {
-        fs.rmSync(modelDir, { recursive: true, force: true });
         return reply.status(400).send({
           ok: false,
           error: `Invalid 3MF file: ${err instanceof Error ? err.message : String(err)}`,
         });
       }
     } else {
-      // STL/STEP — existing logic
-      filePath = path.join(modelDir, filename);
+      // STL/STEP
+      const id = uuid();
+      const modelDir = path.join(getModelsDir(), id);
+      ensureDir(modelDir);
+      const filePath = path.join(modelDir, filename);
       fs.writeFileSync(filePath, buffer);
+
+      let faceCount = 0;
+      let bounds = { x: 0, y: 0, z: 0 };
 
       if (format === 'stl') {
         try {
@@ -128,33 +137,25 @@ export async function modelRoutes(app: FastifyInstance, options: { db: Db }) {
           });
         }
       }
-    }
 
-    // Insert model for STL/STEP (3MF already inserted above)
-    if (format !== '3mf') {
       db.insertModel({
         id,
         name: filename,
-        filePath: filePath!,
+        filePath,
         fileSize: buffer.length,
         format,
         faceCount,
         boundsX: bounds.x,
         boundsY: bounds.y,
         boundsZ: bounds.z,
-        plateCount,
+        plateCount: 1,
+      });
+
+      return reply.send({
+        ok: true,
+        data: { id, name: filename, faceCount, bounds, plateCount: 1 },
       });
     }
-
-    // Save face colors for single-plate (backward compat)
-    if (faceColors) {
-      db.updateModelColors(id, faceColors);
-    }
-
-    return reply.send({
-      ok: true,
-      data: { id, name: filename, faceCount, bounds, plateCount },
-    });
   });
 
   // GET /api/models — List all models
@@ -184,8 +185,26 @@ export async function modelRoutes(app: FastifyInstance, options: { db: Db }) {
         hasColors: model.face_colors !== null,
         plateCount: model.plate_count,
         createdAt: model.created_at,
+        sourceType: model.source_type ?? null,
+        hasSourceSettings: model.source_settings != null,
       },
     };
+  });
+
+  // GET /api/models/:id/source-settings — Returns captured MW 3MF project_settings.config JSON
+  app.get<{ Params: { id: string } }>('/api/models/:id/source-settings', async (req, reply) => {
+    const model = db.getModel(req.params.id);
+    if (!model) {
+      return reply.status(404).send({ ok: false, error: 'Model not found' });
+    }
+    if (!model.source_settings) {
+      return reply.status(404).send({ ok: false, error: 'No source settings for this model' });
+    }
+    try {
+      return { ok: true, data: JSON.parse(model.source_settings) };
+    } catch {
+      return reply.status(500).send({ ok: false, error: 'Stored source settings are corrupt' });
+    }
   });
 
   // GET /api/models/:id/colors — Get face colors (?plate=N for multi-plate)

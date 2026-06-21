@@ -16,9 +16,10 @@ interface Props {
   onSlice: () => void;
   onOpenJob: (jobId: string) => void;
   onOpenPrinter: (id: string) => void;
+  onImportMakerworld: () => void;
 }
 
-export function HomeDashboard({ onSlice, onOpenJob, onOpenPrinter }: Props) {
+export function HomeDashboard({ onSlice, onOpenJob, onOpenPrinter, onImportMakerworld }: Props) {
   const [printers, setPrinters] = useState<PrinterRecord[]>([]);
   const [statuses, setStatuses] = useState<Record<string, PrinterStatus>>({});
   const [jobs, setJobs] = useState<JobSummary[]>([]);
@@ -74,6 +75,22 @@ export function HomeDashboard({ onSlice, onOpenJob, onOpenPrinter }: Props) {
           <StatCard label="Printers" value={printers.length} sub={`${printingCount} printing`} color="emerald" />
           <StatCard label="Active Job" value={printingCount} sub={printingCount > 0 ? 'in progress' : 'idle'} color="blue" />
           <StatCard label="Recent Jobs" value={totalJobs} sub="last 24h" color="gray" />
+        </div>
+
+        {/* Quick actions */}
+        <div className="flex flex-wrap gap-2">
+          <button
+            onClick={onSlice}
+            className="px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded text-sm text-white"
+          >
+            + New Slice
+          </button>
+          <button
+            onClick={onImportMakerworld}
+            className="px-4 py-2 bg-emerald-700 hover:bg-emerald-600 rounded text-sm text-white"
+          >
+            Import from MakerWorld
+          </button>
         </div>
 
         {/* Printers section */}
