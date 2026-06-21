@@ -1,5 +1,5 @@
 // Slicer engine identifiers
-export type SlicerEngine = 'orcaslicer' | 'bambustudio' | 'snapmaker_orca';
+export type SlicerEngine = 'orcaslicer' | 'bambustudio';
 
 export interface SlicerBinary {
   engine: SlicerEngine;

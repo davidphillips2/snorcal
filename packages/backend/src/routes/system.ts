@@ -7,6 +7,7 @@ import { getDataDir } from '../services/model-parser.js';
 import { isQueueAvailable } from '../jobs/queue.js';
 import { SLICER_BINARIES, getSlicerBinary } from '@snorcal/shared';
 import type { SlicerEngine } from '@snorcal/shared';
+import { getSidecarUrl } from '../services/slicer-executor.js';
 
 function dirSize(dir: string): number {
   let total = 0;
@@ -20,6 +21,18 @@ function dirSize(dir: string): number {
     }
   } catch { /* ignore */ }
   return total;
+}
+
+async function pingUrl(url: string): Promise<'ok' | 'down'> {
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 3000);
+    await fetch(url, { signal: controller.signal });
+    clearTimeout(timeout);
+    return 'ok';
+  } catch {
+    return 'down';
+  }
 }
 
 export async function systemRoutes(app: FastifyInstance, options: { db: Db }) {
@@ -40,7 +53,6 @@ export async function systemRoutes(app: FastifyInstance, options: { db: Db }) {
     try { modelsSize = dirSize(modelsDir); } catch { /* ignore */ }
     try { jobsSize = dirSize(jobsDir); } catch { /* ignore */ }
 
-    // Disk free space on data volume
     let diskFree: number | null = null;
     let diskTotal: number | null = null;
     try {
@@ -49,17 +61,17 @@ export async function systemRoutes(app: FastifyInstance, options: { db: Db }) {
       diskTotal = stat.bsize * stat.blocks;
     } catch { /* ignore */ }
 
-    // Queue (Redis sidecar) status — null when Redis unavailable (graceful fallback)
     const queueState = isQueueAvailable() ? 'connected' : 'fallback';
     const redisHost = process.env.REDIS_HOST || 'localhost';
     const redisPort = parseInt(process.env.REDIS_PORT || '6379');
 
-    // Slicer sidecar URL — when set, slice jobs are sent to remote HTTP service
-    // instead of spawned locally
-    const slicerUrl = process.env.SLICER_URL || null;
-    const slicerDatadir = process.env.SLICER_DATADIR || null;
+    // Per-engine sidecar URLs (bambuddy-style separate services per slicer).
+    const sidecars: Record<string, { url: string | null; local: boolean }> = {};
+    for (const engine of Object.keys(SLICER_BINARIES)) {
+      const url = getSidecarUrl(engine);
+      sidecars[engine] = { url, local: !url };
+    }
 
-    // Data counts
     const modelCount = db.listModels().length;
     const jobCount = db.listJobs().length;
     const printerCount = db.listPrinters().length;
@@ -86,9 +98,10 @@ export async function systemRoutes(app: FastifyInstance, options: { db: Db }) {
           redisPort,
         },
         slicer: {
-          sidecarUrl: slicerUrl,
-          datadir: slicerDatadir,
-          local: !slicerUrl,
+          sidecars,
+          // `local` here is true when ALL engines lack a URL (pure local-binary mode).
+          // Useful for legacy callers; new code should consult per-engine `sidecars`.
+          local: Object.values(sidecars).every(s => s.local),
         },
         host: {
           hostname: os.hostname(),
@@ -101,51 +114,36 @@ export async function systemRoutes(app: FastifyInstance, options: { db: Db }) {
     };
   });
 
-  // GET /api/system/test-sidecar — ping queue + (if set) remote slicer URL
+  // GET /api/system/test-sidecar — ping queue + each configured sidecar URL.
+  // Returns per-engine status so the UI can show which sidecars are reachable.
   app.get('/api/system/test-sidecar', async () => {
-    const results: { redis: 'ok' | 'down'; slicer?: 'ok' | 'down' | 'unset' } = {
-      redis: isQueueAvailable() ? 'ok' : 'down',
-    };
+    const engines = Object.keys(SLICER_BINARIES) as SlicerEngine[];
+    const sidecars: Record<string, { url: string | null; status: 'ok' | 'down' | 'unset' }> = {};
 
-    const slicerUrl = process.env.SLICER_URL;
-    if (slicerUrl) {
-      try {
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 3000);
-        await fetch(slicerUrl, { signal: controller.signal });
-        clearTimeout(timeout);
-        results.slicer = 'ok';
-      } catch {
-        results.slicer = 'down';
+    await Promise.all(engines.map(async (engine) => {
+      const url = getSidecarUrl(engine);
+      if (!url) {
+        sidecars[engine] = { url: null, status: 'unset' };
+        return;
       }
-    } else {
-      results.slicer = 'unset';
-    }
+      sidecars[engine] = { url, status: await pingUrl(url) };
+    }));
 
-    return { ok: true, data: results };
+    return {
+      ok: true,
+      data: {
+        redis: isQueueAvailable() ? 'ok' as const : 'down' as const,
+        sidecars,
+      },
+    };
   });
 
-  // GET /api/system/engines — slicer engines actually available on this host.
-  // In sidecar mode, proxies to the sidecar's /engines endpoint. In local mode,
-  // checks binary paths directly. Empty array = nothing installed (UI will show
-  // a placeholder + the Settings link).
+  // GET /api/system/engines — engines actually usable on this host.
+  // An engine is available when EITHER its sidecar URL is configured OR the
+  // local binary exists on disk.
   app.get('/api/system/engines', async () => {
-    const slicerUrl = process.env.SLICER_URL;
-    if (slicerUrl) {
-      try {
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 3000);
-        const res = await fetch(`${slicerUrl}/engines`, { signal: controller.signal });
-        clearTimeout(timeout);
-        if (res.ok) {
-          const json = await res.json() as { engines?: SlicerEngine[] };
-          return { ok: true, data: { engines: Array.isArray(json.engines) ? json.engines : [] } };
-        }
-      } catch {
-        // fall through to local check
-      }
-    }
     const engines = (Object.keys(SLICER_BINARIES) as SlicerEngine[]).filter(engine => {
+      if (getSidecarUrl(engine)) return true;
       try {
         return fs.existsSync(getSlicerBinary(engine).binaryPath);
       } catch {

@@ -29,84 +29,162 @@ export type ProgressCallback = (progress: number, step: string) => void;
 
 const isLinux = process.platform === 'linux';
 
+/**
+ * Resolve the sidecar URL for an engine.
+ *
+ * Order: SLICER_URL_<ENGINE> → SLICER_URL (deprecated fallback, applies to both)
+ * → null (caller should use local binary path).
+ */
+export function getSidecarUrl(engine: string): string | null {
+  const perEngine = process.env[`SLICER_URL_${engine.toUpperCase()}`];
+  if (perEngine) return perEngine.replace(/\/+$/, '');
+  const legacy = process.env.SLICER_URL;
+  if (legacy) {
+    if (!process.env.SLICER_URL_DEPRECATION_WARNED) {
+      console.warn('[slicer-executor] SLICER_URL is deprecated — set SLICER_URL_ORCASLICER and SLICER_URL_BAMBU per engine.');
+      process.env.SLICER_URL_DEPRECATION_WARNED = '1';
+    }
+    return legacy.replace(/\/+$/, '');
+  }
+  return null;
+}
+
 export class SlicerExecutor {
   private child: ChildProcess | null = null;
-  private sliceId: string | null = null;
-  private useHttp = !!process.env.SLICER_URL;
+  private sidecarJobId: string | null = null;
+  private sidecarUrl: string | null = null;
+  private cancelled = false;
 
   async execute(cmd: SliceCommand, onProgress?: ProgressCallback): Promise<SliceResult> {
-    if (this.useHttp) return this.executeHttp(cmd, onProgress);
+    const url = getSidecarUrl(cmd.engine);
+    if (url) return this.executeHttp(cmd, url, onProgress);
     return this.executeLocal(cmd, onProgress);
   }
 
-  private async executeHttp(cmd: SliceCommand, onProgress?: ProgressCallback): Promise<SliceResult> {
-    const baseUrl = process.env.SLICER_URL!;
-    this.sliceId = randomUUID();
-    const body = {
-      id: this.sliceId,
-      engine: cmd.engine,
-      input3mf: cmd.input3mf,
-      outputDir: cmd.outputDir,
-      plateIndex: cmd.plateIndex,
-      workDir: cmd.workDir,
-      dataDir: cmd.dataDir,
-    };
+  /**
+   * Drive a bambuddy-compatible /slice-async sidecar.
+   *
+   * Protocol (from github.com/AFKFelix/orca-slicer-api, used by maziggy/bambuddy):
+   *   POST  /slice-async        multipart: file + form fields → 202 {requestId}
+   *   GET   /slice-async/:id    → {status: pending|processing|completed|failed, metadata?, downloadUrl?}
+   *   GET   /slice-async/:id/result  → binary gcode (or zip of gcodes)
+   *   DELETE /slice-async/:id   → free sidecar memory
+   *
+   * Snorcal sends only the embedded 3MF as `file` — no printer/preset/filament
+   * profile uploads. The 3MF already contains Metadata/project_settings.config
+   * which the slicer reads natively, so no --load-settings is needed.
+   */
+  private async executeHttp(cmd: SliceCommand, baseUrl: string, onProgress?: ProgressCallback): Promise<SliceResult> {
+    this.sidecarUrl = baseUrl;
 
-    const ctrl = new AbortController();
-    this.cancelHttp = () => ctrl.abort();
-
-    const res = await fetch(`${baseUrl}/slice`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-      signal: ctrl.signal,
-    });
-
-    if (!res.ok || !res.body) {
-      return { gcodePath: '', gcodeSize: 0, exitCode: 1, stdout: '', stderr: `Sidecar HTTP ${res.status}` };
+    if (!fs.existsSync(cmd.input3mf)) {
+      return { gcodePath: '', gcodeSize: 0, exitCode: 1, stdout: '', stderr: `Input 3MF missing: ${cmd.input3mf}` };
     }
 
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
-    let stdout = '';
-    let stderr = '';
-    let exitCode = 1;
-    let gcodePath = '';
-    let gcodeSize = 0;
+    const fileBytes = await fs.promises.readFile(cmd.input3mf);
+    const filename = path.basename(cmd.input3mf);
 
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const events = buffer.split('\n\n');
-      buffer = events.pop() ?? '';
-      for (const evt of events) {
-        const lines = evt.split('\n');
-        let event = 'message';
-        let data = '';
-        for (const ln of lines) {
-          if (ln.startsWith('event:')) event = ln.slice(6).trim();
-          else if (ln.startsWith('data:')) data = ln.slice(5).trim();
-        }
-        if (!data || event === 'message') continue;
-        let parsed: any;
-        try { parsed = JSON.parse(data); } catch { continue; }
-        if (event === 'progress' && onProgress) {
-          onProgress(parsed.progress ?? 0, parsed.step ?? '');
-        } else if (event === 'done') {
-          exitCode = parsed.exitCode ?? 1;
-          stdout = parsed.stdout ?? '';
-          stderr = parsed.stderr ?? '';
-          gcodePath = parsed.gcodePath ?? '';
-          gcodeSize = parsed.gcodeSize ?? 0;
-        } else if (event === 'error') {
-          stderr += `\n${parsed.message ?? 'Unknown sidecar error'}`;
-        }
+    const form = new FormData();
+    form.append('file', new Blob([fileBytes]), filename);
+    form.append('arrange', '0');
+    form.append('orient', '0');
+    form.append('exportType', 'gcode');
+    if (cmd.plateIndex !== undefined) {
+      form.append('plate', String(cmd.plateIndex));
+    }
+
+    onProgress?.(2, 'Submitting to sidecar…');
+
+    // Submit
+    const submitRes = await fetch(`${baseUrl}/slice-async`, { method: 'POST', body: form });
+    if (!resOk(submitRes)) {
+      const errText = await safeText(submitRes);
+      return { gcodePath: '', gcodeSize: 0, exitCode: 1, stdout: '', stderr: `Sidecar submit failed: HTTP ${submitRes.status} ${errText}` };
+    }
+    const submitJson = await submitRes.json() as { requestId?: string };
+    if (!submitJson.requestId) {
+      return { gcodePath: '', gcodeSize: 0, exitCode: 1, stdout: '', stderr: 'Sidecar returned no requestId' };
+    }
+    this.sidecarJobId = submitJson.requestId;
+
+    // Poll
+    onProgress?.(5, 'Queued');
+    let metadata: { printTime?: number; filamentUsedG?: number; filamentUsedMm?: number } | undefined;
+    let pollErr: string | null = null;
+    while (!this.cancelled) {
+      await sleep(1500);
+      if (this.cancelled) break;
+      const statusRes = await fetch(`${baseUrl}/slice-async/${this.sidecarJobId}`);
+      if (!resOk(statusRes)) {
+        pollErr = `Status poll failed: HTTP ${statusRes.status}`;
+        break;
+      }
+      const statusJson = await statusRes.json() as {
+        status: 'pending' | 'processing' | 'completed' | 'failed';
+        message?: string;
+        metadata?: typeof metadata;
+      };
+      if (statusJson.status === 'pending') {
+        onProgress?.(5, 'Queued');
+      } else if (statusJson.status === 'processing') {
+        onProgress?.(50, 'Slicing…');
+      } else if (statusJson.status === 'failed') {
+        pollErr = statusJson.message ?? 'Slicing failed on sidecar';
+        break;
+      } else if (statusJson.status === 'completed') {
+        metadata = statusJson.metadata;
+        break;
       }
     }
 
-    return { gcodePath, gcodeSize, exitCode, stdout, stderr };
+    if (this.cancelled) {
+      // Best-effort cancel on sidecar (no documented cancel endpoint; DELETE
+      // is for finished jobs only per bambuddy source — so we just abandon).
+      this.sidecarJobId = null;
+      return { gcodePath: '', gcodeSize: 0, exitCode: -1, stdout: '', stderr: 'Job cancelled' };
+    }
+    if (pollErr) {
+      return { gcodePath: '', gcodeSize: 0, exitCode: 1, stdout: '', stderr: pollErr };
+    }
+
+    // Download result
+    onProgress?.(95, 'Downloading gcode…');
+    fs.mkdirSync(cmd.outputDir, { recursive: true });
+    const resultRes = await fetch(`${baseUrl}/slice-async/${this.sidecarJobId}/result`);
+    if (!resOk(resultRes)) {
+      const errText = await safeText(resultRes);
+      return { gcodePath: '', gcodeSize: 0, exitCode: 1, stdout: '', stderr: `Download failed: HTTP ${resultRes.status} ${errText}` };
+    }
+
+    const contentType = resultRes.headers.get('content-type') ?? '';
+    let gcodePath: string;
+    let gcodeSize: number;
+
+    if (contentType.includes('zip') || filename.endsWith('.zip')) {
+      // Multi-plate return — extract first gcode. Snorcal builds single-plate
+      // 3MF so this branch shouldn't normally hit; handle defensively.
+      const buf = Buffer.from(await resultRes.arrayBuffer());
+      gcodePath = await extractFirstGcodeFromZip(buf, cmd.outputDir);
+    } else {
+      const buf = Buffer.from(await resultRes.arrayBuffer());
+      gcodePath = path.join(cmd.outputDir, 'output.gcode');
+      await fs.promises.writeFile(gcodePath, buf);
+    }
+    gcodeSize = fs.statSync(gcodePath).size;
+
+    // Best-effort cleanup
+    fetch(`${baseUrl}/slice-async/${this.sidecarJobId}`, { method: 'DELETE' }).catch(() => {});
+    this.sidecarJobId = null;
+
+    onProgress?.(100, 'Done');
+    const metaLine = metadata ? `\n; sidecar metadata: printTime=${metadata.printTime ?? '?'}s filamentG=${metadata.filamentUsedG ?? '?'} filamentMm=${metadata.filamentUsedMm ?? '?'}` : '';
+    return {
+      gcodePath,
+      gcodeSize,
+      exitCode: 0,
+      stdout: metaLine,
+      stderr: '',
+    };
   }
 
   private cancelHttp: (() => void) | null = null;
@@ -237,11 +315,12 @@ export class SlicerExecutor {
   }
 
   cancel() {
-    if (this.useHttp) {
-      if (this.cancelHttp) this.cancelHttp();
-      if (this.sliceId && process.env.SLICER_URL) {
-        fetch(`${process.env.SLICER_URL}/cancel/${this.sliceId}`, { method: 'POST' }).catch(() => {});
-      }
+    // HTTP/sidecar mode: set cancelled flag so the poll loop exits. Bambuddy's
+    // DELETE /slice-async/:id only works on finished jobs (per source), so
+    // running slices keep running on the sidecar until they finish — we just
+    // abandon them and ignore the result.
+    if (this.sidecarJobId || this.sidecarUrl) {
+      this.cancelled = true;
       return;
     }
     if (this.child && !this.child.killed) {
@@ -310,4 +389,37 @@ export class SlicerExecutor {
     }
     return null;
   }
+}
+
+// --- sidecar HTTP helpers ---
+
+function sleep(ms: number): Promise<void> {
+  return new Promise(r => setTimeout(r, ms));
+}
+
+function resOk(res: Response): boolean {
+  return res.status >= 200 && res.status < 300;
+}
+
+async function safeText(res: Response): Promise<string> {
+  try { return (await res.text()).slice(0, 500); }
+  catch { return ''; }
+}
+
+/**
+ * Snorcal builds single-plate 3MF, so bambuddy should always return a single
+ * gcode. If we ever receive a zip (defensive path), extract the first .gcode.
+ */
+async function extractFirstGcodeFromZip(buf: Buffer, outDir: string): Promise<string> {
+  const JSZip = (await import('jszip')).default;
+  const zip = await JSZip.loadAsync(buf);
+  for (const name of Object.keys(zip.files)) {
+    if (name.endsWith('.gcode')) {
+      const content = await zip.files[name].async('nodebuffer');
+      const outPath = path.join(outDir, path.basename(name));
+      await fs.promises.writeFile(outPath, content);
+      return outPath;
+    }
+  }
+  throw new Error('No .gcode inside result zip');
 }

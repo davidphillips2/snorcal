@@ -39,7 +39,7 @@ let dbForResolver: import('../db/index.js').Db | null = null;
  */
 function resolveBedVolume(db: import('../db/index.js').Db | null, model: string | null | undefined): { x: number; y: number; z: number } | null {
   if (!db || !model) return null;
-  const engines = ['orcaslicer', 'bambustudio', 'snapmaker_orca'];
+  const engines = ['orcaslicer', 'bambustudio'];
   for (const engine of engines) {
     let rows: { name: string }[];
     try {
@@ -254,7 +254,7 @@ export async function printerRoutes(app: FastifyInstance, options: { db: Db }) {
   // Strips nozzle variants ("0.4 nozzle", "(0.6 nozzle)") so each printer model
   // appears once regardless of nozzle options.
   app.get('/api/printers/models', async (_req, reply) => {
-    const engines = ['orcaslicer', 'bambustudio', 'snapmaker_orca'];
+    const engines = ['orcaslicer', 'bambustudio'];
     const seen = new Set<string>();
     const out: string[] = [];
     for (const engine of engines) {

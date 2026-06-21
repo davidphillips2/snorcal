@@ -7,41 +7,36 @@ services:
       - "${PORT:-3000}:3000"
     volumes:
       - snorcal-data:/data
-    depends_on:
-      redis:
-        condition: service_healthy
-      slicer:
-        condition: service_healthy
     environment:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
       - DATA_DIR=/data
       - NODE_ENV=production
-      - SLICER_URL=http://slicer:3001
+      - SLICER_URL_ORCASLICER=http://orca-slicer-api:3003
+      - SLICER_URL_BAMBUSTUDIO=http://bambu-studio-api:3001
+    depends_on:
+      redis:
+        condition: service_healthy
     restart: unless-stopped
     deploy:
       resources:
         limits:
           memory: 512M
 
-  slicer:
-    build:
-      context: ..
-      dockerfile: docker/Dockerfile.slicer
-    volumes:
-      - snorcal-data:/data
-    environment:
-      - DISPLAY=:99
-      - DATA_DIR=/data
-      - SLICER_PORT=3001
-      - SLICER_HOST=0.0.0.0
+  # Bambuddy slicer sidecars (optional but recommended for actual slicing).
+  # Comment out the one you don't need; remove the corresponding SLICER_URL_*
+  # env above if you do.
+  orca-slicer-api:
+    image: ghcr.io/maziggy/orca-slicer-api:latest
     restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:3001/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 6
-      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+
+  bambu-studio-api:
+    image: ghcr.io/maziggy/bambu-studio-api:latest
+    restart: unless-stopped
     deploy:
       resources:
         limits:

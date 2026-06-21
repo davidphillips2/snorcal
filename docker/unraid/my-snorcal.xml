@@ -13,13 +13,15 @@
   <Privileged>false</Privileged>
   <Support>https://github.com/davidphillips2/snorcal/issues</Support>
   <Project>https://github.com/davidphillips2/snorcal</Project>
-  <Overview>Self-hosted 3D slicing hub for OrcaSlicer, BambuStudio, and Snapmaker Orca. Web UI for uploading models, configuring slice settings, painting face colors, and shipping gcode to Moonraker/Bambu/Snapmaker printers.&#13;
+  <Overview>Self-hosted 3D slicing hub for OrcaSlicer and BambuStudio. Web UI for uploading models, configuring slice settings, painting face colors, and shipping gcode to Moonraker/Bambu/Snapmaker printers.&#13;
 &#13;
-Requires two companion containers:&#13;
-  1. snorcal-slicer (ghcr.io/davidphillips2/snorcal-slicer) — Ubuntu + Xvfb + slicer binaries&#13;
-  2. redis (use the redis:7-alpine template from Community Apps)&#13;
+Requires two companion containers on the same Docker network:&#13;
+  1. redis (use the redis:7-alpine template from Community Apps)&#13;
+  2. One or both bambuddy slicer sidecars:&#13;
+     - ghcr.io/maziggy/orca-slicer-api:latest  (port 3003)&#13;
+     - ghcr.io/maziggy/bambu-studio-api:latest (port 3001)&#13;
 &#13;
-All three containers must share the same /data volume so the app can read gcode produced by the slicer.</Overview>
+No shared volume needed — snorcal uploads 3MF and downloads gcode over HTTP.</Overview>
   <Category>Productivity: Tools:</Category>
   <WebUI>http://[IP]:[PORT:3000]</WebUI>
   <TemplateURL>https://raw.githubusercontent.com/davidphillips2/snorcal/main/docker/unraid/my-snorcal.xml</TemplateURL>
@@ -28,14 +30,14 @@ All three containers must share the same /data volume so the app can read gcode 
   <PostArgs/>
   <CPUset/>
   <Date>2026-06-21</Date>
-  <Requires>snorcal-slicer container + redis container. Create a custom Docker network (e.g. `snorcal`) and attach all three so they can resolve each other by name.</Requires>
+  <Requires>Redis container + at least one bambuddy slicer sidecar (ghcr.io/maziggy/orca-slicer-api or ghcr.io/maziggy/bambu-studio-api). Create a custom Docker network (e.g. `snorcal`) and attach all containers so they can resolve each other by name.</Requires>
 
   <Config Name="Web UI Port" Target="3000" Default="3000" Mode="tcp"
           Description="Host port for the Snorcal web UI."
           Type="Port" Display="always" Required="true" Mask="false">3000</Config>
 
   <Config Name="App Data" Target="/data" Default="/mnt/user/appdata/snorcal" Mode="rw"
-          Description="Persistent storage for the SQLite DB, uploaded models, and generated gcode. MUST be the same host path mounted on the snorcal-slicer container."
+          Description="Persistent storage for the SQLite DB, uploaded models, and generated gcode."
           Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/snorcal</Config>
 
   <Config Name="REDIS_HOST" Target="REDIS_HOST" Default="redis" Mode=""
@@ -46,9 +48,13 @@ All three containers must share the same /data volume so the app can read gcode 
           Description="Redis port."
           Type="Variable" Display="always" Required="true" Mask="false">6379</Config>
 
-  <Config Name="SLICER_URL" Target="SLICER_URL" Default="http://snorcal-slicer:3001" Mode=""
-          Description="Internal URL of the snorcal-slicer container. The slicer container must be named `snorcal-slicer` on the shared Docker network."
-          Type="Variable" Display="always" Required="true" Mask="false">http://snorcal-slicer:3001</Config>
+  <Config Name="SLICER_URL_ORCASLICER" Target="SLICER_URL_ORCASLICER" Default="http://orca-slicer-api:3003" Mode=""
+          Description="URL of the OrcaSlicer sidecar (bambuddy). Leave blank to disable OrcaSlicer engine."
+          Type="Variable" Display="always" Required="false" Mask="false">http://orca-slicer-api:3003</Config>
+
+  <Config Name="SLICER_URL_BAMBUSTUDIO" Target="SLICER_URL_BAMBUSTUDIO" Default="http://bambu-studio-api:3001" Mode=""
+          Description="URL of the BambuStudio sidecar (bambuddy). Leave blank to disable BambuStudio engine."
+          Type="Variable" Display="always" Required="false" Mask="false">http://bambu-studio-api:3001</Config>
 
   <Config Name="NODE_ENV" Target="NODE_ENV" Default="production" Mode=""
           Description="Set to production so backend serves the bundled frontend."

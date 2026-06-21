@@ -13,12 +13,6 @@ export const SLICER_BINARIES: Record<string, SlicerBinary> = {
     profilesDir: '/opt/bambustudio/resources',
     label: 'BambuStudio',
   },
-  snapmaker_orca: {
-    engine: 'snapmaker_orca',
-    binaryPath: '/opt/snapmaker-orca/bin/orca-slicer',
-    profilesDir: '/opt/snapmaker-orca/resources',
-    label: 'Snapmaker OrcaSlicer',
-  },
 };
 
 const isMac = process.platform === 'darwin';
@@ -31,10 +25,6 @@ const MAC_PATHS: Record<string, { binaryPath: string; profilesDir: string }> = {
   bambustudio: {
     binaryPath: '/Applications/BambuStudio.app/Contents/MacOS/BambuStudio',
     profilesDir: '/Applications/BambuStudio.app/Contents/Resources',
-  },
-  snapmaker_orca: {
-    binaryPath: '/Applications/Snapmaker Orca.app/Contents/MacOS/Snapmaker_Orca',
-    profilesDir: '/Applications/Snapmaker Orca.app/Contents/Resources',
   },
 };
 

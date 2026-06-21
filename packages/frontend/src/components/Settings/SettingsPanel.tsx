@@ -4,12 +4,6 @@ import { SETTING_GROUPS, DEFAULT_VALUES, isSettingVisible } from './settings-def
 import type { SettingGroup } from './settings-definitions';
 import { SettingRow } from './SettingRow';
 
-const ENGINES = [
-  { value: 'orcaslicer', label: 'OrcaSlicer' },
-  { value: 'bambustudio', label: 'BambuStudio' },
-  { value: 'snapmaker_orca', label: 'Snapmaker Orca' },
-];
-
 interface ProfileInfo {
   engine: string;
   profile_type: string;
@@ -124,7 +118,6 @@ export function SettingsPanel({
   const [search, setSearch] = useState('');
   const [profiles, setProfiles] = useState<ProfileInfo[]>([]);
   const [printers, setPrinters] = useState<Array<{ name: string; model?: string | null }>>([]);
-  const [availableEngines, setAvailableEngines] = useState<string[] | null>(null);
   const [importing, setImporting] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [diffMode, setDiffMode] = useState(false);
@@ -137,23 +130,6 @@ export function SettingsPanel({
   useEffect(() => {
     api.listPrinters().then(setPrinters).catch(() => setPrinters([]));
   }, []);
-
-  // Fetch installed engines once. Null = still loading; empty array = none
-  // installed. Used to hide engines whose binaries aren't on the host (e.g.,
-  // a slicer image that only ships OrcaSlicer shouldn't show BambuStudio).
-  useEffect(() => {
-    api.getAvailableEngines().then(setAvailableEngines);
-  }, []);
-
-  // If the selected engine isn't available, switch to one that is. Runs after
-  // availableEngines loads and whenever engine changes.
-  useEffect(() => {
-    if (!availableEngines) return; // still loading
-    if (availableEngines.length === 0) return; // nothing to switch to; let user see empty state
-    if (!availableEngines.includes(engine)) {
-      onEngineChange(availableEngines[0]);
-    }
-  }, [availableEngines, engine, onEngineChange]);
 
   const machineProfilesAll = profiles.filter(p => p.profile_type === 'machine');
   const filamentProfiles = profiles.filter(p => p.profile_type === 'filament');
@@ -348,28 +324,7 @@ export function SettingsPanel({
 
   return (
     <div className="space-y-3">
-      {/* Engine selector — filtered to engines whose binaries are installed. */}
-      <div>
-        <label className="block text-sm font-medium text-gray-300 mb-1">Slicer Engine</label>
-        {availableEngines && availableEngines.length === 0 ? (
-          <div className="text-xs text-amber-400 bg-amber-950/30 border border-amber-900/50 rounded px-3 py-2">
-            No slicer binaries detected. Install OrcaSlicer / BambuStudio or point SLICER_URL at a sidecar.
-          </div>
-        ) : (
-          <select
-            value={engine}
-            onChange={(e) => onEngineChange(e.target.value)}
-            disabled={!availableEngines}
-            className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm disabled:opacity-50"
-          >
-            {ENGINES
-              .filter(e => !availableEngines || availableEngines.includes(e.value))
-              .map((e) => (
-                <option key={e.value} value={e.value}>{e.label}</option>
-              ))}
-          </select>
-        )}
-      </div>
+      {/* Engine selector moved to App-level Settings panel */}
 
       {/* Advanced toggle */}
       <button

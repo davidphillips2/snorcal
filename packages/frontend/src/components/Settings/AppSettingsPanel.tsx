@@ -19,26 +19,45 @@ function formatUptime(seconds: number): string {
   return `${m}m`;
 }
 
-export function AppSettingsPanel() {
+export function AppSettingsPanel(props: {
+  engine: string;
+  onEngineChange: (engine: string) => void;
+}) {
+  const { engine, onEngineChange } = props;
   const [info, setInfo] = useState<api.SystemInfo | null>(null);
-  const [sidecarTest, setSidecarTest] = useState<{ redis: 'ok' | 'down'; slicer?: 'ok' | 'down' | 'unset' } | null>(null);
+  const [sidecarTest, setSidecarTest] = useState<api.SidecarTestResult | null>(null);
+  const [availableEngines, setAvailableEngines] = useState<string[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [testing, setTesting] = useState(false);
+
+  const ENGINE_LABELS: Record<string, string> = {
+    orcaslicer: 'OrcaSlicer',
+    bambustudio: 'BambuStudio',
+  };
 
   const refresh = async () => {
     setLoading(true);
     try {
-      const [i, t] = await Promise.all([api.getSystemInfo(), api.testSidecar()]);
+      const [i, t, e] = await Promise.all([api.getSystemInfo(), api.testSidecar(), api.getAvailableEngines()]);
       setInfo(i);
       setSidecarTest(t);
-    } catch (e) {
-      console.error('Failed to load system info:', e);
+      setAvailableEngines(e);
+    } catch (err) {
+      console.error('Failed to load system info:', err);
     } finally {
       setLoading(false);
     }
   };
 
   useEffect(() => { refresh(); }, []);
+
+  // Auto-switch to an available engine if current pick isn't usable.
+  useEffect(() => {
+    if (!availableEngines || availableEngines.length === 0) return;
+    if (!availableEngines.includes(engine)) {
+      onEngineChange(availableEngines[0]);
+    }
+  }, [availableEngines, engine, onEngineChange]);
 
   const handleTest = async () => {
     setTesting(true);
@@ -66,9 +85,67 @@ export function AppSettingsPanel() {
         )}
       </Section>
 
+      {/* Slicer engine + sidecars */}
+      <Section
+        title="Slicer"
+        action={
+          <button
+            onClick={handleTest}
+            disabled={testing}
+            className="px-2 py-0.5 text-xs bg-gray-700 hover:bg-gray-600 rounded text-gray-300"
+          >
+            {testing ? 'Testing…' : 'Test'}
+          </button>
+        }
+      >
+        <div className="px-3 py-2">
+          <label className="block text-[10px] font-medium text-gray-500 uppercase tracking-wider mb-1">Engine</label>
+          {availableEngines && availableEngines.length === 0 ? (
+            <div className="text-xs text-amber-400">
+              No slicers configured. Set <code>SLICER_URL_ORCASLICER</code> / <code>SLICER_URL_BAMBUSTUDIO</code> on the server.
+            </div>
+          ) : (
+            <select
+              value={engine}
+              onChange={(e) => onEngineChange(e.target.value)}
+              disabled={!availableEngines}
+              className="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1 text-xs text-white disabled:opacity-50"
+            >
+              {Object.entries(ENGINE_LABELS)
+                .filter(([value]) => !availableEngines || availableEngines.includes(value))
+                .map(([value, label]) => (
+                  <option key={value} value={value}>{label}</option>
+                ))}
+            </select>
+          )}
+        </div>
+        {Object.entries(info.slicer.sidecars).map(([eng, cfg]) => {
+          const status = sidecarTest?.sidecars[eng];
+          return (
+            <Row
+              key={eng}
+              label={ENGINE_LABELS[eng] ?? eng}
+              value={
+                cfg.url ? (
+                  <span>
+                    <code className="text-gray-300 text-xs">{cfg.url}</code>{' '}
+                    <StatusBadge
+                      ok={status?.status === 'ok'}
+                      label={status?.status ?? 'unset'}
+                    />
+                  </span>
+                ) : (
+                  <StatusBadge ok={true} label="local binary" />
+                )
+              }
+            />
+          );
+        })}
+      </Section>
+
       {/* Queue / sidecar */}
       <Section
-        title="Queue & Sidecar"
+        title="Queue"
         action={
           <button
             onClick={handleTest}
@@ -89,23 +166,6 @@ export function AppSettingsPanel() {
             </span>
           }
         />
-        <Row
-          label="Slicer"
-          value={
-            info.slicer.local
-              ? <span><StatusBadge ok={true} label="local binary" /></span>
-              : (
-                <span>
-                  <code className="text-gray-300 text-xs">{info.slicer.sidecarUrl}</code>
-                  {' '}
-                  <StatusBadge ok={sidecarTest?.slicer === 'ok'} label={sidecarTest?.slicer ?? 'unset'} />
-                </span>
-              )
-          }
-        />
-        {info.slicer.datadir && (
-          <Row label="Slicer datadir" value={<code className="text-gray-300 text-xs">{info.slicer.datadir}</code>} />
-        )}
       </Section>
 
       {/* MakerWorld (moved from slicer settings) */}

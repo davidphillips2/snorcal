@@ -1437,7 +1437,7 @@ export default function App() {
 
       {view === 'settings' && (
         <div className="flex-1 overflow-y-auto p-6 max-w-3xl mx-auto w-full">
-          <AppSettingsPanel />
+          <AppSettingsPanel engine={engine} onEngineChange={setEngine} />
         </div>
       )}
 

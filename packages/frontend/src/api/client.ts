@@ -467,7 +467,10 @@ export interface SystemInfo {
   };
   counts: { models: number; jobs: number; printers: number };
   queue: { state: 'connected' | 'fallback'; redisHost: string; redisPort: number };
-  slicer: { sidecarUrl: string | null; datadir: string | null; local: boolean };
+  slicer: {
+    sidecars: Record<string, { url: string | null; local: boolean }>;
+    local: boolean;
+  };
   host: {
     hostname: string;
     platform: string;
@@ -477,11 +480,18 @@ export interface SystemInfo {
   };
 }
 
+export type SidecarStatus = 'ok' | 'down' | 'unset';
+
+export interface SidecarTestResult {
+  redis: 'ok' | 'down';
+  sidecars: Record<string, { url: string | null; status: SidecarStatus }>;
+}
+
 export async function getSystemInfo(): Promise<SystemInfo> {
   return apiFetch('/system/info') as Promise<SystemInfo>;
 }
 
-export async function testSidecar(): Promise<{ redis: 'ok' | 'down'; slicer?: 'ok' | 'down' | 'unset' }> {
+export async function testSidecar(): Promise<SidecarTestResult> {
   return apiFetch('/system/test-sidecar');
 }
 

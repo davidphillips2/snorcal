@@ -25,7 +25,6 @@ function getDefaultDataDir(engine: string): string {
     const macDirs: Record<string, string> = {
       orcaslicer: 'OrcaSlicer',
       bambustudio: 'BambuStudio',
-      snapmaker_orca: 'Snapmaker_Orca',
     };
     return path.join(home, 'Library', 'Application Support', macDirs[engine] ?? 'OrcaSlicer');
   }
@@ -33,7 +32,6 @@ function getDefaultDataDir(engine: string): string {
   const linuxDirs: Record<string, string> = {
     orcaslicer: 'OrcaSlicer',
     bambustudio: 'BambuStudio',
-    snapmaker_orca: 'Snapmaker_Orca',
   };
   return path.join(home, '.config', linuxDirs[engine] ?? 'OrcaSlicer');
 }
@@ -198,7 +196,7 @@ export async function sliceRoutes(app: FastifyInstance, options: { db: Db }) {
       }
     }
 
-    const validEngines = ['orcaslicer', 'bambustudio', 'snapmaker_orca'];
+    const validEngines = ['orcaslicer', 'bambustudio'];
     if (!validEngines.includes(body.engine)) {
       return reply.status(400).send({ ok: false, error: `Invalid engine: ${body.engine}` });
     }

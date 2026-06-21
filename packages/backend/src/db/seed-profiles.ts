@@ -19,7 +19,6 @@ interface DefaultProfile {
 const ENGINE_MAP: Record<string, string> = {
   orcaslicer: 'orcaslicer',
   bambustudio: 'bambustudio',
-  snapmaker_orca: 'snapmaker_orca',
   crealityprint: 'orcaslicer',
 };
 const TYPE_MAP: Record<string, string> = {

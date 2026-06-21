@@ -39,7 +39,9 @@ Entry: `src/index.ts` → `src/app.ts` (buildApp)
 **Slicing pipeline**:
 1. `POST /api/slice` receives slice request
 2. Build 3MF from STL + face colors + project settings (`threemf-builder.ts`)
-3. Spawn slicer binary via `SlicerExecutor` (`xvfb-run` on Linux)
+3. Dispatch to slicer via `SlicerExecutor`:
+   - If `SLICER_URL_<ENGINE>` set: HTTP multipart upload to bambuddy sidecar (`/slice-async` → poll → download gcode)
+   - Otherwise: spawn local slicer binary via `xvfb-run` (Linux) or direct (macOS dev)
 4. Progress via SSE (`/api/events`) or poll (`GET /api/jobs/:id`)
 5. G-code estimates parsed from output comments
 
@@ -64,7 +66,9 @@ Entry: `src/main.tsx` → `src/App.tsx`
 
 **Gcode parsing** (`lib/gcode-parser.ts`): Hand-written. Tracks M83/M82 E mode, `;LAYER_CHANGE`/`;Z:`/`;TYPE:`/`;HEIGHT:`. Web Worker.
 
-**Settings** (`components/Settings/SettingsPanel.tsx`): Engine, profiles (machine/filament/process), multi-material toggle + auto-configure preset, collapsible groups.
+**Settings** (`components/Settings/`):
+- `SettingsPanel.tsx` — per-slice slicer settings (profiles, multi-material toggle, collapsible groups)
+- `AppSettingsPanel.tsx` — global app settings (engine selector, sidecar URLs + status, storage, queue, host info, MakerWorld login)
 
 **API client** (`api/client.ts`): Thin fetch wrapper. State in `App.tsx`, no global store.
 
@@ -78,9 +82,13 @@ Constants (`src/constants/`):
 
 ## Critical Slicer Integration Details
 
-**DO NOT use `--load-settings` / `--load-filaments`** — segfault in CLI mode. Embed settings as `Metadata/project_settings.config` inside 3MF (flat JSON ~520 keys). Slicer reads natively.
+**Settings embedding strategy:** Snorcal embeds all slice settings as `Metadata/project_settings.config` inside a fresh 3MF (flat JSON ~520 keys). The slicer reads them natively. No `--load-settings` / `--load-filaments` CLI flags used.
 
-CLI: `<binary> --datadir <dir> --slice 0 --outputdir <dir> --arrange 0 --orient 0 --debug 2 input.3mf`
+**Sidecar mode (production):** Two bambuddy sidecar containers serve OrcaSlicer + BambuStudio over HTTP. Snorcal uploads the embedded 3MF via `POST /slice-async` (multipart `file` field, no profile files), polls status, downloads gcode. Sidecar runs essentially `--slice 0 --arrange 0 --orient 0 --outputdir /out input.3mf` internally.
+
+**Local mode (dev macOS):** Direct spawn of local `/Applications/OrcaSlicer.app/...` binary. CLI: `<binary> --datadir <dir> --slice 0 --outputdir <dir> --arrange 0 --orient 0 --debug 2 input.3mf`.
+
+**Engine URL resolution:** `getSidecarUrl(engine)` in `services/slicer-executor.ts` checks `SLICER_URL_<ENGINE_UPPER>` (e.g. `SLICER_URL_ORCASLICER`, `SLICER_URL_BAMBUSTUDIO`), falls back to deprecated `SLICER_URL` for both engines, then null (local mode).
 
 Rebuilt 3MF = single plate, so `--slice 0` always correct regardless of UI plate selection.
 
