@@ -322,7 +322,7 @@ export class Db {
     return this.db.prepare('SELECT * FROM models WHERE source_url = ?').get(sourceUrl) as DbModel | undefined;
   }
 
-  updateModelSource(id: string, sourceType: string, sourceUrl: string) {
+  updateModelSource(id: string, sourceType: string, sourceUrl: string | null) {
     this.db.prepare('UPDATE models SET source_type = ?, source_url = ? WHERE id = ?').run(sourceType, sourceUrl, id);
   }
 

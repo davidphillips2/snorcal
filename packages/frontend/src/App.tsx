@@ -604,6 +604,10 @@ export default function App() {
       };
       updateModels(prev => [...prev, newPm]);
       setActiveModelIndex(projectModels.length); // select new model
+
+      // 3MF uploads may carry filament_colour/type arrays in their embedded
+      // project_settings.config — populate slots the same way MW imports do.
+      await applySourceSettings(model.id);
     } catch (err) {
       alert(`Upload failed: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
@@ -667,45 +671,48 @@ export default function App() {
       updateModels(prev => [...prev, newPm]);
       setActiveModelIndex(projectModels.length);
 
-      // Auto-apply captured MW source settings — overwrite current project settings.
-      // MakerWorld's bundle contains full slicer config (printer_model, filament_colour,
-      // layer_height, etc). User explicitly opted into this by importing.
-      //
-      // Gcode keys (`*_gcode`) are EXCLUDED — source printer's start/end/layer-change
-      // macros are firmware-specific (Bambu vs Snapmaker vs Klipper) and would emit
-      // commands the user's printer can't parse. User's existing gcode stays intact.
-      //
-      // filament_colour / filament_type arrays populate the per-slot UI directly
-      // (filamentSlots state) — settings.filament_colour stays as the slicer-
-      // consumed array, but the UI needs the slot list updated to match.
-      const sourceSettings = await api.getModelSourceSettings(m.modelId);
-      if (sourceSettings && typeof sourceSettings === 'object') {
-        const coerced: Record<string, string> = {};
-        for (const [k, v] of Object.entries(sourceSettings)) {
-          if (v == null) continue;
-          if (k.endsWith('_gcode')) continue;  // preserve user's printer-specific macros
-          // Keep arrays as JSON strings — slice route overwrites filament_colour
-          // from filamentSlots anyway, so these are just informational.
-          coerced[k] = typeof v === 'string' ? v : JSON.stringify(v);
-        }
-        setSettings(prev => ({ ...prev, ...coerced }));
-
-        // filament_colour / filament_type arrays populate the per-slot UI
-        // directly — that's the path the slice route reads for slicer config.
-        const colors = sourceSettings.filament_colour;
-        const types = sourceSettings.filament_type;
-        if (Array.isArray(colors) && colors.length > 0) {
-          const newSlots = colors.map((c: unknown, i: number) => ({
-            color: typeof c === 'string' ? c : '#FFFFFF',
-            type: Array.isArray(types) && typeof types[i] === 'string' ? (types[i] as string) : 'PLA',
-          }));
-          setFilamentSlots(newSlots);
-        }
-      }
+      // MakerWorld imports explicitly overwrite project settings (user opted
+      // into the bundle's full slicer config). Plain uploads use the same
+      // helper but skip the settings overwrite.
+      await applySourceSettings(m.modelId, { overwriteSettings: true });
     } catch (err) {
       alert(`MakerWorld import failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   }, [projectModels.length, activePlateId, updateModels]);
+
+  /**
+   * Fetch a model's embedded project_settings.config and sync its
+   * filament_colour / filament_type arrays into the per-slot UI state.
+   *
+   * `overwriteSettings` controls whether the full settings blob replaces the
+   * user's current project settings — true for MakerWorld imports (user
+   * explicitly opted into the bundle), false for plain uploads (we only want
+   * the filament slots, not the printer profile / gcode macros).
+   */
+  const applySourceSettings = useCallback(async (modelId: string, opts?: { overwriteSettings?: boolean }) => {
+    const sourceSettings = await api.getModelSourceSettings(modelId);
+    if (!sourceSettings || typeof sourceSettings !== 'object') return;
+
+    if (opts?.overwriteSettings) {
+      const coerced: Record<string, string> = {};
+      for (const [k, v] of Object.entries(sourceSettings)) {
+        if (v == null) continue;
+        if (k.endsWith('_gcode')) continue;  // preserve user's printer-specific macros
+        coerced[k] = typeof v === 'string' ? v : JSON.stringify(v);
+      }
+      setSettings(prev => ({ ...prev, ...coerced }));
+    }
+
+    const colors = sourceSettings.filament_colour;
+    const types = sourceSettings.filament_type;
+    if (Array.isArray(colors) && colors.length > 0) {
+      const newSlots = colors.map((c: unknown, i: number) => ({
+        color: typeof c === 'string' ? c : '#FFFFFF',
+        type: Array.isArray(types) && typeof types[i] === 'string' ? (types[i] as string) : 'PLA',
+      }));
+      setFilamentSlots(newSlots);
+    }
+  }, []);
 
   // Remove model from project
   const handleRemoveModel = useCallback((idx: number) => {

@@ -5,6 +5,7 @@ import path from 'node:path';
 import type { Db } from '../db/index.js';
 import { parseSTL, ensureDir, getModelsDir } from '../services/model-parser.js';
 import { parse3MF, writePositionsToSTL, countPlates } from '../services/threemf-parser.js';
+import { extractProjectSettings } from '../services/makerworld.js';
 
 const MAX_FACES = 1_500_000;
 
@@ -105,6 +106,17 @@ export async function register3MFModel(
       });
     }
 
+    // Capture embedded project_settings.config (filament_colour/type, printer
+    // profile, layer settings) — same path MakerWorld flow uses. Lets the
+    // frontend populate filament slots on ANY 3MF upload, not just MW imports.
+    const sourceSettings = await extractProjectSettings(buffer);
+    if (sourceSettings) {
+      db.updateModelSourceSettings(id, JSON.stringify(sourceSettings));
+      if (!db.getModel(id)?.source_type) {
+        db.updateModelSource(id, '3mf-bundle', null);
+      }
+    }
+
     return { id, name: filename, faceCount, bounds, plateCount };
   } catch (err) {
     fs.rmSync(modelDir, { recursive: true, force: true });
@@ -135,7 +147,15 @@ export async function modelRoutes(app: FastifyInstance, options: { db: Db }) {
     if (format === '3mf') {
       try {
         const result = await register3MFModel(buffer, filename, db);
-        return reply.send({ ok: true, data: result });
+        const stored = db.getModel(result.id);
+        return reply.send({
+          ok: true,
+          data: {
+            ...result,
+            hasSourceSettings: stored?.source_settings != null,
+            sourceType: stored?.source_type ?? null,
+          },
+        });
       } catch (err) {
         return reply.status(400).send({
           ok: false,
