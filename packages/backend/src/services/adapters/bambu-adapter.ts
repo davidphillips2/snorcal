@@ -339,8 +339,11 @@ export class BambuAdapter implements PrinterAdapter {
   }
 
   async uploadFile(localPath: string, filename: string): Promise<string> {
-    // Implicit FTPS on port 990, user bblp / access code
-    const client = new FtpClient(30000);
+    // Implicit FTPS on port 990, user bblp / access code.
+    // allowSeparateTransferHost: bambuddy / NAT proxies advertise the real
+    // printer IP in PASV replies, which differs from the control-connection
+    // host. basic-ftp rejects this by default; opt in explicitly.
+    const client = new FtpClient(30000, { allowSeparateTransferHost: true });
     try {
       await client.access({
         host: this.ip,
