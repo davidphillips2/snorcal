@@ -13,8 +13,16 @@ interface GcodePreviewCanvasProps {
   onLayerCountReady?: (count: number) => void;
 }
 
-// Tubes create ~100 vertices per segment; 100K segments ≈ 10M vertices ≈ OOM threshold
-const TUBE_SEGMENT_LIMIT = 100_000;
+// Tubes create ~100 vertices per segment; 100K segments ≈ 10M vertices ≈ OOM threshold.
+// Mobile Safari tabs crash past ~300MB — drop the limit aggressively there.
+const isMobile = typeof navigator !== 'undefined'
+  && /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+const isSmallScreen = typeof window !== 'undefined' && Math.min(window.innerWidth, window.innerHeight) < 600;
+const mobileOrSmall = isMobile || isSmallScreen;
+const TUBE_SEGMENT_LIMIT = mobileOrSmall ? 8_000 : 100_000;
+// Mobile cap on extrusion moves: above this, refuse to render preview and
+// show a warning instead of OOM-crashing the tab.
+const MOBILE_RENDER_LIMIT = 60_000;
 
 // OrcaSlicer-style line-type colors
 const TYPE_COLORS: Record<string, string> = {
@@ -149,8 +157,17 @@ export function GcodePreviewCanvas({
 
   const effectiveGcode = processed?.gcode ?? gcode;
 
+  // Mobile guard: bail out entirely if the gcode is large enough to OOM the tab.
+  // Bigger gcodes still parse fine on desktop.
+  const moveCount = useMemo(
+    () => effectiveGcode ? countExtrusionMoves(effectiveGcode) : 0,
+    [effectiveGcode],
+  );
+  const mobileBlocked = mobileOrSmall && moveCount > MOBILE_RENDER_LIMIT;
+
   useEffect(() => {
     if (!canvasRef.current) return;
+    if (mobileBlocked) return; // skip init entirely on mobile OOM risk
 
     const colors = extrusionColors?.length
       ? extrusionColors
@@ -193,11 +210,12 @@ export function GcodePreviewCanvas({
       preview.dispose();
       previewRef.current = null;
     };
-  }, [effectiveGcode, extrusionColors, buildVolume, processed]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [effectiveGcode, extrusionColors, buildVolume, processed, mobileBlocked]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     const preview = previewRef.current;
     if (!preview || !effectiveGcode) return;
+    if (mobileBlocked) return; // do not processGcode on mobile when over limit
 
     preview.clear();
     preview.processGCode(effectiveGcode);
@@ -205,7 +223,7 @@ export function GcodePreviewCanvas({
     preview.render();
 
     onLayerCountReady?.(preview.layers.length);
-  }, [effectiveGcode, onLayerCountReady]);
+  }, [effectiveGcode, onLayerCountReady, mobileBlocked]);
 
   useEffect(() => {
     const preview = previewRef.current;
@@ -222,11 +240,19 @@ export function GcodePreviewCanvas({
       <canvas
         ref={canvasRef}
         className="absolute inset-0 w-full h-full"
-        style={{ display: gcode ? 'block' : 'none' }}
+        style={{ display: (gcode && !mobileBlocked) ? 'block' : 'none' }}
       />
-      {!usingTubes && gcode && (
+      {!usingTubes && gcode && !mobileBlocked && (
         <div className="absolute bottom-2 left-1/2 -translate-x-1/2 bg-gray-900/80 text-gray-400 text-xs px-3 py-1 rounded pointer-events-none">
           Line mode (large gcode)
+        </div>
+      )}
+      {mobileBlocked && gcode && (
+        <div className="absolute inset-0 flex items-center justify-center p-6 text-center">
+          <div className="bg-gray-900/90 text-gray-300 text-sm px-4 py-3 rounded max-w-xs">
+            G-code preview disabled on this device to avoid crashing the tab.
+            Open on desktop to view.
+          </div>
         </div>
       )}
     </>
