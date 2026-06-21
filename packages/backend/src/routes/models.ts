@@ -23,6 +23,9 @@ export async function register3MFModel(
     fs.writeFileSync(originalPath, buffer);
 
     const plateData: { index: number; faceCount: number; bounds: { x: number; y: number; z: number }; positions: Float32Array; faceColors?: Uint8Array }[] = [];
+    // Collect negative parts during the parse loop, flush AFTER insertModel
+    // so the FK on model_negative_parts.model_id is satisfiable.
+    const negativeData: { plateIndex: number; partIndex: number; filePath: string; faceCount: number }[] = [];
 
     let faceCount = 0;
     let bounds = { x: 0, y: 0, z: 0 };
@@ -38,6 +41,22 @@ export async function register3MFModel(
 
       const platePath = path.join(modelDir, `plate_${p}.stl`);
       writePositionsToSTL(parsed.positions, platePath);
+
+      // Stage negative parts (cutters/modifiers) so the slice pipeline can
+      // re-emit them as Bambu negative volumes. Without this, MakerWorld
+      // imports lose their keyring holes / cutter cuts at slice time.
+      if (parsed.negativeParts && parsed.negativeParts.length > 0) {
+        parsed.negativeParts.forEach((np, i) => {
+          const negPath = path.join(modelDir, `negative_${p}_${i + 1}.stl`);
+          writePositionsToSTL(np.positions, negPath);
+          negativeData.push({
+            plateIndex: p,
+            partIndex: i + 1,
+            filePath: negPath,
+            faceCount: np.faceCount,
+          });
+        });
+      }
 
       plateData.push({ index: p, faceCount: parsed.faceCount, bounds: parsed.bounds, positions: parsed.positions, faceColors: parsed.faceColors ?? undefined });
 
@@ -74,6 +93,16 @@ export async function register3MFModel(
       if (pd.faceColors) {
         db.updatePlateColors(id, pd.index, Buffer.from(pd.faceColors));
       }
+    }
+
+    for (const nd of negativeData) {
+      db.insertNegativePart({
+        modelId: id,
+        plateIndex: nd.plateIndex,
+        partIndex: nd.partIndex,
+        filePath: nd.filePath,
+        faceCount: nd.faceCount,
+      });
     }
 
     return { id, name: filename, faceCount, bounds, plateCount };
@@ -182,7 +211,7 @@ export async function modelRoutes(app: FastifyInstance, options: { db: Db }) {
         faceCount: model.face_count,
         fileSize: model.file_size,
         bounds: { x: model.bounds_x, y: model.bounds_y, z: model.bounds_z },
-        hasColors: model.face_colors !== null,
+        hasColors: (model.face_colors !== null) || (db.getPlate(model.id, 1)?.face_colors != null),
         plateCount: model.plate_count,
         createdAt: model.created_at,
         sourceType: model.source_type ?? null,
@@ -214,33 +243,21 @@ export async function modelRoutes(app: FastifyInstance, options: { db: Db }) {
       return reply.status(404).send({ ok: false, error: 'Model not found' });
     }
 
-    const plateIndex = req.query.plate ? parseInt(req.query.plate) : undefined;
+    const plateIndex = req.query.plate ? parseInt(req.query.plate) : 1;
 
-    // Try per-plate colors first
-    if (plateIndex && plateIndex > 1 && model.plate_count > 1) {
-      const plate = db.getPlate(req.params.id, plateIndex);
-      if (plate?.face_colors) {
-        return { ok: true, data: { faceColors: Buffer.from(plate.face_colors).toString('base64') } };
-      }
-      return { ok: true, data: { faceColors: null } };
+    // Always prefer per-plate colors — register3MFModel saves there even for
+    // single-plate 3MF imports. Works for both single + multi plate.
+    const plate = db.getPlate(req.params.id, plateIndex);
+    if (plate?.face_colors) {
+      return { ok: true, data: { faceColors: Buffer.from(plate.face_colors).toString('base64') } };
     }
 
-    // Also check plate 1 from model_plates if it exists
-    if (model.plate_count > 1) {
-      const plate = db.getPlate(req.params.id, plateIndex ?? 1);
-      if (plate?.face_colors) {
-        return { ok: true, data: { faceColors: Buffer.from(plate.face_colors).toString('base64') } };
-      }
-      return { ok: true, data: { faceColors: null } };
+    // Backward compat: older single-plate uploads stored colors on the model row.
+    if (model.face_colors) {
+      return { ok: true, data: { faceColors: Buffer.from(model.face_colors).toString('base64') } };
     }
 
-    // Single-plate: use model-level colors (backward compat)
-    if (!model.face_colors) {
-      return { ok: true, data: { faceColors: null } };
-    }
-
-    const base64 = Buffer.from(model.face_colors).toString('base64');
-    return { ok: true, data: { faceColors: base64 } };
+    return { ok: true, data: { faceColors: null } };
   });
 
   // PUT /api/models/:id/colors — Save painted face colors (?plate=N for multi-plate)

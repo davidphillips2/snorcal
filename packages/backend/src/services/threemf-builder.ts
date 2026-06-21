@@ -36,6 +36,9 @@ interface ProcessedGeometry {
   vertices: Float32Array;
   indices: Uint32Array;
   faceCount: number;
+  /** Translation applied to place geometry on the build plate (3MF Z-up space).
+   *  Children (negative/modifier) reuse this so they track the parent. */
+  offset: { x: number; y: number; z: number };
 }
 
 interface ObjectDef {
@@ -71,17 +74,24 @@ export async function build3MF(input: ThreeMFBuildInput): Promise<Buffer> {
   // Process each model into 3MF objects (may split by extruder for painted models)
   const allObjects: ObjectDef[] = [];
   const firstObjIdByModelIndex = new Map<number, number>();
+  // Track each parent model's plate-centering offset so children (negatives /
+  // modifiers) can be translated by the same amount and stay glued to parent.
+  const offsetByModelIndex = new Map<number, { x: number; y: number; z: number }>();
   let nextId = 1;
 
   for (let mi = 0; mi < models.length; mi++) {
     const model = models[mi];
     const kind: ThreeMFObjectKind = model.kind ?? 'model';
     const name = model.name ?? `model_${mi}`;
-    const geo = processModelGeometry(model, buildVolume);
 
-    // Negative/modifier/support volumes never split by paint — single object
+    // Negative/modifier/support volumes never split by paint — single object.
+    // Skip plate-centering: reuse parent's offset so the cutter stays put
+    // relative to the parent mesh (otherwise the slicer sees the cutter
+    // floating somewhere unrelated, producing wrong layer counts / previews).
     if (kind === 'negative' || kind === 'modifier' || kind === 'support') {
       const parentId = model.linkedTo != null ? firstObjIdByModelIndex.get(model.linkedTo) : undefined;
+      const parentOffset = model.linkedTo != null ? offsetByModelIndex.get(model.linkedTo) : undefined;
+      const geo = processChildGeometry(model.stlPath, parentOffset);
       const id = nextId++;
       allObjects.push({
         id,
@@ -96,6 +106,9 @@ export async function build3MF(input: ThreeMFBuildInput): Promise<Buffer> {
       // Children don't go in the top-level <components>; they attach via parent
       continue;
     }
+
+    const geo = processModelGeometry(model, buildVolume);
+    offsetByModelIndex.set(mi, geo.offset);
 
     const paintData = processPaintColors(model.faceColors, geo.faceCount, colorToExtruder, defaultColor);
     const hasPaint = model.faceColors && model.faceColors.length > 0 && paintData.some(pc => pc !== null);
@@ -119,17 +132,10 @@ export async function build3MF(input: ThreeMFBuildInput): Promise<Buffer> {
   const paintedCount = allObjects.filter(o => o.paintData && o.paintData.some(p => p !== null)).length;
   console.log(`[threemf] models=${models.length} objects=${allObjects.length} painted=${paintedCount}`);
 
-  // Group children (negative/modifier) by parent object id
-  const childrenOf = new Map<number, ObjectDef[]>();
-  const topLevelObjects = allObjects.filter(o => o.parentId == null);
-  for (const child of allObjects) {
-    if (child.parentId == null) continue;
-    const arr = childrenOf.get(child.parentId) ?? [];
-    arr.push(child);
-    childrenOf.set(child.parentId, arr);
-  }
-
-  // Build 3MF XML
+  // Build 3MF XML. Wrapper object lists ALL parts (parent + negative/modifier
+  // children) as siblings via <components>. Nesting children inside the
+  // parent's <components> produces a non-spec mesh+components hybrid that
+  // OrcaSlicer silently mishandles.
   const topId = nextId;
   let modelXML = `<?xml version="1.0" encoding="UTF-8"?>
 <model unit="millimeter"
@@ -137,13 +143,13 @@ export async function build3MF(input: ThreeMFBuildInput): Promise<Buffer> {
   <resources>`;
 
   for (const obj of allObjects) {
-    modelXML += buildObjectXML(obj, childrenOf.get(obj.id));
+    modelXML += buildObjectXML(obj);
   }
 
-  // Top-level component object — references only parent-less objects
+  // Top-level component object — references every object (parent + children)
   modelXML += `\n    <object id="${topId}" type="model">
       <components>`;
-  for (const obj of topLevelObjects) {
+  for (const obj of allObjects) {
     modelXML += `\n        <component objectid="${obj.id}"/>`;
   }
   modelXML += `\n      </components>
@@ -157,7 +163,7 @@ export async function build3MF(input: ThreeMFBuildInput): Promise<Buffer> {
   // Build model_settings.config with per-object extruder assignments
   let modelSettingsXML = '';
   if (allObjects.some(o => o.extruder > 1) || allObjects.length > 1) {
-    modelSettingsXML = buildModelSettings(allObjects);
+    modelSettingsXML = buildModelSettings(allObjects, topId);
   }
 
   // Package into ZIP
@@ -253,7 +259,49 @@ function processModelGeometry(model: ThreeMFModelInput, buildVolume: { x: number
     vertices[i * 3 + 2] += offsetZ;
   }
 
-  return { vertices, indices, faceCount };
+  return { vertices, indices, faceCount, offset: { x: offsetX, y: offsetY, z: offsetZ } };
+}
+
+/**
+ * Apply a parent model's translation to a child mesh (negative/modifier) so
+ * the child tracks the parent across plate-centering + user offsets. Child
+ * geometry is expected to already be in 3MF Z-up space (i.e. read from STL
+ * written by writePositionsToSTL where Y/Z are already swapped).
+ */
+function applyParentOffset(vertices: Float32Array, offset: { x: number; y: number; z: number }): void {
+  for (let i = 0; i < vertices.length; i += 3) {
+    vertices[i] += offset.x;
+    vertices[i + 1] += offset.y;
+    vertices[i + 2] += offset.z;
+  }
+}
+
+/**
+ * Process a child mesh (negative/modifier) that must follow its parent's
+ * placement. Mirrors the Y-up → Z-up swap from processModelGeometry, then
+ * applies the parent's plate-centering offset (if any). Skips the parent's
+ * rotation/scale/mirror — children are stored pre-rotated in the parser.
+ */
+function processChildGeometry(stlPath: string, parentOffset?: { x: number; y: number; z: number }): ProcessedGeometry {
+  const rawPositions = readSTLPositions(stlPath);
+  const { vertices, indices } = deduplicateVertices(rawPositions);
+  const faceCount = indices.length / 3;
+  const vertexCount = vertices.length / 3;
+
+  // Convert Three.js Y-up to 3MF Z-up: (x, y, z) → (x, -z, y)
+  for (let i = 0; i < vertexCount; i++) {
+    const y = vertices[i * 3 + 1];
+    const z = vertices[i * 3 + 2];
+    vertices[i * 3 + 1] = -z;
+    vertices[i * 3 + 2] = y;
+  }
+
+  const offset = parentOffset ?? { x: 0, y: 0, z: 0 };
+  if (offset.x !== 0 || offset.y !== 0 || offset.z !== 0) {
+    applyParentOffset(vertices, offset);
+  }
+
+  return { vertices, indices, faceCount, offset };
 }
 
 // --- Paint color processing ---
@@ -299,9 +347,12 @@ function processPaintColors(
 // --- XML builders ---
 
 function kindTo3MFType(kind: ThreeMFObjectKind): string {
-  if (kind === 'negative') return 'negative_part';
-  if (kind === 'modifier') return 'modifier';
-  if (kind === 'support') return 'support_model';
+  // 3MF core spec only allows @type = "model" | "other" | "support".
+  // Bambu/Orca object roles (negative_part, modifier, support_model) live in
+  // model_settings.config via <part subtype="...">, NOT on the <object> tag.
+  // Emitting type="negative_part" makes OrcaSlicer reject the 3MF with
+  // "Found invalid object" at parse time.
+  if (kind === 'negative' || kind === 'modifier' || kind === 'support') return 'other';
   return 'model';
 }
 
@@ -312,7 +363,7 @@ function kindToPartSubtype(kind: ThreeMFObjectKind): string {
   return 'normal_part';
 }
 
-function buildObjectXML(obj: ObjectDef, children?: ObjectDef[]): string {
+function buildObjectXML(obj: ObjectDef): string {
   const vc = obj.vertices.length / 3;
   const fc = obj.indices.length / 3;
   let xml = `\n    <object id="${obj.id}" type="${kindTo3MFType(obj.kind)}">
@@ -333,27 +384,25 @@ function buildObjectXML(obj: ObjectDef, children?: ObjectDef[]): string {
   }
   xml += `\n        </triangles>
       </mesh>`;
-  if (children && children.length > 0) {
-    xml += `\n      <components>`;
-    for (const child of children) {
-      xml += `\n        <component objectid="${child.id}"/>`;
-    }
-    xml += `\n      </components>`;
-  }
   xml += `\n    </object>`;
   return xml;
 }
 
-function buildModelSettings(objects: ObjectDef[]): string {
+function buildModelSettings(objects: ObjectDef[], wrapperId: number): string {
+  // MW/BambuStudio convention: all parts nested under ONE wrapper <object>.
+  // OrcaSlicer keys negative-volume recognition off the wrapper's <part>
+  // subtypes — flat per-object entries (one <object> per part) confuse the
+  // boolean cut step and the slicer ends up treating the parent mesh as
+  // floating / unsliceable.
   let xml = `<?xml version="1.0" encoding="UTF-8"?>
-<config>`;
+<config>
+  <object id="${wrapperId}">`;
   for (const obj of objects) {
     const fc = obj.indices.length / 3;
+    // Negative/modifier/support parts use extruder="0" (BambuStudio sentinel
+    // for "no filament"); parent mesh uses its assigned extruder.
+    const partExtruder = obj.kind === 'model' ? obj.extruder : 0;
     xml += `
-  <object id="${obj.id}">
-    <metadata key="name" value="${obj.name}"/>
-    <metadata key="extruder" value="${obj.extruder}"/>
-    <metadata face_count="${fc}"/>
     <part id="${obj.id}" subtype="${kindToPartSubtype(obj.kind)}">
       <metadata key="name" value="${obj.name}"/>
       <metadata key="matrix" value="1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1"/>
@@ -362,6 +411,7 @@ function buildModelSettings(objects: ObjectDef[]): string {
       <metadata key="source_offset_x" value="0"/>
       <metadata key="source_offset_y" value="0"/>
       <metadata key="source_offset_z" value="0"/>
+      <metadata key="extruder" value="${partExtruder}"/>
       <mesh_stat face_count="${fc}" edges_fixed="0" degenerate_facets="0" facets_removed="0" facets_reversed="0" backwards_edges="0"/>`;
     if (obj.settings) {
       for (const [k, v] of Object.entries(obj.settings)) {
@@ -370,10 +420,11 @@ function buildModelSettings(objects: ObjectDef[]): string {
       }
     }
     xml += `
-    </part>
-  </object>`;
+    </part>`;
   }
-  xml += `\n</config>`;
+  xml += `
+  </object>
+</config>`;
   return xml;
 }
 

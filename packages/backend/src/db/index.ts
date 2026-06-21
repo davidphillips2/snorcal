@@ -187,6 +187,24 @@ export class Db {
       .run(colors, modelId, plateIndex);
   }
 
+  // --- Negative parts (cutters / modifiers captured at 3MF import) ---
+
+  insertNegativePart(part: {
+    modelId: string; plateIndex: number; partIndex: number;
+    filePath: string; faceCount: number;
+  }) {
+    this.db.prepare(`
+      INSERT INTO model_negative_parts (model_id, plate_index, part_index, file_path, face_count)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(part.modelId, part.plateIndex, part.partIndex, part.filePath, part.faceCount);
+  }
+
+  listNegativeParts(modelId: string, plateIndex: number): DbNegativePart[] {
+    return this.db.prepare(
+      'SELECT * FROM model_negative_parts WHERE model_id = ? AND plate_index = ? ORDER BY part_index',
+    ).all(modelId, plateIndex) as DbNegativePart[];
+  }
+
   // --- Spools ---
 
   listSpools(includeArchived = false): DbSpool[] {
@@ -355,6 +373,11 @@ export interface DbPlate {
   model_id: string; plate_index: number; file_path: string;
   face_count: number; bounds_x: number; bounds_y: number; bounds_z: number;
   face_colors: Buffer | null;
+}
+
+export interface DbNegativePart {
+  model_id: string; plate_index: number; part_index: number;
+  file_path: string; face_count: number;
 }
 
 export interface DbPrinter {

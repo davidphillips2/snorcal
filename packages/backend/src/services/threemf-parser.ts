@@ -10,6 +10,16 @@ export interface Parse3MFResult {
   faceColors: Uint8Array | null;
   faceCount: number;
   bounds: Bounds;
+  /** Non-printable parts (cutters, modifiers) collected separately so the
+   *  slice pipeline can re-emit them as Bambu negative volumes. Geometry is
+   *  already Y-up + transforms applied, same convention as `positions`. */
+  negativeParts?: NegativePart[];
+}
+
+export interface NegativePart {
+  /** Non-indexed positions: 9 floats per face (Y-up, transforms applied) */
+  positions: Float32Array;
+  faceCount: number;
 }
 
 interface MeshEntry {
@@ -79,6 +89,7 @@ export async function parse3MF(buffer: Buffer, plateNumber?: number): Promise<Pa
   // Collect all meshes — either inline or via external component references
   const objects = toArray(resources.object);
   const meshEntries: MeshEntry[] = [];
+  const negativeEntries: MeshEntry[] = [];
   // Cache for external model files to avoid re-parsing
   const extFileCache = new Map<string, any>();
 
@@ -105,6 +116,7 @@ export async function parse3MF(buffer: Buffer, plateNumber?: number): Promise<Pa
     const components = obj.components;
     if (components) {
       const entryStartIdx = meshEntries.length;
+      const negStartIdx = negativeEntries.length;
       const componentList = toArray(components.component);
       for (const comp of componentList) {
         const extPath = comp['@_p:path'];
@@ -140,15 +152,21 @@ export async function parse3MF(buffer: Buffer, plateNumber?: number): Promise<Pa
         if (targetObjId) {
           const extObj = extObjects.find((o: any) => String(o['@_id']) === targetObjId);
           if (extObj?.mesh) {
+            const partKey = `${objId}:${targetObjId}`;
+            const subtype = modelSettings.partSubtypes.get(partKey);
+            // Route non-printable parts (cutters, modifiers, support painters)
+            // into a separate bucket so they can be re-emitted as Bambu
+            // negative volumes at slice time rather than merged into the
+            // printable mesh.
+            const isNegative = subtype === 'negative_part'
+              || subtype === 'modifier'
+              || subtype === 'support_model';
             const result = parseMesh(extObj);
             if (result) {
-              // Apply component transform
               if (transform) applyTransform(result.positions, transform);
-              // Look up extruder for this part (keyed by objectid_in_main → part id)
-              const partKey = `${objId}:${targetObjId}`;
               result.extruder = modelSettings.partExtruders.get(partKey)
                 ?? modelSettings.objectExtruders.get(objId);
-              meshEntries.push(result);
+              (isNegative ? negativeEntries : meshEntries).push(result);
             }
           }
         } else {
@@ -166,11 +184,18 @@ export async function parse3MF(buffer: Buffer, plateNumber?: number): Promise<Pa
         }
       }
 
-      // Apply build item transform (scale/translation from <build><item>) to all entries from this object
+      // Apply build item transform (scale/translation from <build><item>) to all
+      // entries from this object. Must include negativeEntries too — otherwise
+      // cutters/modifiers stay in object-local coords while the parent mesh is
+      // shifted to plate-space, so the slicer sees cutters floating outside
+      // the build volume ("nothing fully inside print volume").
       const itemTransform = buildItemTransforms.get(objId);
       if (itemTransform) {
         for (let i = entryStartIdx; i < meshEntries.length; i++) {
           applyTransform(meshEntries[i].positions, itemTransform);
+        }
+        for (let i = negStartIdx; i < negativeEntries.length; i++) {
+          applyTransform(negativeEntries[i].positions, itemTransform);
         }
       }
     }
@@ -265,9 +290,28 @@ export async function parse3MF(buffer: Buffer, plateNumber?: number): Promise<Pa
     if (z < minZ) minZ = z; if (z > maxZ) maxZ = z;
   }
 
+  // Merge negative entries — Y/Z swap applied per entry, same convention as main.
+  const negativeParts: NegativePart[] = [];
+  for (const entry of negativeEntries) {
+    const positions = new Float32Array(entry.triCount * 9);
+    for (let i = 0; i < entry.triCount; i++) {
+      const src = i * 9;
+      const dst = i * 9;
+      for (let v = 0; v < 3; v++) {
+        const sv = src + v * 3;
+        const dv = dst + v * 3;
+        positions[dv] = entry.positions[sv];
+        positions[dv + 1] = entry.positions[sv + 2];
+        positions[dv + 2] = entry.positions[sv + 1];
+      }
+    }
+    negativeParts.push({ positions, faceCount: entry.triCount });
+  }
+
   return {
     positions: allPositions,
     faceColors: hasAnyColor ? allColors : null,
+    negativeParts: negativeParts.length > 0 ? negativeParts : undefined,
     faceCount: totalFaces,
     bounds: {
       x: Math.abs(maxX - minX),
@@ -282,6 +326,8 @@ interface ModelSettings {
   objectExtruders: Map<string, number>;
   /** "mainObjId:partId" → extruder (from part-level metadata) */
   partExtruders: Map<string, number>;
+  /** "mainObjId:partId" → subtype (normal_part, negative_part, modifier, support_model) */
+  partSubtypes: Map<string, string>;
   /** plate number → set of object IDs on that plate */
   plates: Map<number, Set<string>>;
 }
@@ -293,6 +339,7 @@ async function parseModelSettings(zip: JSZip, parser: XMLParser): Promise<ModelS
   const result: ModelSettings = {
     objectExtruders: new Map(),
     partExtruders: new Map(),
+    partSubtypes: new Map(),
     plates: new Map(),
   };
 
@@ -322,6 +369,8 @@ async function parseModelSettings(zip: JSZip, parser: XMLParser): Promise<ModelS
       const parts = toArray(obj.part);
       for (const part of parts) {
         const partId = String(part['@_id'] || '');
+        const subtype = String(part['@_subtype'] || '');
+        if (subtype) result.partSubtypes.set(`${objId}:${partId}`, subtype);
         const partMetas = toArray(part.metadata);
         for (const m of partMetas) {
           if (m['@_key'] === 'extruder') {

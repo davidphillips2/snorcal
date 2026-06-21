@@ -218,6 +218,22 @@ export function runSchemaMigrations(db: Database.Database) {
     `);
   } catch { /* already exists */ }
 
+  // Negative parts (cutters / modifiers) captured per plate at 3MF import.
+  // Re-emitted as Bambu negative volumes during slice so the slicer applies
+  // boolean cuts at slice time.
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS model_negative_parts (
+        model_id TEXT NOT NULL REFERENCES models(id) ON DELETE CASCADE,
+        plate_index INTEGER NOT NULL,
+        part_index INTEGER NOT NULL,
+        file_path TEXT NOT NULL,
+        face_count INTEGER NOT NULL,
+        PRIMARY KEY (model_id, plate_index, part_index)
+      )
+    `);
+  } catch { /* already exists */ }
+
   // app_settings — key/value, runtime-editable (e.g. bambu_cloud_token)
   try {
     db.exec(`

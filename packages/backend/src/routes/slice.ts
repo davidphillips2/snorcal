@@ -533,6 +533,9 @@ function runSliceDirect(
 
       // Build index of model entry → its position in the array, so children can reference parents
       const modelIdToIndex = new Map<string, number>();
+      // Track parent model IDs by their index in buildModels so negative parts
+      // can be appended after their parent without upsetting the index mapping.
+      const parentModelIds: (string | undefined)[] = [];
 
       if (body.models && body.models.length > 0) {
         // Multi-model: resolve each model's STL path and face colors
@@ -551,6 +554,7 @@ function runSliceDirect(
             faceColors = rec?.face_colors ? new Uint8Array(rec.face_colors) : undefined;
           }
           if (entry.modelId) modelIdToIndex.set(entry.modelId, mi);
+          parentModelIds[mi] = entry.modelId;
           const { linkedTo: linkedToIds, ...rest } = entry;
           return {
             ...rest,
@@ -586,6 +590,29 @@ function runSliceDirect(
           faceColors = modelRecord?.face_colors ? new Uint8Array(modelRecord.face_colors) : undefined;
         }
         buildModels = [{ stlPath, faceColors, rotation: body.rotation, positionOffset: body.positionOffset }];
+        parentModelIds[0] = body.modelId;
+      }
+
+      // Append negative parts (cutters/modifiers) captured at import time as
+      // children of their parent model. Slicer applies boolean cut at slice
+      // time. Without this, MakerWorld imports lose keyring holes etc.
+      const plateIndexForNegatives = body.plateIndex ?? 1;
+      const negativeChildren: ThreeMFModelInput[] = [];
+      for (let pi = 0; pi < buildModels.length; pi++) {
+        const parentModelId = parentModelIds[pi];
+        if (!parentModelId) continue;
+        const negParts = db.listNegativeParts(parentModelId, plateIndexForNegatives);
+        negParts.forEach((np, ni) => {
+          negativeChildren.push({
+            stlPath: np.file_path,
+            kind: 'negative',
+            linkedTo: pi,
+            name: `negative_${pi + 1}_${ni + 1}`,
+          });
+        });
+      }
+      if (negativeChildren.length > 0) {
+        buildModels = [...buildModels, ...negativeChildren];
       }
 
       console.log(`[slice] models=${buildModels.length} filament_colour=${JSON.stringify(projectSettings['filament_colour'])}`);
