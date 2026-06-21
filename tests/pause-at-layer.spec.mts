@@ -1,12 +1,26 @@
 import { test, expect } from '@playwright/test';
 
 // Verifies pause toggle UI: open a completed job's gcode preview, click pause,
-// confirm amber marker + sidecar generated.
+// confirm amber marker + sidecar generated. Job-agnostic: picks the first
+// completed job from the backend so the test works on any data state.
 test('pause toggle injects gcode sidecar', async ({ page }) => {
-  test.setTimeout(90000);
+  test.setTimeout(120000);
 
-  page.on('console', msg => console.log(`[${msg.type()}]`, msg.text()));
   page.on('pageerror', err => console.log('[PAGEERROR]', err.message));
+
+  // --- Setup: pick a completed job + ensure clean pause state ---
+  const setupRes = await fetch('http://localhost:3000/api/jobs?status=completed');
+  const setupJson = await setupRes.json();
+  const completed = setupJson.data as Array<{ id: string }>;
+  expect(completed.length, 'need at least one completed job').toBeGreaterThan(0);
+  const jobId = completed[0].id;
+
+  // Clear any leftover pauses from prior runs
+  await fetch(`http://localhost:3000/api/jobs/${jobId}/pauses`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ pauses: [] }),
+  });
 
   await page.goto('http://localhost:5173');
   await page.waitForTimeout(2000);
@@ -25,58 +39,60 @@ test('pause toggle injects gcode sidecar', async ({ page }) => {
   await previewBtn.waitFor({ state: 'visible', timeout: 5000 });
   await previewBtn.click();
 
-  // Gcode fetch + parse can take 5-15s for big files
-  // Wait for the pause button (which only renders after slider appears)
-  await page.locator('button:has-text("Pause")').first().waitFor({ state: 'visible', timeout: 60000 });
+  // Gcode fetch + parse can take 5-15s for big files.
+  // Wait for the slider to appear (only renders after parser sets layer count).
+  await page.locator('input[type="range"]').first().waitFor({ state: 'visible', timeout: 60000 });
 
-  // Move slider to a low layer (default is max = last layer, often out of range).
-  // Use arrow-key presses — Playwright's fill() on range inputs doesn't reliably
-  // fire React's onChange in all setups.
+  // Move slider to layer 10 (default is max = last layer, often out of range).
+  // React's onChange fires from native input events — set value via the
+  // prototype setter (React monkey-patches it) then dispatch input + change.
   const slider = page.locator('input[type="range"]').first();
-  await slider.focus();
-  // Press Home to go to layer 0, then 10 arrow-ups to reach layer 10
-  await page.keyboard.press('Home');
-  for (let i = 0; i < 10; i++) await page.keyboard.press('ArrowRight');
+  await slider.evaluate((el: HTMLInputElement, val) => {
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+    setter.call(el, String(val));
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+  }, 10);
   await page.waitForTimeout(500);
+
+  // Assert layer counter reflects the move (defends against silent nav failure)
+  await expect(page.locator('text=L11/').first()).toBeVisible({ timeout: 5000 });
 
   await page.screenshot({ path: 'tests/30-pause-before.png' });
 
-  // Click pause at current layer
-  const pauseBtn = page.locator('button:has-text("Pause")').first();
-  await pauseBtn.click();
+  // Click pause at current layer.
+  // Dispatch click via evaluate: Playwright's click() re-queries the locator
+  // post-click, but the button text mutates "+ Pause" → "⏸ ON", so the
+  // re-query fails and click() never resolves.
+  await page.evaluate(() => {
+    const btn = [...document.querySelectorAll('button')].find(b => b.textContent?.includes('Pause'));
+    if (!btn) throw new Error('pause button not found');
+    btn.click();
+  });
   await page.waitForTimeout(2500);
 
   await page.screenshot({ path: 'tests/31-pause-after.png' });
 
-  // Verify sidecar was generated + pause injected by hitting GET endpoint
-  const after = await page.evaluate(async () => {
-    const r = await fetch('/api/jobs/e15bb287-c635-4b7e-829e-d0f488f7ee47/pauses');
-    return r.json();
-  });
+  // Verify sidecar was generated via backend API (jobId is dynamic)
+  const apiBase = 'http://localhost:3000/api';
+  const after = await (await fetch(`${apiBase}/jobs/${jobId}/pauses`)).json();
   expect(after.data.length).toBe(1);
+  expect(after.data[0].layer).toBe(10);
 
   // Download paused gcode and confirm pause markers present
-  const pausedGcode = await page.evaluate(async () => {
-    const r = await fetch('/api/files/gcode/e15bb287-c635-4b7e-829e-d0f488f7ee47?paused=1');
-    return r.text();
-  });
+  const pausedGcode = await (await fetch(`${apiBase}/files/gcode/${jobId}?paused=1`)).text();
   expect(pausedGcode).toContain('snorcal pause');
 
-  // Clear via API (button-toggle-off is flaky via selector)
-  await page.evaluate(async () => {
-    await fetch('/api/jobs/e15bb287-c635-4b7e-829e-d0f488f7ee47/pauses', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ pauses: [] }),
-    });
+  // Clear via API
+  await fetch(`${apiBase}/jobs/${jobId}/pauses`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ pauses: [] }),
   });
   await page.waitForTimeout(1000);
 
   // Confirm cleared
-  const cleared = await page.evaluate(async () => {
-    const r = await fetch('/api/jobs/e15bb287-c635-4b7e-829e-d0f488f7ee47/pauses');
-    return r.json();
-  });
+  const cleared = await (await fetch(`${apiBase}/jobs/${jobId}/pauses`)).json();
   expect(cleared.data.length).toBe(0);
 
   await page.screenshot({ path: 'tests/32-pause-cleared.png' });

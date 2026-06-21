@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test';
 
 test('gcode preview batman with gcode-preview library', async ({ page }) => {
-  test.setTimeout(60000);
+  test.setTimeout(90000);
   page.on('console', msg => {
     if (msg.type() === 'error') console.log('CONSOLE ERROR:', msg.text());
   });
@@ -9,18 +9,23 @@ test('gcode preview batman with gcode-preview library', async ({ page }) => {
   await page.goto('http://localhost:5173');
   await page.waitForTimeout(2000);
 
-  await page.locator('button:has-text("Snapmaker U1")').click();
-  await page.waitForTimeout(3000);
+  // Slice view + sidebar Jobs panel (matches pause-at-layer test flow).
+  // Skip onboarding: backend should already have a registered printer.
+  await page.locator('button:has-text("slice")').first().click();
+  await page.waitForTimeout(1500);
 
-  // Open Jobs panel
-  await page.locator('button:has-text("Jobs")').click();
-  await page.waitForTimeout(500);
+  // Expand Jobs (N) section in sidebar
+  await page.locator('button').filter({ hasText: /^Jobs \(\d+\)/ }).first().click();
+  await page.waitForTimeout(800);
 
-  // Click Preview
-  const previewBtn = page.locator('button').filter({ hasText: 'Preview' }).first();
+  // Click Preview on first completed job
+  const previewBtn = page.locator('button:has-text("Preview")').first();
   await previewBtn.waitFor({ state: 'visible', timeout: 5000 });
   await previewBtn.click();
-  await page.waitForTimeout(8000);
+
+  // Wait for slider to appear (gcode fetched + parsed)
+  await page.locator('input[type="range"]').first().waitFor({ state: 'visible', timeout: 60000 });
+  await page.waitForTimeout(2000);
 
   // Screenshot initial state (all layers)
   await page.screenshot({ path: 'tests/11-gcode-preview-initial.png', fullPage: false });
@@ -31,8 +36,15 @@ test('gcode preview batman with gcode-preview library', async ({ page }) => {
   await page.screenshot({ path: 'tests/12-gcode-preview-single-layer.png', fullPage: false });
 
   // Test vertical slider - move to layer 50
+  // React's onChange fires from native input events — set value + dispatch
+  // both 'input' and 'change' so the SyntheticEvent fires reliably.
   const slider = page.locator('input[type="range"]').first();
-  await slider.fill('50');
+  await slider.evaluate((el: HTMLInputElement, val) => {
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+    setter.call(el, String(val));
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+  }, 50);
   await page.waitForTimeout(500);
   await page.screenshot({ path: 'tests/13-gcode-preview-layer50.png', fullPage: false });
 

@@ -105,9 +105,8 @@ export interface PausePoint {
 }
 
 export async function getJobPauses(jobId: string): Promise<PausePoint[]> {
-  const r = await apiFetch(`/jobs/${jobId}/pauses`);
-  const j = await r.json();
-  return j?.data ?? [];
+  const data = await apiFetch(`/jobs/${jobId}/pauses`);
+  return Array.isArray(data) ? data : [];
 }
 
 export async function setJobPauses(
@@ -115,12 +114,11 @@ export async function setJobPauses(
   pauses: PausePoint[],
   protocol?: 'moonraker' | 'bambu' | 'snapmaker',
 ) {
-  const r = await apiFetch(`/jobs/${jobId}/pauses`, {
+  return apiFetch(`/jobs/${jobId}/pauses`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ pauses, protocol }),
   });
-  return r.json();
 }
 
 export function getThreemfUrl(jobId: string) {
