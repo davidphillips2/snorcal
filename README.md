@@ -229,4 +229,6 @@ Backup: `docker compose stop app && tar czf snorcal-backup.tgz /var/lib/docker/v
 
 ## License
 
-TBD.
+GNU Affero General Public License v3.0 or later ([AGPL-3.0-or-later](https://spdx.org/licenses/AGPL-3.0-or-later.html)). See [LICENSE](LICENSE).
+
+In short: you can run, study, and modify Snorcal, including commercially, but **any derivative service you expose over the network must publish its full source code** under the same license.
