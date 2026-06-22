@@ -327,7 +327,7 @@ export async function sliceRoutes(app: FastifyInstance, options: { db: Db }) {
   });
 
   // POST /api/jobs/:id/pauses — Store + inject manual pauses
-  // Body: { pauses: PausePoint[], protocol?: 'moonraker'|'bambu'|'snapmaker' }
+  // Body: { pauses: PausePoint[], protocol?: 'moonraker'|'bambu' }
   // Side effects:
   //   - Writes pauses.json sidecar next to job output
   //   - Regenerates <name>.paused.gcode with pause blocks injected
@@ -346,14 +346,14 @@ export async function sliceRoutes(app: FastifyInstance, options: { db: Db }) {
     ) : [];
 
     // Resolve protocol: body > job's printer > default moonraker
-    let protocol = body?.protocol as 'moonraker' | 'bambu' | 'snapmaker' | undefined;
+    let protocol = body?.protocol as 'moonraker' | 'bambu' | undefined;
     if (!protocol) {
       if (job.printer_id) {
         const printer = db.getPrinter(job.printer_id);
-        if (printer?.protocol) protocol = printer.protocol as 'moonraker' | 'bambu' | 'snapmaker';
+        if (printer?.protocol) protocol = printer.protocol as 'moonraker' | 'bambu';
       }
     }
-    if (!protocol || !['moonraker', 'bambu', 'snapmaker'].includes(protocol)) {
+    if (!protocol || !['moonraker', 'bambu'].includes(protocol)) {
       protocol = 'moonraker';
     }
 

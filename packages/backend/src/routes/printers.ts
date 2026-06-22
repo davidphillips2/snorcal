@@ -211,11 +211,8 @@ export async function printerRoutes(app: FastifyInstance, options: { db: Db }) {
     if (body.protocol === 'bambu' && (!body.serial || !body.accessCode)) {
       return reply.status(400).send({ ok: false, error: 'serial and accessCode required for bambu' });
     }
-    if (body.protocol === 'snapmaker' && !body.accessCode) {
-      return reply.status(400).send({ ok: false, error: 'accessCode required for snapmaker (LAN code on touchscreen)' });
-    }
     const id = randomUUID();
-    const port = body.port ?? (body.protocol === 'bambu' ? 8883 : body.protocol === 'snapmaker' ? 8883 : 7125);
+    const port = body.port ?? (body.protocol === 'bambu' ? 8883 : 7125);
     db.insertPrinter({
       id, name: body.name, protocol: body.protocol, ip: body.ip, port,
       serial: body.serial, access_code: body.accessCode, api_key: body.apiKey,
@@ -266,7 +263,27 @@ export async function printerRoutes(app: FastifyInstance, options: { db: Db }) {
 
   // GET /api/printers/models — unique machine family names across all known engines.
   // Strips nozzle variants ("0.4 nozzle", "(0.6 nozzle)") so each printer model
-  // appears once regardless of nozzle options.
+  // appears once regardless of nozzle options. Merges DB-loaded slicer profiles
+  // with a built-in list of common printers so the picker isn't sparse when the
+  // sidecar hasn't indexed many profiles.
+  const BUILTIN_PRINTER_MODELS = [
+    // Bambu Lab
+    'Bambu Lab X1 Carbon', 'Bambu Lab X1E', 'Bambu Lab P1S', 'Bambu Lab P1P',
+    'Bambu Lab A1', 'Bambu Lab A1 mini', 'Bambu Lab H2D',
+    // Voron
+    'Voron 2.4', 'Voron Trident', 'Voron 0.2', 'Voron Switchwire',
+    // RatRig
+    'RatRig V-Core 3', 'RatRig V-Core 4', 'RatRig V-Minion',
+    // Creality
+    'Creality Ender 3', 'Creality Ender 3 V3', 'Creality K1', 'Creality K1 Max', 'Creality CR-10',
+    // Snapmaker
+    'Snapmaker U1', 'Snapmaker J1', 'Snapmaker J1s', 'Snapmaker Artisan', 'Snapmaker 2.0 A350T',
+    // Prusa
+    'Prusa MK4', 'Prusa MK3S+', 'Prusa XL', 'Prusa MINI+',
+    // Sofabedfox / Anycubic / Anker / Elegoo
+    'Sofabedfox Galaxy', 'Anycubic Kobra 2', 'Anycubic Kobra 3', 'AnkerMake M5',
+    'Elegoo Neptune 4', 'Elegoo Centauri Carbon',
+  ];
   app.get('/api/printers/models', async (_req, reply) => {
     const engines = ['orcaslicer', 'bambustudio'];
     const seen = new Set<string>();
@@ -286,6 +303,9 @@ export async function printerRoutes(app: FastifyInstance, options: { db: Db }) {
           }
         }
       } catch {}
+    }
+    for (const m of BUILTIN_PRINTER_MODELS) {
+      if (!seen.has(m)) { seen.add(m); out.push(m); }
     }
     out.sort((a, b) => a.localeCompare(b));
     return reply.send({ ok: true, data: out });

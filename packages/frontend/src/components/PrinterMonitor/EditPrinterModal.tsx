@@ -52,7 +52,6 @@ export function EditPrinterModal({ printer, onClose, onSaved }: Props) {
   };
 
   const isBambu = printer.protocol === 'bambu';
-  const isSnapmaker = printer.protocol === 'snapmaker';
 
   return (
     <div className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-4">
@@ -80,14 +79,14 @@ export function EditPrinterModal({ printer, onClose, onSaved }: Props) {
           </Field>
         </div>
 
-        {(isBambu || isSnapmaker) && (
-          <Field label={isBambu ? 'LAN Access Code' : 'LAN Access Code (Snapmaker)'}>
+        {isBambu && (
+          <Field label="LAN Access Code">
             <input value={accessCode} onChange={(e) => setAccessCode(e.target.value)}
               className="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-white" />
           </Field>
         )}
 
-        {!isBambu && !isSnapmaker && (
+        {!isBambu && (
           <Field label="API key (optional)">
             <input value={apiKey} onChange={(e) => setApiKey(e.target.value)}
               className="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-white" />

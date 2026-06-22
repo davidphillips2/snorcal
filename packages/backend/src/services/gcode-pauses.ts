@@ -28,7 +28,7 @@ export interface PausePoint {
 }
 
 export interface InjectOptions {
-  protocol: 'moonraker' | 'bambu' | 'snapmaker';
+  protocol: 'moonraker' | 'bambu';
 }
 
 const LAYER_CHANGE_RE = /^;LAYER_CHANGE\b/;

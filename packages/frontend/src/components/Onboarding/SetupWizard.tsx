@@ -9,12 +9,11 @@ interface Props {
 
 type Step = 'welcome' | 'protocol' | 'discover' | 'credentials' | 'test';
 
-type Prot = 'moonraker' | 'bambu' | 'snapmaker';
+type Prot = 'moonraker' | 'bambu';
 
 const PROT_DEFAULT_PORT: Record<Prot, number> = {
   moonraker: 7125,
   bambu: 8883,
-  snapmaker: 8883,
 };
 
 export function SetupWizard({ onClose, onAdded }: Props) {
@@ -29,7 +28,7 @@ export function SetupWizard({ onClose, onAdded }: Props) {
   const [modelChoice, setModelChoice] = useState<string>('');
   const [modelCustom, setModelCustom] = useState<string>('');
   const [availableModels, setAvailableModels] = useState<string[]>([]);
-  const [manualSlots, setManualSlots] = useState<number>(4);      // snapmaker U1 default = 4; moonraker can override
+  const [manualSlots, setManualSlots] = useState<number>(0);
 
   const [scanning, setScanning] = useState(false);
   const [discovered, setDiscovered] = useState<DiscoveredDevice[]>([]);
@@ -61,7 +60,6 @@ export function SetupWizard({ onClose, onAdded }: Props) {
     setIp(d.ip);
     setPort(d.port);
     if (d.st === 'bambu-lan') setProtocol('bambu');
-    else if (d.st === 'snapmaker') setProtocol('snapmaker');
     else if (d.st === 'moonraker') setProtocol('moonraker');
     if (!name) setName(d.friendlyName || `Printer ${d.ip}`);
     setStep('credentials');
@@ -88,10 +86,6 @@ export function SetupWizard({ onClose, onAdded }: Props) {
       setError('Bambu requires serial and access code');
       return;
     }
-    if (protocol === 'snapmaker' && !accessCode.trim()) {
-      setError('Snapmaker requires LAN access code');
-      return;
-    }
     setSubmitting(true);
     try {
       await api.createPrinter({
@@ -103,7 +97,7 @@ export function SetupWizard({ onClose, onAdded }: Props) {
         accessCode: accessCode.trim() || undefined,
         apiKey: apiKey.trim() || undefined,
         model: modelChoice === '__other__' ? modelCustom.trim() : (modelChoice || undefined),
-        manualSlots: protocol === 'snapmaker' || protocol === 'moonraker' ? manualSlots : undefined,
+        manualSlots: protocol === 'moonraker' ? manualSlots : undefined,
       });
       onAdded();
     } catch (e) {
@@ -168,11 +162,6 @@ export function SetupWizard({ onClose, onAdded }: Props) {
                 <div className="text-sm font-medium text-white">Bambu Lab (LAN)</div>
                 <div className="text-xs text-gray-400 mt-1">X1, P1, A1 series. Needs LAN access code + serial. Port 8883 default.</div>
               </button>
-              <button onClick={() => { setProtocol('snapmaker'); setStep('discover'); }}
-                className="w-full text-left p-4 bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded-lg">
-                <div className="text-sm font-medium text-white">Snapmaker (LAN)</div>
-                <div className="text-xs text-gray-400 mt-1">J1, Artisan, U1, J1S. mTLS via touchscreen LAN access code. Port 8883 default.</div>
-              </button>
               <p className="text-[11px] text-gray-500">
                 Don't see yours? OctoPrint / Repetier / Duet support coming in Phase 5.
               </p>
@@ -216,10 +205,6 @@ export function SetupWizard({ onClose, onAdded }: Props) {
                   className={`flex-1 px-3 py-1.5 rounded text-xs ${protocol === 'bambu' ? 'bg-blue-600 text-white' : 'bg-gray-800 text-gray-400'}`}>
                   Bambu Lab
                 </button>
-                <button onClick={() => setProtocol('snapmaker')}
-                  className={`flex-1 px-3 py-1.5 rounded text-xs ${protocol === 'snapmaker' ? 'bg-blue-600 text-white' : 'bg-gray-800 text-gray-400'}`}>
-                  Snapmaker
-                </button>
               </div>
               <Field label="Printer name">
                 <input value={name} onChange={e => setName(e.target.value)} placeholder="My Printer"
@@ -258,24 +243,6 @@ export function SetupWizard({ onClose, onAdded }: Props) {
                   </Field>
                   <p className="text-[11px] text-gray-500">
                     Find on printer LCD: Settings → Network → LAN Access Code.
-                  </p>
-                </>
-              )}
-
-              {protocol === 'snapmaker' && (
-                <>
-                  <Field label="LAN access code">
-                    <input value={accessCode} onChange={e => setAccessCode(e.target.value)} placeholder="touchscreen code" className={inputCls} />
-                  </Field>
-                  <Field label="Direct-feed spool count">
-                    <input type="number" min={0} max={8} value={manualSlots}
-                      onChange={e => setManualSlots(Math.max(0, Math.min(8, Number(e.target.value) || 0)))}
-                      className={inputCls} />
-                  </Field>
-                  <p className="text-[11px] text-gray-500">
-                    On printer touchscreen: Settings → LAN → LAN Access Code. Snorcal bootstraps mTLS to your printer using this code.
-                    <br />Spool count = how many direct-feed slots the printer has (U1 = 4). Used at print
-                    time to remap gcode T-codes — printer has no readable slot state.
                   </p>
                 </>
               )}

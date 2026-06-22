@@ -940,7 +940,7 @@ export default function App() {
     try {
       // Resolve protocol from selected printer if any
       const printer = printers.find(p => p.id === targetPrinterId);
-      await api.setJobPauses(previewJobId, next, printer?.protocol as 'moonraker' | 'bambu' | 'snapmaker' | undefined);
+      await api.setJobPauses(previewJobId, next, printer?.protocol as 'moonraker' | 'bambu' | undefined);
     } catch (err) {
       // Revert on failure
       setJobPauses(jobPauses);
@@ -1801,7 +1801,7 @@ export default function App() {
           <FilamentRemapModal
             jobId={remapJobId}
             printerId={targetPrinterId}
-            printerProtocol={p.protocol as 'moonraker' | 'bambu' | 'snapmaker'}
+            printerProtocol={p.protocol as 'moonraker' | 'bambu'}
             printerManualSlots={p.manualSlots ?? 0}
             printerStatus={printerStatuses[targetPrinterId]}
             onClose={() => setRemapJobId(null)}

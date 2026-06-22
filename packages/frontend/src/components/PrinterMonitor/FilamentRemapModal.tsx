@@ -6,7 +6,7 @@ import type { AmsSlot, PrinterStatus } from '@snorcal/shared';
 interface Props {
   jobId: string;
   printerId: string;
-  printerProtocol: 'moonraker' | 'bambu' | 'snapmaker';
+  printerProtocol: 'moonraker' | 'bambu';
   printerManualSlots: number;
   printerStatus: PrinterStatus | undefined;
   onClose: () => void;
@@ -175,7 +175,7 @@ export function FilamentRemapModal({
 }
 
 function buildSlots(
-  protocol: 'moonraker' | 'bambu' | 'snapmaker',
+  protocol: 'moonraker' | 'bambu',
   manualSlots: number,
   ams: AmsSlot[] | undefined,
 ): Slot[] {

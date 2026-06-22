@@ -97,8 +97,7 @@ function discoverMdns(timeoutMs: number): Promise<DiscoveredDevice[]> {
   return new Promise((resolve) => {
     const isMac = process.platform === 'darwin';
     const cmd = isMac ? 'dns-sd' : 'avahi-browse';
-    // Browse both standard printer service and Snapmaker's custom service
-    const services = ['_printer._tcp', '_snapmaker._tcp'];
+    const services = ['_printer._tcp'];
 
     const results: DiscoveredDevice[] = [];
     let remaining = services.length;
@@ -111,14 +110,6 @@ function discoverMdns(timeoutMs: number): Promise<DiscoveredDevice[]> {
       const child = execFile(cmd, args, { timeout: timeoutMs + 2000 }, (err, stdout, stderr) => {
         const output = isMac ? (stderr || '') + (stdout || '') : (stdout || '');
         const parsed = parseMdnsOutput(output, isMac, svc);
-        // Tag Snapmaker service entries explicitly
-        if (svc === '_snapmaker._tcp') {
-          for (const d of parsed) {
-            d.st = 'snapmaker';
-            d.usn = `snapmaker:${d.friendlyName}`;
-            if (!d.server || d.server === 'mDNS/Bonjour') d.server = 'Snapmaker (mDNS)';
-          }
-        }
         results.push(...parsed);
         settle();
       });
@@ -196,8 +187,7 @@ async function resolveMdnsDevices(devices: DiscoveredDevice[], timeoutMs: number
   for (const d of devices) {
     if (d.ip) { resolved.push(d); continue; }
 
-    // Pick service based on the st tag — Snapmaker devices announce on _snapmaker._tcp
-    const svc = d.st === 'snapmaker' ? '_snapmaker._tcp' : '_printer._tcp';
+    const svc = '_printer._tcp';
 
     const ip = await new Promise<string>((res) => {
       const child = execFile('dns-sd', ['-L', d.friendlyName, svc, 'local.'], { timeout: perDevice }, (err, stdout, stderr) => {
@@ -273,11 +263,10 @@ const PRINTER_PROBES: PrinterProbe[] = [
     },
   },
   {
-    // Snapmaker J1/Artisan/U1 run Klipper + Moonraker HTTP on port 8080.
-    // Same /printer/info endpoint, but their server string contains "snapmaker".
+    // Klipper + Moonraker HTTP on port 8080.
     type: 'http',
     port: 8080,
-    label: 'Snapmaker (HTTP)',
+    label: 'Moonraker/Klipper (HTTP)',
     path: '/printer/info',
     identify: async (res, ip, port) => {
       if (!res.ok) return null;
@@ -285,17 +274,14 @@ const PRINTER_PROBES: PrinterProbe[] = [
         const json = await res.json() as any;
         if (!json.result) return null;
         const hostname = json.result.hostname || '';
-        const version = String(json.result.software_version || '').toLowerCase();
         const state = json.result.state || 'unknown';
-        // Snapmaker firmware signals via hostname/version strings
-        const isSnap = version.includes('snapmaker') || /sm[-_ ]?j1|artisan|^snapmaker/i.test(hostname);
         return {
           ip, port,
           location: `http://${ip}:${port}`,
-          friendlyName: isSnap ? `Snapmaker (${hostname || ip})` : (hostname ? `Klipper (${hostname})` : `Klipper @ ${ip}`),
-          server: `${isSnap ? 'Snapmaker' : 'Moonraker/Klipper'} ${state}`,
-          st: isSnap ? 'snapmaker' : 'moonraker',
-          usn: `${isSnap ? 'snapmaker' : 'moonraker'}:${ip}`,
+          friendlyName: hostname ? `Klipper (${hostname})` : `Klipper @ ${ip}`,
+          server: `Moonraker/Klipper ${state}`,
+          st: 'moonraker',
+          usn: `moonraker:${ip}`,
         };
       } catch { return null; }
     },
@@ -500,7 +486,7 @@ export async function discoverDevices(timeoutMs: number = 5000): Promise<Discove
   const mdnsDevices = await resolveMdnsDevices(rawMdnsDevices, mdnsHalf);
 
   // Merge, dedupe by IP — only keep 3D printers
-  const PRINTER_TYPES = new Set(['moonraker', 'bambu-lan', 'octoprint', 'snapmaker']);
+  const PRINTER_TYPES = new Set(['moonraker', 'bambu-lan', 'octoprint']);
   const seen = new Set<string>();
   const all: DiscoveredDevice[] = [];
   for (const d of [...subnetDevices, ...mdnsDevices, ...ssdpDevices]) {

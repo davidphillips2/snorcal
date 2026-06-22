@@ -8,7 +8,7 @@ interface Props {
 }
 
 export function AddPrinterModal({ onClose, onAdded }: Props) {
-  const [protocol, setProtocol] = useState<'moonraker' | 'bambu' | 'snapmaker'>('moonraker');
+  const [protocol, setProtocol] = useState<'moonraker' | 'bambu'>('moonraker');
   const [name, setName] = useState('');
   const [ip, setIp] = useState('');
   const [port, setPort] = useState<number | ''>('');
@@ -48,7 +48,6 @@ export function AddPrinterModal({ onClose, onAdded }: Props) {
     setPort(d.port);
     // Sniff protocol from probe type
     if (d.st === 'bambu-lan') setProtocol('bambu');
-    else if (d.st === 'snapmaker') setProtocol('snapmaker');
     else if (d.st === 'moonraker') setProtocol('moonraker');
     if (!name) setName(d.friendlyName || `Printer ${d.ip}`);
   };
@@ -58,10 +57,6 @@ export function AddPrinterModal({ onClose, onAdded }: Props) {
     if (!name.trim() || !ip.trim()) { setError('Name and IP required'); return; }
     if (protocol === 'bambu' && (!serial.trim() || !accessCode.trim())) {
       setError('Bambu requires serial and access code');
-      return;
-    }
-    if (protocol === 'snapmaker' && !accessCode.trim()) {
-      setError('Snapmaker requires LAN access code');
       return;
     }
     setSubmitting(true);
@@ -77,7 +72,7 @@ export function AddPrinterModal({ onClose, onAdded }: Props) {
         cameraStreamUrl: cameraStreamUrl.trim() || undefined,
         cameraSnapshotUrl: cameraSnapshotUrl.trim() || undefined,
         model: modelChoice === '__other__' ? modelCustom.trim() : (modelChoice || undefined),
-        manualSlots: protocol === 'snapmaker' || protocol === 'moonraker' ? manualSlots : undefined,
+        manualSlots: protocol === 'moonraker' ? manualSlots : undefined,
       });
       onAdded();
     } catch (e) {
@@ -99,12 +94,12 @@ export function AddPrinterModal({ onClose, onAdded }: Props) {
 
         {/* Protocol toggle */}
         <div className="flex gap-2">
-          {(['moonraker', 'bambu', 'snapmaker'] as const).map(p => (
+          {(['moonraker', 'bambu'] as const).map(p => (
             <button key={p} onClick={() => setProtocol(p)}
               className={`flex-1 px-3 py-2 rounded text-sm capitalize ${
                 protocol === p ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
               }`}>
-              {p === 'moonraker' ? 'Moonraker / Klipper' : p === 'bambu' ? 'Bambu Lab (LAN)' : 'Snapmaker (LAN)'}
+              {p === 'moonraker' ? 'Moonraker / Klipper' : 'Bambu Lab (LAN)'}
             </button>
           ))}
         </div>
@@ -175,25 +170,6 @@ export function AddPrinterModal({ onClose, onAdded }: Props) {
             </Field>
             <p className="text-xs text-gray-400">
               Find on printer LCD: Settings → Network → LAN Access Code.
-            </p>
-          </>
-        )}
-
-        {protocol === 'snapmaker' && (
-          <>
-            <Field label="LAN Access Code">
-              <input value={accessCode} onChange={(e) => setAccessCode(e.target.value)} placeholder="touchscreen code"
-                className="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-white" />
-            </Field>
-            <Field label="Direct-feed spool count">
-              <input type="number" min={0} max={8} value={manualSlots}
-                onChange={(e) => setManualSlots(Math.max(0, Math.min(8, Number(e.target.value) || 0)))}
-                className="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-white" />
-            </Field>
-            <p className="text-xs text-gray-400">
-              On printer touchscreen: Settings → LAN → LAN Access Code. Used to bootstrap mTLS.
-              <br />Spool count = how many direct-feed slots the printer has (U1 = 4). Used at print
-              time to remap gcode T-codes — printer has no readable slot state.
             </p>
           </>
         )}

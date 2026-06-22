@@ -408,7 +408,7 @@ export interface DbNegativePart {
 export interface DbPrinter {
   id: string;
   name: string;
-  protocol: string;       // 'moonraker' | 'bambu' | 'snapmaker'
+  protocol: string;       // 'moonraker' | 'bambu'
   ip: string;
   port: number;
   serial: string | null;
