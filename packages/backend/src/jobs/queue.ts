@@ -194,9 +194,13 @@ async function processSliceJob(job: Job<SliceJobData>, db: Db): Promise<void> {
     await job.updateProgress(5);
     db.updateJobProgress(jobId, 5, 'Building 3MF...');
 
-    const faceColors = model.face_colors
-      ? new Uint8Array(model.face_colors)
-      : undefined;
+    const faceColors = (() => {
+      // 3MF uploads store paint in model_plates; STL stores in models.face_colors.
+      const plate = db.getPlate(modelId, (plateIndex ?? 0) + 1);
+      if (plate?.face_colors) return new Uint8Array(plate.face_colors);
+      if (model.face_colors) return new Uint8Array(model.face_colors);
+      return undefined;
+    })();
 
     const threemfBuffer = await build3MF({
       stlPath: model.file_path,
