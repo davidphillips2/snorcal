@@ -4,9 +4,11 @@ FROM node:20-bookworm AS frontend-builder
 WORKDIR /build
 RUN corepack enable && corepack prepare pnpm@9 --activate
 
-COPY package.json pnpm-workspace.yaml tsconfig.base.json ./
+COPY package.json pnpm-workspace.yaml .npmrc tsconfig.base.json ./
 COPY packages/shared/package.json ./packages/shared/
 COPY packages/frontend/package.json ./packages/frontend/
+
+ENV NPM_CONFIG_NODE_LINKER=hoisted
 
 RUN pnpm install --frozen-lockfile 2>/dev/null || pnpm install
 
@@ -21,9 +23,11 @@ FROM node:20-bookworm AS backend-builder
 WORKDIR /build
 RUN corepack enable && corepack prepare pnpm@9 --activate
 
-COPY package.json pnpm-workspace.yaml tsconfig.base.json ./
+COPY package.json pnpm-workspace.yaml .npmrc tsconfig.base.json ./
 COPY packages/shared/package.json ./packages/shared/
 COPY packages/backend/package.json ./packages/backend/
+
+ENV NPM_CONFIG_NODE_LINKER=hoisted
 
 RUN pnpm install --frozen-lockfile 2>/dev/null || pnpm install
 
