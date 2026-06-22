@@ -34,12 +34,14 @@ export function setupQueue(db: Db): { queue: Queue; worker: Worker } | null {
   const redisHost = process.env.REDIS_HOST || 'localhost';
   const redisPort = parseInt(process.env.REDIS_PORT || '6379');
 
-  // Test Redis connection first with a short timeout
+  // Test Redis connection first with a short timeout. ioredis auto-connects
+  // on instantiation, so `.connect()` would throw "already connecting".
   const testConn = new IORedis({
     host: redisHost,
     port: redisPort,
     connectTimeout: 2000,
     retryStrategy: () => null, // No retries for test
+    lazyConnect: true, // Don't auto-connect; we want to control the attempt
   });
 
   const connectionPromise = testConn.connect().then(() => {
