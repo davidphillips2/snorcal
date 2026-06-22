@@ -21,8 +21,8 @@ services:
       - REDIS_PORT=6379
       - DATA_DIR=/data
       - NODE_ENV=production
-      - SLICER_URL_ORCASLICER=http://orca-slicer-api:3003
-      - SLICER_URL_BAMBUSTUDIO=http://bambu-studio-api:3001
+      - SLICER_URL_ORCASLICER=http://orca-slicer-api:3000
+      - SLICER_URL_BAMBUSTUDIO=http://bambu-studio-api:3000
       # - DEBUG_PRINTER=1
     depends_on:
       redis:
