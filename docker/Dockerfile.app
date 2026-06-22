@@ -57,6 +57,12 @@ COPY --from=backend-builder /build/packages/shared/package.json /app/shared/pack
 COPY --from=backend-builder /build/packages/shared/dist /app/shared/dist
 COPY --from=backend-builder /build/node_modules /app/node_modules
 
+# Workspace pkg not auto-linked under hoisted — install manually so bare
+# `import '@snorcal/shared'` resolves at runtime.
+RUN mkdir -p /app/node_modules/@snorcal/shared \
+    && cp /app/shared/package.json /app/node_modules/@snorcal/shared/package.json \
+    && cp -r /app/shared/dist /app/node_modules/@snorcal/shared/dist
+
 COPY docker/app-entrypoint.sh /app/app-entrypoint.sh
 RUN chmod +x /app/app-entrypoint.sh
 
