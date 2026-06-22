@@ -87,6 +87,7 @@ export function setupQueue(db: Db): { queue: Queue; worker: Worker } | null {
 
     worker.on('failed', (job, err) => {
       console.error(`[Worker] Job ${job?.id} failed:`, err.message);
+      console.error(err.stack);
       if (job) {
         db.updateJobStatus(job.data.jobId, 'failed', { errorMessage: err.message });
       }
