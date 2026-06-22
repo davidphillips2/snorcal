@@ -458,7 +458,10 @@ export default function App() {
   }, [plates, bedForLayout.x, bedForLayout.y, bedForLayout.z]);
 
   // Gcode preview
-  const [previewJobId, setPreviewJobId] = useState<string | null>(() => persisted.current?.previewJobId ?? null);
+  // previewJobId is session-scoped: never restore across reloads, since the
+  // matching gcode payload isn't in memory anymore and STLViewer is gated on
+  // !previewJobId (stale value would hide the model on next session).
+  const [previewJobId, setPreviewJobId] = useState<string | null>(null);
   const [gcodeText, setGcodeText] = useState<string | null>(null);
   const [currentPreviewLayer, setCurrentPreviewLayer] = useState(() => persisted.current?.currentPreviewLayer ?? 0);
   const [showAllLayers, setShowAllLayers] = useState(() => persisted.current?.showAllLayers ?? true);
@@ -550,14 +553,13 @@ export default function App() {
         activeColor,
         selectedPrinterId,
         targetPrinterId,
-        previewJobId,
         gcodeColorMode,
         showAllLayers,
         currentPreviewLayer,
       });
     }, 500);
     return () => clearTimeout(timer);
-  }, [projectModels, plates, activePlateId, activeModelIndex, engine, settings, selectedProfiles, filamentSlots, multiMaterial, printerIp, view, showSidebar, showSettings, showJobs, showInventory, paintMode, activeColor, selectedPrinterId, targetPrinterId, previewJobId, gcodeColorMode, showAllLayers, currentPreviewLayer]);
+  }, [projectModels, plates, activePlateId, activeModelIndex, engine, settings, selectedProfiles, filamentSlots, multiMaterial, printerIp, view, showSidebar, showSettings, showJobs, showInventory, paintMode, activeColor, selectedPrinterId, targetPrinterId, gcodeColorMode, showAllLayers, currentPreviewLayer]);
 
   // SSE updates
   useEffect(() => {
