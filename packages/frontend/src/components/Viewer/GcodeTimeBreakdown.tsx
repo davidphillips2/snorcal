@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { analyzeGcodeTime, formatDuration, typeColor } from '../../lib/gcode-stats';
+import { analyzeGcodeTime, formatDuration, parseSlicerEstimatedTime, typeColor } from '../../lib/gcode-stats';
 
 interface GcodeTimeBreakdownProps {
   gcode: string;
@@ -11,7 +11,17 @@ interface GcodeTimeBreakdownProps {
  */
 export function GcodeTimeBreakdown({ gcode }: GcodeTimeBreakdownProps) {
   const [open, setOpen] = useState(false);
-  const entries = useMemo(() => analyzeGcodeTime(gcode).slice(0, 10), [gcode]);
+  const raw = useMemo(() => analyzeGcodeTime(gcode), [gcode]);
+  const slicerTotal = useMemo(() => parseSlicerEstimatedTime(gcode), [gcode]);
+  // The parser-based sum ignores acceleration/jerk and undercounts ~40%.
+  // Trust the slicer's header total and scale each type proportionally so
+  // the bar still reflects per-section distribution.
+  const parserTotal = raw.reduce((a, b) => a + b.seconds, 0);
+  const scale = slicerTotal && parserTotal > 0 ? slicerTotal / parserTotal : 1;
+  const entries = useMemo(
+    () => raw.slice(0, 10).map(e => ({ ...e, seconds: e.seconds * scale, fraction: slicerTotal ? e.seconds * scale / slicerTotal : e.fraction })),
+    [raw, scale, slicerTotal],
+  );
   const total = entries.reduce((a, b) => a + b.seconds, 0);
   if (entries.length === 0) return null;
 

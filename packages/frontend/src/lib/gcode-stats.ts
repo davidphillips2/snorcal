@@ -121,6 +121,21 @@ export function analyzeGcodeTime(gcode: string): TypeBreakdownEntry[] {
     .sort((a, b) => b.seconds - a.seconds);
 }
 
+/**
+ * Parse `; estimated printing time (normal mode) = 2h 0m 54s` from a slicer
+ * header. Returns null if not found. Used as the authoritative total since
+ * the parser-based sum ignores acceleration/jerk and undercounts ~40%.
+ */
+export function parseSlicerEstimatedTime(gcode: string): number | null {
+  const m = gcode.match(/;\s*estimated printing time[^=\n]*=\s*(\d+h)?\s*(\d+m)?\s*(\d+s)?/i);
+  if (!m) return null;
+  const h = parseInt(m[1] ?? '0', 10) || 0;
+  const min = parseInt(m[2] ?? '0', 10) || 0;
+  const s = parseInt(m[3] ?? '0', 10) || 0;
+  const total = h * 3600 + min * 60 + s;
+  return total > 0 ? total : null;
+}
+
 export function formatDuration(seconds: number): string {
   if (!Number.isFinite(seconds) || seconds <= 0) return '0s';
   const h = Math.floor(seconds / 3600);
