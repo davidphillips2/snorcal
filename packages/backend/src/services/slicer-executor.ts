@@ -83,9 +83,17 @@ export class SlicerExecutor {
 
     const fileBytes = await fs.promises.readFile(cmd.input3mf);
     const filename = path.basename(cmd.input3mf);
+    // Sidecar validates MIME type against an allowlist (model/3mf, model/stl,
+    // model/step). Default Blob has empty type → rejected with HTTP 400.
+    const ext = path.extname(filename).toLowerCase();
+    const mime =
+      ext === '.3mf' ? 'model/3mf' :
+      ext === '.stl' ? 'model/stl' :
+      ext === '.step' || ext === '.stp' ? 'model/step' :
+      'application/octet-stream';
 
     const form = new FormData();
-    form.append('file', new Blob([fileBytes]), filename);
+    form.append('file', new Blob([fileBytes], { type: mime }), filename);
     form.append('arrange', '0');
     form.append('orient', '0');
     form.append('exportType', 'gcode');

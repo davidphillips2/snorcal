@@ -278,6 +278,7 @@ export async function printerRoutes(app: FastifyInstance, options: { db: Db }) {
     'RatRig V-Core 3', 'RatRig V-Core 4', 'RatRig V-Minion',
     // Creality
     'Creality Ender 3', 'Creality Ender 3 V3', 'Creality K1', 'Creality K1 Max', 'Creality CR-10',
+    'Creality Hi', 'Creality Spark X i7',
     // Snapmaker
     'Snapmaker U1', 'Snapmaker J1', 'Snapmaker J1s', 'Snapmaker Artisan', 'Snapmaker 2.0 A350T',
     // Prusa

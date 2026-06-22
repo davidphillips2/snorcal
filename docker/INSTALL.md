@@ -58,9 +58,11 @@ Browser → <http://localhost:3000>
 You'll be prompted to add a printer. Have ready:
 
 - **Bambu Lab** (X1/P1/A1): printer's IP address, LAN access code (on the printer's LCD: Settings → Network), and serial number.
-- **Klipper/Moonraker** (Voron, RatRig, Snapmaker, anything running Klipper): printer's IP address. That's it.
+- **Klipper/Moonraker** (Voron, RatRig, Snapmaker, Creality Hi / Spark X i7, anything running Klipper): printer's IP address. That's it.
 
-Hit "Scan Network" first — Snorcal usually finds it automatically.
+You can try "Scan Network" but on Mac/Windows Docker Desktop it usually won't find anything (multicast doesn't traverse the Docker VM). Just type the IP directly — the printer's IP from its LCD/settings page.
+
+> **Creality Spark X i7 / Hi note:** pick "Creality Spark X i7" (or "Creality Hi") from the model dropdown. The OrcaSlicer engine ships a matching machine profile under the "Creality Hi" name — select that when slicing.
 
 ---
 
