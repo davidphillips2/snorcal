@@ -240,13 +240,27 @@ export async function printerRoutes(app: FastifyInstance, options: { db: Db }) {
 
   // PATCH /api/printers/:id — update mutable fields (currently: model)
   app.patch<{ Params: { id: string } }>('/api/printers/:id', async (req, reply) => {
-    const body = req.body as { model?: string };
+    const body = req.body as {
+      name?: string;
+      ip?: string;
+      port?: number;
+      access_code?: string | null;
+      api_key?: string | null;
+      camera_stream_url?: string | null;
+      camera_snapshot_url?: string | null;
+      model?: string | null;
+    };
     const row = db.getPrinter(req.params.id);
     if (!row) return reply.status(404).send({ ok: false, error: 'Printer not found' });
-    if (typeof body.model !== 'undefined') {
-      db.updatePrinterModel(req.params.id, body.model || null);
-    }
+
+    db.updatePrinterFields(req.params.id, body);
     const updated = db.getPrinter(req.params.id)!;
+
+    // Reconnect if connection params changed (adapter picks up new IP/port/keys)
+    const connectionChanged = ['ip', 'port', 'access_code', 'api_key'].some(k => k in body);
+    if (connectionChanged) {
+      try { await printerManager.reconnect(req.params.id); } catch {}
+    }
     return reply.send({ ok: true, data: toPrinterRecord(updated) });
   });
 
@@ -379,6 +393,43 @@ export async function printerRoutes(app: FastifyInstance, options: { db: Db }) {
       };
       pump().catch(() => { try { reply.raw.end(); } catch {} });
       reply.hijack();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return reply.status(502).send({ ok: false, error: message });
+    }
+  });
+
+  // POST /api/printers/:id/webrtc — pass-through WebRTC signaling relay.
+  // Snapmaker/go2rtc uses WHEP-like server-initiated flow with multiple POSTs:
+  //   {type:'request'} → server returns offer
+  //   {type:'answer', id, sdp} → browser posts its answer
+  //   {type:'remote_candidate', id, candidates:[...]} → trickle ICE
+  // Browser can't POST cross-origin (no CORS), so we relay each call verbatim.
+  app.post<{ Params: { id: string } }>('/api/printers/:id/webrtc', async (req, reply) => {
+    const row = db.getPrinter(req.params.id);
+    if (!row) return reply.status(404).send({ ok: false, error: 'Printer not found' });
+    const streamUrl = row.camera_stream_url;
+    if (!streamUrl || !/\/(webrtc|stream)(\?|$|\/)/.test(streamUrl)) {
+      return reply.status(400).send({ ok: false, error: 'No WebRTC stream URL configured' });
+    }
+    const body = req.body;
+    if (!body || typeof body !== 'object') {
+      return reply.status(400).send({ ok: false, error: 'Missing JSON body' });
+    }
+
+    try {
+      const upstream = await fetch(streamUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(10000),
+      });
+      const text = await upstream.text();
+      if (!upstream.ok) {
+        return reply.status(502).send({ ok: false, error: `upstream ${upstream.status}: ${text.slice(0, 200)}` });
+      }
+      reply.header('Content-Type', upstream.headers.get('content-type') ?? 'application/json');
+      return reply.send(text);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       return reply.status(502).send({ ok: false, error: message });

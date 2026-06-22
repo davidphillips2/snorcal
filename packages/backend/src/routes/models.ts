@@ -13,7 +13,16 @@ export async function register3MFModel(
   buffer: Buffer,
   filename: string,
   db: Db,
-): Promise<{ id: string; name: string; faceCount: number; bounds: { x: number; y: number; z: number }; plateCount: number }> {
+): Promise<{
+  id: string;
+  name: string;
+  faceCount: number;
+  bounds: { x: number; y: number; z: number };
+  boundsMin?: { x: number; y: number; z: number };
+  boundsMax?: { x: number; y: number; z: number };
+  plateCount: number;
+  negativeParts?: Array<{ plateIndex: number; partIndex: number; faceCount: number; boundsMin?: { x: number; y: number; z: number }; boundsMax?: { x: number; y: number; z: number } }>;
+}> {
   const id = uuid();
   const modelDir = path.join(getModelsDir(), id);
   ensureDir(modelDir);
@@ -26,10 +35,12 @@ export async function register3MFModel(
     const plateData: { index: number; faceCount: number; bounds: { x: number; y: number; z: number }; positions: Float32Array; faceColors?: Uint8Array }[] = [];
     // Collect negative parts during the parse loop, flush AFTER insertModel
     // so the FK on model_negative_parts.model_id is satisfiable.
-    const negativeData: { plateIndex: number; partIndex: number; filePath: string; faceCount: number }[] = [];
+    const negativeData: { plateIndex: number; partIndex: number; filePath: string; faceCount: number; boundsMin?: { x: number; y: number; z: number }; boundsMax?: { x: number; y: number; z: number } }[] = [];
 
     let faceCount = 0;
     let bounds = { x: 0, y: 0, z: 0 };
+    let boundsMin: { x: number; y: number; z: number } | undefined;
+    let boundsMax: { x: number; y: number; z: number } | undefined;
     let filePath = '';
 
     for (let p = 1; p <= plateCount; p++) {
@@ -55,6 +66,8 @@ export async function register3MFModel(
             partIndex: i + 1,
             filePath: negPath,
             faceCount: np.faceCount,
+            boundsMin: np.boundsMin,
+            boundsMax: np.boundsMax,
           });
         });
       }
@@ -64,6 +77,8 @@ export async function register3MFModel(
       if (p === 1) {
         faceCount = parsed.faceCount;
         bounds = parsed.bounds;
+        boundsMin = parsed.boundsMin;
+        boundsMax = parsed.boundsMax;
         filePath = platePath;
       }
     }
@@ -117,7 +132,24 @@ export async function register3MFModel(
       }
     }
 
-    return { id, name: filename, faceCount, bounds, plateCount };
+    return {
+      id,
+      name: filename,
+      faceCount,
+      bounds,
+      boundsMin,
+      boundsMax,
+      plateCount,
+      negativeParts: negativeData.length > 0
+        ? negativeData.map(nd => ({
+            plateIndex: nd.plateIndex,
+            partIndex: nd.partIndex,
+            faceCount: nd.faceCount,
+            boundsMin: nd.boundsMin,
+            boundsMax: nd.boundsMax,
+          }))
+        : undefined,
+    };
   } catch (err) {
     fs.rmSync(modelDir, { recursive: true, force: true });
     throw err;
@@ -162,7 +194,7 @@ export async function modelRoutes(app: FastifyInstance, options: { db: Db }) {
           error: `Invalid 3MF file: ${err instanceof Error ? err.message : String(err)}`,
         });
       }
-    } else {
+    } else if (format === 'stl' || format === 'step') {
       // STL/STEP
       const id = uuid();
       const modelDir = path.join(getModelsDir(), id);

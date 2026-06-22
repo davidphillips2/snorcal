@@ -450,14 +450,25 @@ function toHex(n: number): string {
 }
 
 /**
- * OrcaSlicer TriangleSelector encoding for non-split leaf triangles.
- * Empirically derived from OrcaSlicer-exported painted 3MFs:
- *   extruder 1 → "5C", extruder 2 → "6C", extruder 3 → "7C", ...
- * Formula: 0x5C + (extruderIndex - 1) * 0x10
- * (extruderIndex is 1-based; matches colorToExtruder map values.)
+ * OrcaSlicer TriangleSelector bitstream encoding for non-split leaf triangles.
+ *
+ * Format: packed hex nibbles (little-endian within each nibble).
+ *   - First 2 bits = split_sides (must be 00 for a leaf)
+ *   - Next bits = EnforcerBlockerType state:
+ *       state 0/1/2 → 2 bits of state
+ *       state >= 3  → 2 bits "11" escape + 4 bits of (state-3)
+ *
+ * State == extruderIndex (1-based). Matches CONST_FILAMENTS at
+ * OrcaSlicer Model.cpp:52 (Extruder1=1 ... Extruder16=16).
+ *
+ * Reference: SoftFever/OrcaSlicer TriangleSelector.cpp:1692 (serialize)
+ *           Model.cpp:3539 (get_triangle_as_string)
  */
 function extruderToPaintColor(extruderIndex: number): string {
-  return (0x5C + (extruderIndex - 1) * 0x10).toString(16).toUpperCase();
+  if (extruderIndex === 1) return '4';   // state=1: bits 01 → nibble 4
+  if (extruderIndex === 2) return '8';   // state=2: bits 10 → nibble 8
+  // state>=3: bits 11 (nibble C low) + 4 bits (state-3) high
+  return (extruderIndex - 3).toString(16).toUpperCase() + 'C';
 }
 
 export function writeFaceColors(filePath: string, colors: Uint8Array): void {

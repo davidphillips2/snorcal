@@ -18,6 +18,12 @@ export interface PrinterRecord {
   serial?: string | null;
   accessCode?: string | null;
   apiKey?: string | null;
+  cameraStreamUrl?: string | null;
+  cameraSnapshotUrl?: string | null;
+  model?: string | null;
+  manualSlots?: number;
+  bedVolume?: { x: number; y: number; z: number } | null;
+  status?: PrinterStatus | null;
   lastStatus?: string | null;
   lastSeen?: string | null;
   createdAt: string;
@@ -51,8 +57,10 @@ export interface AmsSlot {
 export interface PrinterTemps {
   bed?: number;        // current °C
   bedTarget?: number;
-  hotend?: number;
+  hotend?: number;          // primary hotend (kept for backwards compat)
   hotendTarget?: number;
+  /** All hotends (multi-toolhead printers like Snapmaker U1). index 0 = primary. */
+  hotends?: { current?: number; target?: number }[];
 }
 
 /** Normalized live status from either adapter. */

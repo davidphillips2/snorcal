@@ -47,11 +47,23 @@ async function apiFetch(path: string, options?: RequestInit) {
   throw lastErr;
 }
 
+export interface NegativePartMeta {
+  plateIndex: number;
+  partIndex: number;
+  faceCount: number;
+  boundsMin?: { x: number; y: number; z: number };
+  boundsMax?: { x: number; y: number; z: number };
+}
+
 export async function uploadModel(file: File) {
   const formData = new FormData();
   formData.append('file', file);
   return apiFetch('/models', { method: 'POST', body: formData }) as Promise<{
-    id: string; name: string; faceCount: number; plateCount: number; bounds: { x: number; y: number; z: number };
+    id: string; name: string; faceCount: number; plateCount: number;
+    bounds: { x: number; y: number; z: number };
+    boundsMin?: { x: number; y: number; z: number };
+    boundsMax?: { x: number; y: number; z: number };
+    negativeParts?: NegativePartMeta[];
   }>;
 }
 
@@ -171,6 +183,10 @@ export function getModelUrl(modelId: string, plate?: number) {
   return `${API_BASE}/files/model/${modelId}${params}`;
 }
 
+export function getNegativePartUrl(modelId: string, plate: number, part: number) {
+  return `${API_BASE}/files/model/${modelId}/negative/${plate}/${part}`;
+}
+
 export async function getDefaultSettings(engine: string) {
   try {
     return await apiFetch(`/settings/${engine}/defaults`);
@@ -236,10 +252,29 @@ export async function listPrinterModels() {
   } catch { return []; }
 }
 
-export async function updatePrinter(id: string, patch: { model?: string }) {
+export async function updatePrinter(id: string, patch: {
+  name?: string;
+  ip?: string;
+  port?: number;
+  accessCode?: string | null;
+  apiKey?: string | null;
+  cameraStreamUrl?: string | null;
+  cameraSnapshotUrl?: string | null;
+  model?: string | null;
+}) {
+  // Snake-case keys for backend PATCH body
+  const body: Record<string, unknown> = {};
+  if (patch.name !== undefined) body.name = patch.name;
+  if (patch.ip !== undefined) body.ip = patch.ip;
+  if (patch.port !== undefined) body.port = patch.port;
+  if (patch.accessCode !== undefined) body.access_code = patch.accessCode;
+  if (patch.apiKey !== undefined) body.api_key = patch.apiKey;
+  if (patch.cameraStreamUrl !== undefined) body.camera_stream_url = patch.cameraStreamUrl;
+  if (patch.cameraSnapshotUrl !== undefined) body.camera_snapshot_url = patch.cameraSnapshotUrl;
+  if (patch.model !== undefined) body.model = patch.model;
   return apiFetch(`/printers/${id}`, {
     method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(patch),
+    body: JSON.stringify(body),
   });
 }
 

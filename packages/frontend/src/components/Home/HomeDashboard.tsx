@@ -182,7 +182,7 @@ function PrinterTile({ printer, status, onReconnect, onOpen }: {
   return (
     <div className="bg-gray-800 border border-gray-700 rounded-lg p-3 flex items-stretch gap-3 min-w-0 hover:border-gray-500 transition-colors">
       <button onClick={onOpen} className="focus:outline-none">
-        <CameraView printerId={printer.id} protocol={printer.protocol} connection={connection} />
+        <CameraView printer={printer} />
       </button>
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2">

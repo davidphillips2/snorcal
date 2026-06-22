@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from 'react';
 import type { PrinterRecord, PrinterStatus } from '@snorcal/shared';
 import * as api from '../../api/client';
 import { AddPrinterModal } from './AddPrinterModal';
+import { EditPrinterModal } from './EditPrinterModal';
+import { CameraView } from './CameraView';
 
 interface Props {
   onClose: () => void;
@@ -11,6 +13,7 @@ export function PrinterDashboard({ onClose }: Props) {
   const [printers, setPrinters] = useState<PrinterRecord[]>([]);
   const [statuses, setStatuses] = useState<Record<string, PrinterStatus>>({});
   const [showAdd, setShowAdd] = useState(false);
+  const [editPrinter, setEditPrinter] = useState<PrinterRecord | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -71,7 +74,10 @@ export function PrinterDashboard({ onClose }: Props) {
   };
 
   return (
-    <div className="fixed inset-0 bg-black/70 z-50 flex flex-col">
+    <div
+      className="fixed inset-0 bg-black/70 z-50 flex flex-col"
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
       <header className="bg-gray-900 border-b border-gray-700 px-4 py-3 flex items-center justify-between">
         <h1 className="text-lg font-semibold text-white">Printers</h1>
         <div className="flex gap-2">
@@ -110,6 +116,7 @@ export function PrinterDashboard({ onClose }: Props) {
                 onToggle={() => setExpandedId(expandedId === p.id ? null : p.id)}
                 onDelete={() => onDelete(p.id)}
                 onReconnect={() => onReconnect(p.id)}
+                onEdit={() => setEditPrinter(p)}
                 onCommand={(cmd, args) => onCommand(p.id, cmd, args)}
               />
             ))}
@@ -123,6 +130,13 @@ export function PrinterDashboard({ onClose }: Props) {
           onAdded={() => { setShowAdd(false); refresh(); }}
         />
       )}
+      {editPrinter && (
+        <EditPrinterModal
+          printer={editPrinter}
+          onClose={() => setEditPrinter(null)}
+          onSaved={() => { setEditPrinter(null); refresh(); }}
+        />
+      )}
     </div>
   );
 }
@@ -134,10 +148,11 @@ interface CardProps {
   onToggle: () => void;
   onDelete: () => void;
   onReconnect: () => void;
+  onEdit: () => void;
   onCommand: (cmd: string, args?: Record<string, unknown>) => void;
 }
 
-function PrinterCard({ printer, status, expanded, onToggle, onDelete, onReconnect, onCommand }: CardProps) {
+function PrinterCard({ printer, status, expanded, onToggle, onDelete, onReconnect, onEdit, onCommand }: CardProps) {
   const connection = status?.connection ?? 'disconnected';
   const state = status?.state ?? 'offline';
   const connColor = {
@@ -148,7 +163,7 @@ function PrinterCard({ printer, status, expanded, onToggle, onDelete, onReconnec
   return (
     <div className="bg-gray-800 border border-gray-700 rounded-lg overflow-hidden min-w-0">
       <div className="p-3 flex flex-col sm:flex-row items-start gap-3">
-        <CameraView printerId={printer.id} protocol={printer.protocol} connection={connection} expanded={expanded} />
+        <CameraView printer={printer} expanded={expanded} />
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
             <span className={`w-2 h-2 rounded-full ${connColor}`} />
@@ -160,8 +175,14 @@ function PrinterCard({ printer, status, expanded, onToggle, onDelete, onReconnec
           <div className="text-xs text-gray-300 mt-1 capitalize">{state}</div>
           {status?.temps && (status.temps.bed !== undefined || status.temps.hotend !== undefined) && (
             <div className="text-xs text-gray-300 mt-1">
-              {status.temps.hotend !== undefined && (
-                <span>Hotend: {Math.round(status.temps.hotend)}°C{status.temps.hotendTarget ? ` / ${status.temps.hotendTarget}°C` : ''} </span>
+              {status.temps.hotends && status.temps.hotends.length > 1 ? (
+                status.temps.hotends.map((h, i) => (
+                  <span key={i}>T{i}: {h.current !== undefined ? Math.round(h.current) : '—'}°C{h.target ? `/${Math.round(h.target)}` : ''} </span>
+                ))
+              ) : (
+                status.temps.hotend !== undefined && (
+                  <span>Hotend: {Math.round(status.temps.hotend)}°C{status.temps.hotendTarget ? ` / ${status.temps.hotendTarget}°C` : ''} </span>
+                )
               )}
               {status.temps.bed !== undefined && (
                 <span>Bed: {Math.round(status.temps.bed)}°C{status.temps.bedTarget ? ` / ${status.temps.bedTarget}°C` : ''}</span>
@@ -210,8 +231,10 @@ function PrinterCard({ printer, status, expanded, onToggle, onDelete, onReconnec
             Reconnect
           </button>
         )}
+        <button onClick={onEdit}
+          className="ml-auto text-xs text-blue-300 hover:text-blue-200 px-2 py-1 rounded hover:bg-gray-700">Edit</button>
         <button onClick={onDelete}
-          className="ml-auto text-xs text-red-400 hover:text-red-300 px-2 py-1">Remove</button>
+          className="text-xs text-red-400 hover:text-red-300 px-2 py-1">Remove</button>
       </div>
 
       {expanded && (
@@ -327,4 +350,3 @@ function formatDuration(sec: number): string {
   return `${h}h${mm.toString().padStart(2, '0')}m`;
 }
 
-import { CameraView } from './CameraView';

@@ -152,6 +152,31 @@ export class Db {
     this.db.prepare('UPDATE printers SET model = ? WHERE id = ?').run(model, id);
   }
 
+  updatePrinterFields(id: string, fields: {
+    name?: string;
+    ip?: string;
+    port?: number;
+    access_code?: string | null;
+    api_key?: string | null;
+    camera_stream_url?: string | null;
+    camera_snapshot_url?: string | null;
+    model?: string | null;
+  }) {
+    const sets: string[] = [];
+    const vals: (string | number | null)[] = [];
+    if (fields.name !== undefined) { sets.push('name = ?'); vals.push(fields.name); }
+    if (fields.ip !== undefined) { sets.push('ip = ?'); vals.push(fields.ip); }
+    if (fields.port !== undefined) { sets.push('port = ?'); vals.push(fields.port); }
+    if (fields.access_code !== undefined) { sets.push('access_code = ?'); vals.push(fields.access_code); }
+    if (fields.api_key !== undefined) { sets.push('api_key = ?'); vals.push(fields.api_key); }
+    if (fields.camera_stream_url !== undefined) { sets.push('camera_stream_url = ?'); vals.push(fields.camera_stream_url); }
+    if (fields.camera_snapshot_url !== undefined) { sets.push('camera_snapshot_url = ?'); vals.push(fields.camera_snapshot_url); }
+    if (fields.model !== undefined) { sets.push('model = ?'); vals.push(fields.model); }
+    if (sets.length === 0) return;
+    vals.push(id);
+    this.db.prepare(`UPDATE printers SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
+  }
+
   updatePrinterStatus(id: string, status: string | null) {
     this.db.prepare('UPDATE printers SET last_status = ?, last_seen = datetime(\'now\') WHERE id = ?').run(status, id);
   }

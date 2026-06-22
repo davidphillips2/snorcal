@@ -22,7 +22,7 @@ export const SettingRow = memo(function SettingRow({ def, value, onChange }: Set
           aria-label={label}
         >
           <span
-            className={`absolute top-0.5 w-3 h-3 rounded-full bg-white transition-transform ${isOn ? 'translate-x-4' : 'translate-x-0.5'}`}
+            className={`absolute left-0.5 top-0.5 w-3 h-3 rounded-full bg-white transition-transform ${isOn ? 'translate-x-4' : 'translate-x-0'}`}
           />
         </button>
       </div>

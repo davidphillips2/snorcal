@@ -62,6 +62,28 @@ export async function fileRoutes(app: FastifyInstance, options: { db: Db }) {
     return reply.send(fs.createReadStream(filePath));
   });
 
+  // GET /api/files/model/:modelId/negative/:plate/:part — Serve embedded negative part STL
+  app.get<{ Params: { modelId: string; plate: string; part: string } }>(
+    '/api/files/model/:modelId/negative/:plate/:part',
+    async (req, reply) => {
+      const plateNum = parseInt(req.params.plate);
+      const partNum = parseInt(req.params.part);
+      const parts = db.listNegativeParts(req.params.modelId, plateNum);
+      const np = parts.find(p => p.part_index === partNum);
+      if (!np) {
+        return reply.status(404).send({ ok: false, error: 'Negative part not found' });
+      }
+      if (!fs.existsSync(np.file_path)) {
+        return reply.status(404).send({ ok: false, error: 'Negative part file not found on disk' });
+      }
+      const stat = fs.statSync(np.file_path);
+      reply.header('Content-Type', 'application/octet-stream');
+      reply.header('Content-Length', stat.size);
+      reply.header('Content-Disposition', `attachment; filename="negative_${plateNum}_${partNum}.stl"`);
+      return reply.send(fs.createReadStream(np.file_path));
+    },
+  );
+
   // GET /api/files/threemf/:jobId — Download input 3MF used for slicing
   app.get<{ Params: { jobId: string } }>('/api/files/threemf/:jobId', async (req, reply) => {
     const job = db.getJob(req.params.jobId);

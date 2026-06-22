@@ -193,9 +193,15 @@ export function GcodePreviewCanvas({
       // In lineType/speed modes, toolColors (set on preview below after init) drive per-segment color
     });
 
-    // Apply tool colors for non-filament modes
+    // Apply tool colors. In filament mode, map T0/T1/T2... → slot colors.
+    // Without this, gcode-preview falls back to extrusionColor[0] for all
+    // tool changes → multi-extruder gcode renders as a single color.
     if (processed?.toolColors) {
       (preview as unknown as { toolColors: Record<number, string> }).toolColors = processed.toolColors;
+    } else if (extrusionColors && extrusionColors.length > 0) {
+      const tc: Record<number, string> = {};
+      extrusionColors.forEach((c, i) => { tc[i] = c; });
+      (preview as unknown as { toolColors: Record<number, string> }).toolColors = tc;
     }
 
     previewRef.current = preview;

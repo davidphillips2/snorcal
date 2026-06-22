@@ -10,6 +10,9 @@ export interface Parse3MFResult {
   faceColors: Uint8Array | null;
   faceCount: number;
   bounds: Bounds;
+  /** Parent mesh bbox in Three Y-up coords (used to align negative parts in viewer). */
+  boundsMin?: { x: number; y: number; z: number };
+  boundsMax?: { x: number; y: number; z: number };
   /** Non-printable parts (cutters, modifiers) collected separately so the
    *  slice pipeline can re-emit them as Bambu negative volumes. Geometry is
    *  already Y-up + transforms applied, same convention as `positions`. */
@@ -20,6 +23,9 @@ export interface NegativePart {
   /** Non-indexed positions: 9 floats per face (Y-up, transforms applied) */
   positions: Float32Array;
   faceCount: number;
+  /** Per-axis min/max in Three Y-up coords (used by frontend to align part with parent mesh) */
+  boundsMin?: { x: number; y: number; z: number };
+  boundsMax?: { x: number; y: number; z: number };
 }
 
 interface MeshEntry {
@@ -216,16 +222,18 @@ export async function parse3MF(buffer: Buffer, plateNumber?: number): Promise<Pa
   let faceOffset = 0;
 
   for (const entry of meshEntries) {
-    // Copy positions with Y↔Z swap for proper Y-up orientation
+    // Copy positions with proper X-axis -90° rotation (3MF Z-up → Three Y-up).
+    // Standard right-hand rotation: (x, y, z) → (x, z, -y). Skipping the
+    // negation mirrors the model across the XZ plane (text reads backwards).
     for (let i = 0; i < entry.triCount; i++) {
       const src = i * 9;
       const dst = (faceOffset + i) * 9;
       for (let v = 0; v < 3; v++) {
         const sv = src + v * 3;
         const dv = dst + v * 3;
-        allPositions[dv] = entry.positions[sv];       // X stays
-        allPositions[dv + 1] = entry.positions[sv + 2]; // Z → Y (up)
-        allPositions[dv + 2] = entry.positions[sv + 1]; // Y → Z (depth)
+        allPositions[dv] = entry.positions[sv];        // X stays
+        allPositions[dv + 1] = entry.positions[sv + 2]; // 3MF.Z → Three.Y (up)
+        allPositions[dv + 2] = -entry.positions[sv + 1]; // 3MF.Y → -Three.Z (depth)
       }
     }
 
@@ -290,22 +298,35 @@ export async function parse3MF(buffer: Buffer, plateNumber?: number): Promise<Pa
     if (z < minZ) minZ = z; if (z > maxZ) maxZ = z;
   }
 
-  // Merge negative entries — Y/Z swap applied per entry, same convention as main.
+  // Merge negative entries — same X-axis -90° rotation as main mesh (with Z negation).
   const negativeParts: NegativePart[] = [];
   for (const entry of negativeEntries) {
     const positions = new Float32Array(entry.triCount * 9);
+    let nMinX = Infinity, nMinY = Infinity, nMinZ = Infinity;
+    let nMaxX = -Infinity, nMaxY = -Infinity, nMaxZ = -Infinity;
     for (let i = 0; i < entry.triCount; i++) {
       const src = i * 9;
       const dst = i * 9;
       for (let v = 0; v < 3; v++) {
         const sv = src + v * 3;
         const dv = dst + v * 3;
-        positions[dv] = entry.positions[sv];
-        positions[dv + 1] = entry.positions[sv + 2];
-        positions[dv + 2] = entry.positions[sv + 1];
+        const x = entry.positions[sv];
+        const y = entry.positions[sv + 2]; // 3MF.Z → Three.Y (up)
+        const z = -entry.positions[sv + 1]; // 3MF.Y → -Three.Z (depth)
+        positions[dv] = x;
+        positions[dv + 1] = y;
+        positions[dv + 2] = z;
+        if (x < nMinX) nMinX = x; if (x > nMaxX) nMaxX = x;
+        if (y < nMinY) nMinY = y; if (y > nMaxY) nMaxY = y;
+        if (z < nMinZ) nMinZ = z; if (z > nMaxZ) nMaxZ = z;
       }
     }
-    negativeParts.push({ positions, faceCount: entry.triCount });
+    negativeParts.push({
+      positions,
+      faceCount: entry.triCount,
+      boundsMin: isFinite(nMinX) ? { x: nMinX, y: nMinY, z: nMinZ } : undefined,
+      boundsMax: isFinite(nMaxX) ? { x: nMaxX, y: nMaxY, z: nMaxZ } : undefined,
+    });
   }
 
   return {
@@ -318,6 +339,8 @@ export async function parse3MF(buffer: Buffer, plateNumber?: number): Promise<Pa
       y: Math.abs(maxY - minY),
       z: Math.abs(maxZ - minZ),
     },
+    boundsMin: isFinite(minX) ? { x: minX, y: minY, z: minZ } : undefined,
+    boundsMax: isFinite(maxX) ? { x: maxX, y: maxY, z: maxZ } : undefined,
   };
 }
 

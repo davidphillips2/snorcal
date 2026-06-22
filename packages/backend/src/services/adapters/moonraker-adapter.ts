@@ -19,6 +19,9 @@ export interface MoonrakerAdapterOptions {
 interface MoonrakerObjects {
   gcode_move?: { gcode_position: number[]; position: number[]; speed_factor: number };
   extruder?: { temperature: number; target: number; power: number };
+  extruder1?: { temperature: number; target: number; power: number };
+  extruder2?: { temperature: number; target: number; power: number };
+  extruder3?: { temperature: number; target: number; power: number };
   heater_bed?: { temperature: number; target: number; power: number };
   toolhead?: { position: number[]; status: string };
   virtual_sdcard?: { progress: number; is_active: boolean; file_position: number };
@@ -117,6 +120,9 @@ export class MoonrakerAdapter implements PrinterAdapter {
         objects: {
           gcode_move: ['gcode_position', 'position', 'speed_factor'],
           extruder: ['temperature', 'target', 'power'],
+          extruder1: ['temperature', 'target', 'power'],
+          extruder2: ['temperature', 'target', 'power'],
+          extruder3: ['temperature', 'target', 'power'],
           heater_bed: ['temperature', 'target', 'power'],
           toolhead: ['position', 'status'],
           virtual_sdcard: ['progress', 'is_active', 'file_position'],
@@ -163,6 +169,7 @@ export class MoonrakerAdapter implements PrinterAdapter {
     const state = ps ? (stateMap[ps.state] ?? 'idle') : 'idle';
 
     const extruder = this.objects.extruder;
+    const extruders = [extruder, this.objects.extruder1, this.objects.extruder2, this.objects.extruder3];
     const bed = this.objects.heater_bed;
     const vsd = this.objects.virtual_sdcard;
     const disp = this.objects.display_status;
@@ -172,6 +179,11 @@ export class MoonrakerAdapter implements PrinterAdapter {
     const etaSec = ps && vsd && vsd.progress > 0
       ? Math.max(0, (ps.total_duration / vsd.progress) * (1 - vsd.progress))
       : undefined;
+
+    // Build hotends array — only include hotends that the printer actually reports.
+    const hotends = extruders
+      .filter((e): e is { temperature: number; target: number; power: number } => !!e)
+      .map((e) => ({ current: e.temperature, target: e.target }));
 
     this.status = {
       printerId: this.printerId,
@@ -186,6 +198,7 @@ export class MoonrakerAdapter implements PrinterAdapter {
         bedTarget: bed?.target,
         hotend: extruder?.temperature,
         hotendTarget: extruder?.target,
+        hotends: hotends.length > 0 ? hotends : undefined,
       },
       fanSpeed: fan ? Math.round(fan.speed * 100) : undefined,
       etaSec,

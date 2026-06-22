@@ -3,6 +3,7 @@ import type { AmsSlot, PrinterRecord, PrinterStatus } from '@snorcal/shared';
 import * as api from '../../api/client';
 import { CameraView } from './CameraView';
 import { AmsEditor } from './AmsEditor';
+import { EditPrinterModal } from './EditPrinterModal';
 
 interface Props {
   id: string;
@@ -16,8 +17,9 @@ export function PrinterDetail({ id, onBack }: Props) {
   const [hotend, setHotend] = useState(status?.temps?.hotendTarget ?? 200);
   const [bed, setBed] = useState(status?.temps?.bedTarget ?? 60);
   const [editingSlot, setEditingSlot] = useState<AmsSlot | null>(null);
+  const [showEdit, setShowEdit] = useState(false);
 
-  useEffect(() => {
+  const loadPrinter = () => {
     api.listPrinters().then(list => {
       const p = list.find(x => x.id === id);
       if (p) {
@@ -25,7 +27,9 @@ export function PrinterDetail({ id, onBack }: Props) {
         if (p.status) setStatus(p.status);
       }
     }).catch(() => {});
-  }, [id]);
+  };
+
+  useEffect(() => { loadPrinter(); }, [id]);
 
   useEffect(() => {
     const es = new EventSource('/api/events');
@@ -91,12 +95,14 @@ export function PrinterDetail({ id, onBack }: Props) {
               <button onClick={onReconnect}
                 className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 rounded text-sm text-white">Reconnect</button>
             )}
+            <button onClick={() => setShowEdit(true)}
+              className="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-sm text-white">Edit</button>
           </div>
         </div>
 
         {/* Big camera */}
         <div className="bg-black rounded-lg overflow-hidden border border-gray-700">
-          <CameraView printerId={printer.id} protocol={printer.protocol} connection={connection} expanded />
+          <CameraView printer={printer} expanded />
         </div>
 
         {/* Job progress (if printing) */}
@@ -122,7 +128,13 @@ export function PrinterDetail({ id, onBack }: Props) {
 
         {/* Status grid */}
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-          <TempCard label="Hotend" current={status?.temps?.hotend} target={status?.temps?.hotendTarget} max={300} />
+          {status?.temps?.hotends && status.temps.hotends.length > 1 ? (
+            status.temps.hotends.map((h, i) => (
+              <TempCard key={i} label={`T${i}`} current={h.current} target={h.target} max={300} />
+            ))
+          ) : (
+            <TempCard label="Hotend" current={status?.temps?.hotend} target={status?.temps?.hotendTarget} max={300} />
+          )}
           <TempCard label="Bed" current={status?.temps?.bed} target={status?.temps?.bedTarget} max={120} />
           <StatCard label="Fan" value={status?.fanSpeed !== undefined ? `${Math.round(status.fanSpeed)}%` : '—'} />
           <StatCard label="Layer"
@@ -244,6 +256,13 @@ export function PrinterDetail({ id, onBack }: Props) {
           printerId={printer.id}
           slot={editingSlot}
           onClose={() => setEditingSlot(null)}
+        />
+      )}
+      {showEdit && (
+        <EditPrinterModal
+          printer={printer}
+          onClose={() => setShowEdit(false)}
+          onSaved={() => { setShowEdit(false); loadPrinter(); }}
         />
       )}
     </div>

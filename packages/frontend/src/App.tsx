@@ -57,6 +57,9 @@ export interface ProjectModel {
   kind: ModelKind;                 // default 'model'
   linkedTo?: string[];             // parent modelId(s) for negative/modifier
   settings?: Record<string, unknown>; // per-object override (modifier subset)
+  /** Set when this ProjectModel is an embedded negative part (sourced from a
+   *  3MF upload). Renders via /files/model/:parentId/negative/:plate/:part. */
+  negativePartRef?: { parentModelId: string; plate: number; part: number };
 }
 
 const DEFAULT_SCALE: Scale3D = { x: 1, y: 1, z: 1 };
@@ -110,6 +113,7 @@ interface PersistedModel {
   kind?: ModelKind;
   linkedTo?: string[];
   settings?: Record<string, unknown>;
+  negativePartRef?: { parentModelId: string; plate: number; part: number };
 }
 
 interface PersistedState {
@@ -504,6 +508,7 @@ export default function App() {
         mirror: m.mirror ?? { ...DEFAULT_MIRROR },
         kind: m.kind ?? 'model',
         faceColors: null, // will be fetched via effect below
+        negativePartRef: m.negativePartRef,
       }));
       setProjectModels(restored);
       setActiveModelIndex(saved.activeModelIndex);
@@ -539,6 +544,7 @@ export default function App() {
           plateId: m.plateId, rotation: m.rotation, positionOffset: m.positionOffset,
           scale: m.scale, mirror: m.mirror, visible: m.visible,
           kind: m.kind, linkedTo: m.linkedTo, settings: m.settings,
+          negativePartRef: m.negativePartRef,
         })),
         activeModelIndex,
         engine,
@@ -626,7 +632,45 @@ export default function App() {
         visible: true,
         kind: 'model',
       };
-      updateModels(prev => [...prev, newPm]);
+
+      // Surface embedded negative parts (e.g. MakerWorld keyring holes) as
+      // child ProjectModels kind=negative. Each gets a delta offset so the
+      // part lines up with the parent after STLViewer's per-mesh centering.
+      const childPms: ProjectModel[] = [];
+      if (model.negativeParts && model.negativeParts.length > 0 && model.boundsMin && model.boundsMax) {
+        const pCx = (model.boundsMin.x + model.boundsMax.x) / 2;
+        const pCz = (model.boundsMin.z + model.boundsMax.z) / 2;
+        const pMinY = model.boundsMin.y;
+        for (const np of model.negativeParts) {
+          if (np.plateIndex !== 1) continue; // only plate-1 parts attach to the freshly-created pm
+          if (!np.boundsMin || !np.boundsMax) continue;
+          const cCx = (np.boundsMin.x + np.boundsMax.x) / 2;
+          const cCz = (np.boundsMin.z + np.boundsMax.z) / 2;
+          childPms.push({
+            uid: makeUid(),
+            modelId: model.id, // child reuses parent id; URL resolved via negativePartRef
+            name: `${model.name} (neg ${np.partIndex})`,
+            faceCount: np.faceCount,
+            plateCount: 1,
+            plateId: activePlateId,
+            rotation: { x: 0, y: 0, z: 0 },
+            positionOffset: {
+              x: offset + (cCx - pCx),
+              y: np.boundsMin.y - pMinY,
+              z: (cCz - pCz),
+            },
+            scale: { ...DEFAULT_SCALE },
+            mirror: { ...DEFAULT_MIRROR },
+            faceColors: null,
+            visible: true,
+            kind: 'negative',
+            linkedTo: [model.id],
+            negativePartRef: { parentModelId: model.id, plate: np.plateIndex, part: np.partIndex },
+          });
+        }
+      }
+
+      updateModels(prev => [...prev, newPm, ...childPms]);
       setActiveModelIndex(projectModels.length); // select new model
 
       // 3MF uploads may carry filament_colour/type arrays in their embedded
@@ -1311,9 +1355,7 @@ export default function App() {
     <div className="flex flex-col h-full">
       {/* Header */}
       <div className="px-4 py-3 border-b border-gray-700 shrink-0">
-        <div className="flex items-center justify-between">
-          <h1 className="text-base font-bold tracking-tight">Snorcal</h1>
-        </div>
+        <div className="flex items-center justify-between" />
       </div>
 
       {/* Scrollable */}
@@ -1545,7 +1587,11 @@ export default function App() {
             return (
               <STLViewer
                 key={pm.uid}
-                modelUrl={api.getModelUrl(pm.modelId)}
+                modelUrl={
+                  pm.negativePartRef
+                    ? api.getNegativePartUrl(pm.negativePartRef.parentModelId, pm.negativePartRef.plate, pm.negativePartRef.part)
+                    : api.getModelUrl(pm.modelId)
+                }
                 faceColors={pm.faceColors || undefined}
                 rotation={pm.rotation}
                 positionOffset={combined}
