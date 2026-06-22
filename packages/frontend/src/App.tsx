@@ -28,7 +28,7 @@ import { InventoryPanel } from './components/Inventory/InventoryPanel';
 import { MultiPrinterFit } from './components/PrinterMonitor/MultiPrinterFit';
 import { LiveMonitorOverlay } from './components/PrinterMonitor/LiveMonitorOverlay';
 import { FilamentRemapModal } from './components/PrinterMonitor/FilamentRemapModal';
-import { SetupWizard } from './components/Onboarding/SetupWizard';
+import { AddPrinterModal } from './components/PrinterMonitor/AddPrinterModal';
 import type { PrinterStatus } from '@snorcal/shared';
 import { HomeDashboard } from './components/Home/HomeDashboard';
 import { PrinterDetail } from './components/PrinterMonitor/PrinterDetail';
@@ -387,8 +387,7 @@ export default function App() {
   const [showPrinters, setShowPrinters] = useState(false);
   const [showInventory, setShowInventory] = useState(() => persisted.current?.showInventory ?? false);
   const [showMwImport, setShowMwImport] = useState(false);
-  const [showWizard, setShowWizard] = useState(false);
-  const [wizardDismissed, setWizardDismissed] = useState(() => localStorage.getItem('snorcal_onboarded') === '1');
+  const [showAddPrinter, setShowAddPrinter] = useState(false);
 
   // Registered printers (for target picker + Send)
   const [printers, setPrinters] = useState<Array<{ id: string; name: string; model?: string | null; protocol: string; bedVolume?: { x: number; y: number; z: number } | null; cameraSnapshotUrl?: string | null; protocolCamId?: string; manualSlots?: number }>>([]);
@@ -405,11 +404,11 @@ export default function App() {
           localStorage.setItem('snorcal_target_printer', resolved);
           return resolved;
         });
-      } else if (!wizardDismissed) {
-        setShowWizard(true);
+      } else {
+        setShowAddPrinter(true);
       }
     }).catch(() => {});
-  }, [wizardDismissed]);
+  }, []);
 
   // Sync bed volume from target printer's record
   useEffect(() => {
@@ -1812,17 +1811,11 @@ export default function App() {
           />
         );
       })()}
-      {showWizard && (
-        <SetupWizard
-          onClose={() => {
-            setShowWizard(false);
-            localStorage.setItem('snorcal_onboarded', '1');
-            setWizardDismissed(true);
-          }}
+      {showAddPrinter && (
+        <AddPrinterModal
+          onClose={() => setShowAddPrinter(false)}
           onAdded={() => {
-            setShowWizard(false);
-            localStorage.setItem('snorcal_onboarded', '1');
-            setWizardDismissed(true);
+            setShowAddPrinter(false);
             api.listPrinters().then(list => {
               setPrinters(list.map(p => ({ id: p.id, name: p.name, model: p.model, protocol: p.protocol, bedVolume: p.bedVolume ?? null, cameraSnapshotUrl: p.cameraSnapshotUrl ?? null, manualSlots: p.manualSlots ?? 0 })));
             }).catch(() => {});
