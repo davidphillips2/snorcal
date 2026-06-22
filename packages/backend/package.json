@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "license": "AGPL-3.0-only",
+  "type": "module",
   "main": "./dist/index.js",
   "scripts": {
     "dev": "tsx watch src/index.ts",
