@@ -65,7 +65,7 @@ export function setupQueue(db: Db): { queue: Queue; worker: Worker } | null {
     });
 
     queue = new Queue(QUEUE_NAME, {
-      connection,
+      connection: connection as any,
       defaultJobOptions: {
         removeOnComplete: { count: 200 },
         removeOnFail: { count: 100 },
@@ -75,7 +75,7 @@ export function setupQueue(db: Db): { queue: Queue; worker: Worker } | null {
     worker = new Worker(QUEUE_NAME, async (job: Job<SliceJobData>) => {
       return processSliceJob(job, db);
     }, {
-      connection,
+      connection: connection as any,
       concurrency: 1,
     });
 
