@@ -108,6 +108,7 @@ async function testPrinterConnection(ip: string, port?: number): Promise<{ ok: b
   // Auto-detect: try HTTP probes first, then TCP-only for MQTT
   const httpProbes: Array<{ port: number; path: string; type: string }> = [
     { port: 7125, path: '/printer/info', type: 'Moonraker/Klipper' },
+    { port: 8080, path: '/printer/info', type: 'Moonraker/Klipper' },
     { port: 80, path: '/api/version', type: 'OctoPrint' },
   ];
 
@@ -131,6 +132,7 @@ async function testPrinterConnection(ip: string, port?: number): Promise<{ ok: b
   // TCP-only probes for non-HTTP protocols
   const tcpProbes: Array<{ port: number; type: string }> = [
     { port: 7125, type: 'Possible Moonraker/Klipper' },
+    { port: 8080, type: 'Possible Moonraker/Klipper' },
     { port: 8883, type: 'Possible MQTT/TLS device' },
     { port: 6001, type: 'Possible Bambu Lab HTTP' },
   ];
