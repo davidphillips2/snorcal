@@ -796,7 +796,7 @@ export default function App() {
       settings: { process: processSettings, machine: {}, filaments: [{}] },
       profiles: selectedProfiles,
       multiMaterial: multiMaterial.enabled ? multiMaterial : undefined,
-      filamentSlots: filamentSlots.length > 1 ? filamentSlots : undefined,
+      filamentSlots: multiMaterial.enabled && filamentSlots.length > 1 ? filamentSlots : undefined,
       buildVolume: bedVolume ?? undefined,
     });
   }, [engine, settings, selectedProfiles, multiMaterial, filamentSlots, bedVolume, plates]);
