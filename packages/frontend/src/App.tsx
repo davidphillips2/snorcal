@@ -470,6 +470,9 @@ export default function App() {
   const [layerCount, setLayerCount] = useState(0);
   const [jobPauses, setJobPauses] = useState<PausePoint[]>([]);
   const layerTypes = useMemo(() => gcodeText ? extractLayerTypes(gcodeText) : new Map<number, string>(), [gcodeText]);
+  // Stable colors array — inline .map() would create a new ref every render
+  // and re-trigger GcodePreviewCanvas's init effect, disposing the preview.
+  const previewExtrusionColors = useMemo(() => filamentSlots.map(s => s.color), [filamentSlots]);
 
   const handleLayerCountReady = useCallback((count: number) => {
     setLayerCount(count);
@@ -1680,7 +1683,7 @@ export default function App() {
           {previewJobId && gcodeText && (
             <>
               <GcodePreviewCanvas gcode={gcodeText} layer={currentPreviewLayer} singleLayerMode={!showAllLayers}
-                extrusionColors={filamentSlots.map(s => s.color)} buildVolume={bedVolume ?? undefined}
+                extrusionColors={previewExtrusionColors} buildVolume={bedVolume ?? undefined}
                 colorMode={gcodeColorMode} onLayerCountReady={handleLayerCountReady} />
               <GcodeTimeBreakdown gcode={gcodeText} />
               <GcodeLayerStrip
