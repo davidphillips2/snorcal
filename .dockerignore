@@ -3,5 +3,6 @@ node_modules
 *.md
 data/
 *.db
-docker/
+docker/docker-compose*.yml
+docker/unraid/
 .claude/
