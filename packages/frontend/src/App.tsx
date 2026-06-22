@@ -571,11 +571,15 @@ export default function App() {
 
   // SSE updates
   useEffect(() => {
+    let printerListDirty = false;
     for (const msg of sseMsgs) {
       const jobId = msg.data.jobId as string;
       if (msg.type === 'printer:status' && msg.data.printerId) {
         setPrinterStatuses(prev => ({ ...prev, [msg.data.printerId as string]: msg.data as unknown as PrinterStatus }));
         continue;
+      }
+      if (msg.type === 'printer:connected' || msg.type === 'printer:disconnected') {
+        printerListDirty = true;
       }
       if (!jobId) continue;
       setJobs((prev) =>
@@ -588,6 +592,11 @@ export default function App() {
             : j
         ),
       );
+    }
+    if (printerListDirty) {
+      api.listPrinters().then(list => {
+        setPrinters(list.map(p => ({ id: p.id, name: p.name, model: p.model, protocol: p.protocol, bedVolume: p.bedVolume ?? null, cameraSnapshotUrl: p.cameraSnapshotUrl ?? null, manualSlots: p.manualSlots ?? 0 })));
+      }).catch(() => {});
     }
   }, [sseMsgs]);
 
