@@ -51,7 +51,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 
 COPY --from=frontend-builder /build/packages/frontend/dist /app/frontend/dist
+COPY --from=backend-builder /build/packages/backend/package.json /app/backend/package.json
 COPY --from=backend-builder /build/packages/backend/dist /app/backend/dist
+COPY --from=backend-builder /build/packages/shared/package.json /app/shared/package.json
 COPY --from=backend-builder /build/packages/shared/dist /app/shared/dist
 COPY --from=backend-builder /build/node_modules /app/node_modules
 
