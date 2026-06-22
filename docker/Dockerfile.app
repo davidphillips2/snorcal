@@ -52,10 +52,8 @@ WORKDIR /app
 
 COPY --from=frontend-builder /build/packages/frontend/dist /app/frontend/dist
 COPY --from=backend-builder /build/packages/backend/dist /app/backend/dist
-COPY --from=backend-builder /build/node_modules /app/node_modules
-COPY --from=backend-builder /build/packages/backend/node_modules /app/backend/node_modules
 COPY --from=backend-builder /build/packages/shared/dist /app/shared/dist
-COPY --from=backend-builder /build/packages/shared/node_modules /app/shared/node_modules
+COPY --from=backend-builder /build/node_modules /app/node_modules
 
 COPY docker/app-entrypoint.sh /app/app-entrypoint.sh
 RUN chmod +x /app/app-entrypoint.sh
