@@ -251,6 +251,11 @@ export async function sliceRoutes(app: FastifyInstance, options: { db: Db }) {
   app.get('/api/jobs', async (req) => {
     const { status } = req.query as { status?: string };
     const jobs = db.listJobs(status);
+    // SQLite datetime('now') returns UTC "YYYY-MM-DD HH:MM:SS" with no zone
+    // suffix. Frontend Date constructor treats that as local time, shifting
+    // displayed time by the user's UTC offset. Append Z so it parses as UTC.
+    const toIso = (s: string | null | undefined): string | null =>
+      s && /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(s) ? s.replace(' ', 'T') + 'Z' : (s ?? null);
     return {
       ok: true,
       data: jobs.map((j) => ({
@@ -265,7 +270,7 @@ export async function sliceRoutes(app: FastifyInstance, options: { db: Db }) {
         estimatedTime: j.estimated_time,
         filamentUsedG: j.filament_used_g,
         filamentCost: j.filament_cost,
-        createdAt: j.created_at,
+        createdAt: toIso(j.created_at),
       })),
     };
   });

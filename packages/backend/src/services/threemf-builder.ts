@@ -330,7 +330,16 @@ function processPaintColors(
   if (!faceColors || faceColors.length === 0) return new Array(faceCount).fill(null);
 
   const paintColors: (string | null)[] = [];
+  // Guard: if face-color buffer is shorter than geometry's face count (e.g.
+  // paint was authored against a different mesh), skip painting for OOB faces
+  // rather than throwing on undefined.toString().
+  const availableFaces = Math.floor(faceColors.length / 4);
+  const usableFaceCount = Math.min(faceCount, availableFaces);
   for (let f = 0; f < faceCount; f++) {
+    if (f >= usableFaceCount) {
+      paintColors.push(null);
+      continue;
+    }
     const a = faceColors[f * 4 + 3];
     if (a === 0) {
       paintColors.push(null);
