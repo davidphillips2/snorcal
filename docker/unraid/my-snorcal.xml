@@ -15,11 +15,11 @@
   <Project>https://github.com/davidphillips2/snorcal</Project>
   <Overview>Self-hosted 3D slicing hub for OrcaSlicer and BambuStudio. Web UI for uploading models, configuring slice settings, painting face colors, and shipping gcode to Moonraker/Bambu printers.&#13;
 &#13;
-Runs on the host network so it can discover printers via mDNS/SSDP and reach companion containers via localhost. Requires two companion containers exposing ports to the host:&#13;
-  1. redis (use the redis:7-alpine template from Community Apps, expose 6379)&#13;
-  2. One or both bambuddy slicer sidecars:&#13;
-     - ghcr.io/maziggy/orca-slicer-api:latest  (host port 3003)&#13;
-     - ghcr.io/maziggy/bambu-studio-api:latest (host port 3001)&#13;
+Runs on the host network so it can discover printers via mDNS/SSDP and reach companion containers via localhost. Requires one or both bambuddy slicer sidecars (companion containers exposing ports to the host):&#13;
+  - ghcr.io/maziggy/orca-slicer-api:latest  (host port 3003)&#13;
+  - ghcr.io/maziggy/bambu-studio-api:latest (host port 3001)&#13;
+&#13;
+Redis is OPTIONAL — only needed if you want the BullMQ-backed job queue (useful for multiple workers). Without it, slices run in-process.&#13;
 &#13;
 No shared volume needed — snorcal uploads 3MF and downloads gcode over HTTP.</Overview>
   <Category>Productivity: Tools:</Category>
@@ -30,7 +30,7 @@ No shared volume needed — snorcal uploads 3MF and downloads gcode over HTTP.</
   <PostArgs/>
   <CPUset/>
   <Date>2026-06-22</Date>
-  <Requires>Redis container + at least one bambuddy slicer sidecar (ghcr.io/maziggy/orca-slicer-api or ghcr.io/maziggy/bambu-studio-api). Snorcal uses host networking — companions must expose their ports to the host (127.0.0.1) so Snorcal can reach them via localhost.</Requires>
+  <Requires>At least one bambuddy slicer sidecar (ghcr.io/maziggy/orca-slicer-api or ghcr.io/maziggy/bambu-studio-api). Snorcal uses host networking — companions must expose their ports to the host (127.0.0.1) so Snorcal can reach them via localhost. Redis is optional.</Requires>
 
   <Config Name="PORT" Target="PORT" Default="3654" Mode=""
           Description="Port the backend listens on. Pick a host port that's free (3000 is often taken on Unraid)."
@@ -40,13 +40,13 @@ No shared volume needed — snorcal uploads 3MF and downloads gcode over HTTP.</
           Description="Persistent storage for the SQLite DB, uploaded models, and generated gcode."
           Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/snorcal</Config>
 
-  <Config Name="REDIS_HOST" Target="REDIS_HOST" Default="127.0.0.1" Mode=""
-          Description="Redis hostname. With host networking, use 127.0.0.1 if Redis runs in another host-networked container, or the bridge IP of the Redis container."
-          Type="Variable" Display="always" Required="true" Mask="false">127.0.0.1</Config>
+  <Config Name="REDIS_HOST" Target="REDIS_HOST" Default="" Mode=""
+          Description="OPTIONAL. Redis hostname for BullMQ job queue. Leave blank to run slices in-process (recommended for single-user). Set to 127.0.0.1 (or Redis container bridge IP) to enable."
+          Type="Variable" Display="advanced" Required="false" Mask="false"/>
 
   <Config Name="REDIS_PORT" Target="REDIS_PORT" Default="6379" Mode=""
-          Description="Redis port."
-          Type="Variable" Display="always" Required="true" Mask="false">6379</Config>
+          Description="OPTIONAL. Redis port. Only used when REDIS_HOST is set."
+          Type="Variable" Display="advanced" Required="false" Mask="false">6379</Config>
 
   <Config Name="SLICER_URL_ORCASLICER" Target="SLICER_URL_ORCASLICER" Default="http://127.0.0.1:3003" Mode=""
           Description="URL of the OrcaSlicer sidecar (bambuddy). With host networking, default is localhost:3003. Leave blank to disable OrcaSlicer engine."

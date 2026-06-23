@@ -1,6 +1,6 @@
 # Example production deployment using prebuilt images.
 #
-# Snorcal app + Redis + two bambuddy slicer sidecars (OrcaSlicer + BambuStudio).
+# Snorcal app + two bambuddy slicer sidecars (OrcaSlicer + BambuStudio).
 # Pull slicer images from maziggy's GHCR — see https://github.com/maziggy/bambuddy/blob/main/slicer-api/README.md
 #
 #   docker compose -f docker/docker-compose.example.yml up -d
@@ -8,6 +8,10 @@
 # Note: slicer sidecars do NOT share a volume with the app. Snorcal uploads the
 # 3MF via HTTP and downloads the gcode back over HTTP. Each container has its
 # own /data.
+#
+# Redis is optional (commented out by default). Without it, slices run
+# in-process via the direct path — fine for single-user setups. Uncomment
+# the redis service + REDIS_HOST/REDIS_PORT in `app` to re-enable BullMQ.
 
 services:
   app:
@@ -17,16 +21,15 @@ services:
     volumes:
       - snorcal-data:/data
     environment:
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
+      # Redis is optional — uncomment alongside the `redis` service below
+      # to enable BullMQ-backed job queue. Without it, slices run in-process.
+      # - REDIS_HOST=redis
+      # - REDIS_PORT=6379
       - DATA_DIR=/data
       - NODE_ENV=production
       - SLICER_URL_ORCASLICER=http://orca-slicer-api:3000
       - SLICER_URL_BAMBUSTUDIO=http://bambu-studio-api:3000
       # - DEBUG_PRINTER=1
-    depends_on:
-      redis:
-        condition: service_healthy
     restart: unless-stopped
     deploy:
       resources:
@@ -49,21 +52,23 @@ services:
         limits:
           memory: 4G
 
-  redis:
-    image: redis:7-alpine
-    volumes:
-      - snorcal-redis:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-    restart: unless-stopped
-    deploy:
-      resources:
-        limits:
-          memory: 128M
+  # Redis (optional — enables BullMQ job queue). Uncomment alongside
+  # REDIS_HOST/REDIS_PORT in `app` to re-enable.
+  # redis:
+  #   image: redis:7-alpine
+  #   volumes:
+  #     - snorcal-redis:/data
+  #   healthcheck:
+  #     test: ["CMD", "redis-cli", "ping"]
+  #     interval: 5s
+  #     timeout: 3s
+  #     retries: 5
+  #   restart: unless-stopped
+  #   deploy:
+  #     resources:
+  #       limits:
+  #         memory: 128M
 
 volumes:
   snorcal-data:
-  snorcal-redis:
+  # snorcal-redis:

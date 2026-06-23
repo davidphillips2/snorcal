@@ -47,7 +47,7 @@ In the same terminal, from the same folder:
 docker compose -f docker-compose.example.yml up -d
 ```
 
-First run will download ~2 GB of images (Snorcal + Redis + two slicer sidecars). Coffee time. When it's done you'll see "Container ... Started" for four containers.
+First run will download ~2 GB of images (Snorcal + two slicer sidecars). Coffee time. When it's done you'll see "Container ... Started" for three containers.
 
 ---
 
@@ -92,7 +92,7 @@ docker compose -f docker-compose.example.yml up -d
 
 **Port 3000 in use?** Edit the file, change `"${PORT:-3000}:3000"` to `"${PORT:-3654}:3000"`, then open `http://localhost:3654` instead.
 
-**"Cannot connect to Redis"?** Wait 30 seconds after `up -d` and refresh. Redis takes a moment.
+**"Cannot connect to Redis"?** You can ignore this — Snorcal runs fine without Redis (it's optional, used only for the BullMQ job queue). Slices run in-process instead.
 
 **Slicer jobs stay queued forever?** Slicer sidecars (OrcaSlicer / BambuStudio) use a lot of memory. Give Docker Desktop at least 8 GB in Settings → Resources.
 

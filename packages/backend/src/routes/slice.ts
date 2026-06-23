@@ -427,24 +427,27 @@ export async function sliceRoutes(app: FastifyInstance, options: { db: Db }) {
  * Executes async — the HTTP response returns immediately with the jobId.
  * Client polls GET /api/jobs/:id for progress.
  */
-function runSliceDirect(
+/**
+ * Core slice worker. Same code path for direct (no Redis) and BullMQ paths.
+ * Throws on failure — caller is responsible for marking job failed.
+ */
+export async function runSliceJob(
   jobId: string,
   body: SliceRequest,
   modelFilePath: string,
   modelName: string,
   workDir: string,
   db: Db,
-) {
-  // Fire and forget — errors are captured in the DB
-  (async () => {
-    const executor = new SlicerExecutor();
-    try {
-      db.updateJobStatus(jobId, 'running');
-      db.updateJobProgress(jobId, 5, 'Building 3MF...');
+  onProgress?: (progress: number, step: string) => void,
+): Promise<void> {
+  const executor = new SlicerExecutor();
+  db.updateJobStatus(jobId, 'running');
+  db.updateJobProgress(jobId, 5, 'Building 3MF...');
+  onProgress?.(5, 'Building 3MF...');
 
-      // Build project settings — full template + U1/SnapSpeed overrides + profile overlays + user customizations
-      const projectSettings: Record<string, unknown> = {
-        ...(defaultProjectSettingsRaw as Record<string, unknown>),
+  // Build project settings — full template + U1/SnapSpeed overrides + profile overlays + user customizations
+  const projectSettings: Record<string, unknown> = {
+    ...(defaultProjectSettingsRaw as Record<string, unknown>),
         ...PROJECT_SETTING_OVERRIDES,
       };
 
@@ -546,7 +549,9 @@ function runSliceDirect(
         // Multi-model: resolve each model's STL path and face colors
         const rawEntries = body.models.map((entry: any, mi: number) => {
           const rec = db.getModel(entry.modelId);
-          const plateIndex = body.plateIndex ?? 1;
+          // Frontend sends 1-based for multi-plate, undefined for single-plate.
+          // Queue encodes undefined as 0. Normalize to 1 (DB stores 1-based).
+          const plateIndex = (body.plateIndex && body.plateIndex > 0) ? body.plateIndex : 1;
           let stlPath = rec?.file_path ?? '';
           let faceColors: Uint8Array | undefined;
           // Mirror PUT/GET preference: plate row wins if it exists. Single-plate
@@ -584,7 +589,7 @@ function runSliceDirect(
       } else {
         // Single model (backwards compat)
         const modelRecord = db.getModel(body.modelId!);
-        const plateIndex = (body.plateIndex ?? 1);
+        const plateIndex = (body.plateIndex && body.plateIndex > 0) ? body.plateIndex : 1;
         let stlPath = modelFilePath;
         let faceColors: Uint8Array | undefined;
         // Same plate-first preference as the multi-model branch above.
@@ -602,7 +607,7 @@ function runSliceDirect(
       // Append negative parts (cutters/modifiers) captured at import time as
       // children of their parent model. Slicer applies boolean cut at slice
       // time. Without this, MakerWorld imports lose keyring holes etc.
-      const plateIndexForNegatives = body.plateIndex ?? 1;
+      const plateIndexForNegatives = (body.plateIndex && body.plateIndex > 0) ? body.plateIndex : 1;
       const negativeChildren: ThreeMFModelInput[] = [];
       for (let pi = 0; pi < buildModels.length; pi++) {
         const parentModelId = parentModelIds[pi];
@@ -637,6 +642,7 @@ function runSliceDirect(
       fs.mkdirSync(outputDir, { recursive: true });
 
       db.updateJobProgress(jobId, 15, 'Spawning slicer...');
+      onProgress?.(15, 'Spawning slicer...');
       const result = await executor.execute(
         {
           engine: body.engine,
@@ -652,6 +658,7 @@ function runSliceDirect(
         (progress: number, step: string) => {
           const mapped = Math.max(15, Math.min(95, progress));
           db.updateJobProgress(jobId, mapped, step);
+          onProgress?.(mapped, step);
         },
       );
 
@@ -683,11 +690,25 @@ function runSliceDirect(
           db.updateJobEstimates(jobId, estimates);
         }
       }
-    } catch (err) {
-      const message = err instanceof Error ? `${err.message}\n${err.stack?.slice(0, 500)}` : String(err);
-      db.updateJobStatus(jobId, 'failed', { errorMessage: message });
-    }
-  })();
+}
+
+/**
+ * Run slicing directly without Redis/BullMQ.
+ * Executes async — the HTTP response returns immediately with the jobId.
+ * Client polls GET /api/jobs/:id for progress.
+ */
+export function runSliceDirect(
+  jobId: string,
+  body: SliceRequest,
+  modelFilePath: string,
+  modelName: string,
+  workDir: string,
+  db: Db,
+) {
+  runSliceJob(jobId, body, modelFilePath, modelName, workDir, db).catch((err) => {
+    const message = err instanceof Error ? `${err.message}\n${err.stack?.slice(0, 500)}` : String(err);
+    db.updateJobStatus(jobId, 'failed', { errorMessage: message });
+  });
 }
 
 function parseGcodeEstimates(gcodePath: string, modelName: string): {

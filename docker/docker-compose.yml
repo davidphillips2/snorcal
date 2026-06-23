@@ -8,15 +8,14 @@ services:
     volumes:
       - snorcal-data:/data
     environment:
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
+      # Redis is optional — uncomment to enable BullMQ-backed job queue.
+      # Without it, slices run in-process (fine for single-user setups).
+      # - REDIS_HOST=redis
+      # - REDIS_PORT=6379
       - DATA_DIR=/data
       - NODE_ENV=production
       - SLICER_URL_ORCASLICER=http://orca-slicer-api:3003
       - SLICER_URL_BAMBUSTUDIO=http://bambu-studio-api:3001
-    depends_on:
-      redis:
-        condition: service_healthy
     restart: unless-stopped
     deploy:
       resources:
@@ -42,21 +41,23 @@ services:
         limits:
           memory: 4G
 
-  redis:
-    image: redis:7-alpine
-    volumes:
-      - snorcal-redis:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-    restart: unless-stopped
-    deploy:
-      resources:
-        limits:
-          memory: 128M
+  # Redis (optional — enables BullMQ job queue). Uncomment alongside
+  # REDIS_HOST/REDIS_PORT in `app` to re-enable.
+  # redis:
+  #   image: redis:7-alpine
+  #   volumes:
+  #     - snorcal-redis:/data
+  #   healthcheck:
+  #     test: ["CMD", "redis-cli", "ping"]
+  #     interval: 5s
+  #     timeout: 3s
+  #     retries: 5
+  #   restart: unless-stopped
+  #   deploy:
+  #     resources:
+  #       limits:
+  #         memory: 128M
 
 volumes:
   snorcal-data:
-  snorcal-redis:
+  # snorcal-redis:
