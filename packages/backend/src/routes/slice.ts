@@ -95,16 +95,23 @@ function expandFilamentSlots(
     projectSettings[key] = expanded;
   }
 
-  // Build targetCount x targetCount flush_volumes_matrix (flattened row-major)
+  // Build targetCount x targetCount flush_volumes_matrix (flattened row-major).
+  // existingMatrix may be in SOURCE dimensions (e.g. default template is 4x4 = 16
+  // entries). Index it by source row/col, NOT target row/col — otherwise target
+  // (r,c) reads source idx `r*targetCount+c` which points at the wrong cell
+  // (e.g. for targetCount=3, target (1,2) reads source idx 5, which is source
+  // (1,1) diagonal = '0', corrupting the matrix and triggering slicer exit 154).
   const defaultFlush = 280;
   const existingMatrix = projectSettings['flush_volumes_matrix'] as string[] | undefined;
+  const srcDim = existingMatrix && Number.isInteger(Math.sqrt(existingMatrix.length))
+    ? Math.round(Math.sqrt(existingMatrix.length)) : 0;
   const matrix: string[] = [];
   for (let r = 0; r < targetCount; r++) {
     for (let c = 0; c < targetCount; c++) {
       if (r === c) { matrix.push('0'); }
       else {
-        const idx = r * targetCount + c;
-        matrix.push(existingMatrix && idx < existingMatrix.length ? existingMatrix[idx] : String(defaultFlush));
+        const srcIdx = srcDim > 0 ? r * srcDim + c : -1;
+        matrix.push(srcIdx >= 0 && srcIdx < existingMatrix!.length ? existingMatrix![srcIdx] : String(defaultFlush));
       }
     }
   }
@@ -546,8 +553,15 @@ export async function runSliceJob(
       const parentModelIds: (string | undefined)[] = [];
 
       if (body.models && body.models.length > 0) {
-        // Multi-model: resolve each model's STL path and face colors
-        const rawEntries = body.models.map((entry: any, mi: number) => {
+        // Multi-model: resolve each model's STL path and face colors.
+        // Skip non-model entries (negative/modifier/support) — frontend sends
+        // them in body.models, but they reuse the parent's modelId, so treating
+        // them as regular models would load the parent STL and emit a
+        // full-model-sized negative cutter. They're re-emitted via the
+        // DB listNegativeParts path below using the correct cutter STL.
+        const rawEntries = body.models
+          .filter((entry: any) => !entry.kind || entry.kind === 'model')
+          .map((entry: any, mi: number) => {
           const rec = db.getModel(entry.modelId);
           // Frontend sends 1-based for multi-plate, undefined for single-plate.
           // Queue encodes undefined as 0. Normalize to 1 (DB stores 1-based).
@@ -577,6 +591,7 @@ export async function runSliceJob(
           } as ThreeMFModelInput & { _linkedToIds?: string[] };
         });
         // Resolve linkedTo (modelId[] → index of first match)
+        // (negatives were filtered out above; only parent models remain)
         buildModels = rawEntries.map(({ _linkedToIds, ...rest }) => {
           if (_linkedToIds && _linkedToIds.length > 0) {
             for (const id of _linkedToIds) {
@@ -607,11 +622,17 @@ export async function runSliceJob(
       // Append negative parts (cutters/modifiers) captured at import time as
       // children of their parent model. Slicer applies boolean cut at slice
       // time. Without this, MakerWorld imports lose keyring holes etc.
+      // Dedupe by parentModelId: multiple clones share modelId, and each
+      // clone's DB rows are identical — emitting them N times produces N
+      // overlapping cuts and wastes 3MF bandwidth.
       const plateIndexForNegatives = (body.plateIndex && body.plateIndex > 0) ? body.plateIndex : 1;
       const negativeChildren: ThreeMFModelInput[] = [];
+      const seenParentIds = new Set<string>();
       for (let pi = 0; pi < buildModels.length; pi++) {
         const parentModelId = parentModelIds[pi];
         if (!parentModelId) continue;
+        if (seenParentIds.has(parentModelId)) continue;
+        seenParentIds.add(parentModelId);
         const negParts = db.listNegativeParts(parentModelId, plateIndexForNegatives);
         negParts.forEach((np, ni) => {
           negativeChildren.push({
@@ -625,9 +646,6 @@ export async function runSliceJob(
       if (negativeChildren.length > 0) {
         buildModels = [...buildModels, ...negativeChildren];
       }
-
-      console.log(`[slice] models=${buildModels.length} filament_colour=${JSON.stringify(projectSettings['filament_colour'])}`);
-      console.log(`[slice] faceColors lens=[${buildModels.map(m => m.faceColors?.length ?? 0)}]`);
 
       const threemfBuffer = await build3MF({
         models: buildModels,

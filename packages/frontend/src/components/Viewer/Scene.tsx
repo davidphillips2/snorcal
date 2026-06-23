@@ -22,11 +22,19 @@ export function Scene({ onReady }: SceneProps) {
     const container = containerRef.current;
     if (!container) return;
 
-    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
-    renderer.setPixelRatio(window.devicePixelRatio);
+    // Mobile tuning: cap pixel ratio, disable antialias + shadows. iOS Safari
+    // WebGL is memory-starved; full-res 100k-face models OOM-kill the tab.
+    const isMobile = typeof navigator !== 'undefined'
+      && /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+    const renderer = new THREE.WebGLRenderer({
+      antialias: !isMobile,
+      alpha: true,
+      powerPreference: isMobile ? 'low-power' : 'high-performance',
+    });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, isMobile ? 1.5 : 2));
     renderer.setSize(container.clientWidth, container.clientHeight);
     renderer.setClearColor(0x1a1a2e);
-    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.enabled = !isMobile;
     renderer.domElement.style.touchAction = 'none';
     container.appendChild(renderer.domElement);
 

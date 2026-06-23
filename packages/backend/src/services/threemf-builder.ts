@@ -129,9 +129,6 @@ export async function build3MF(input: ThreeMFBuildInput): Promise<Buffer> {
     });
   }
 
-  const paintedCount = allObjects.filter(o => o.paintData && o.paintData.some(p => p !== null)).length;
-  console.log(`[threemf] models=${models.length} objects=${allObjects.length} painted=${paintedCount}`);
-
   // Build 3MF XML. Wrapper object lists ALL parts (parent + negative/modifier
   // children) as siblings via <components>. Nesting children inside the
   // parent's <components> produces a non-spec mesh+components hybrid that
@@ -386,6 +383,8 @@ function buildObjectXML(obj: ObjectDef): string {
   for (let f = 0; f < fc; f++) {
     const pc = obj.paintData?.[f];
     if (pc) {
+      // OrcaSlicer reads Bambu's `paint_color` attribute per-triangle.
+      // pc is the per-face encoded value from extruderToPaintColor().
       xml += `\n          <triangle v1="${obj.indices[f * 3]}" v2="${obj.indices[f * 3 + 1]}" v3="${obj.indices[f * 3 + 2]}" paint_color="${pc}"/>`;
     } else {
       xml += `\n          <triangle v1="${obj.indices[f * 3]}" v2="${obj.indices[f * 3 + 1]}" v3="${obj.indices[f * 3 + 2]}"/>`;
@@ -459,24 +458,16 @@ function toHex(n: number): string {
 }
 
 /**
- * OrcaSlicer TriangleSelector bitstream encoding for non-split leaf triangles.
- *
- * Format: packed hex nibbles (little-endian within each nibble).
- *   - First 2 bits = split_sides (must be 00 for a leaf)
- *   - Next bits = EnforcerBlockerType state:
- *       state 0/1/2 → 2 bits of state
- *       state >= 3  → 2 bits "11" escape + 4 bits of (state-3)
- *
- * State == extruderIndex (1-based). Matches CONST_FILAMENTS at
- * OrcaSlicer Model.cpp:52 (Extruder1=1 ... Extruder16=16).
- *
- * Reference: SoftFever/OrcaSlicer TriangleSelector.cpp:1692 (serialize)
- *           Model.cpp:3539 (get_triangle_as_string)
+ * Encode extruder index (1-based) as OrcaSlicer paint_color value.
+ * Format: TriangleSelector bitstream (TriangleSelector.cpp serialize).
+ *   state 1 → "4", state 2 → "8", state N≥3 → "{N-3}C"
+ * Tested: 5C/6C/7C form (Bambu Studio output) is NOT read by local
+ * OrcaSlicer 2.4.0 — slices all-white because it parses those as
+ * extruders 8/9/10 which aren't configured.
  */
 function extruderToPaintColor(extruderIndex: number): string {
-  if (extruderIndex === 1) return '4';   // state=1: bits 01 → nibble 4
-  if (extruderIndex === 2) return '8';   // state=2: bits 10 → nibble 8
-  // state>=3: bits 11 (nibble C low) + 4 bits (state-3) high
+  if (extruderIndex === 1) return '4';
+  if (extruderIndex === 2) return '8';
   return (extruderIndex - 3).toString(16).toUpperCase() + 'C';
 }
 

@@ -137,6 +137,7 @@ interface PersistedState {
   activeColor?: string;
   selectedPrinterId?: string | null;
   targetPrinterId?: string | null;
+  viewer3DEnabled?: boolean;
   previewJobId?: string | null;
   gcodeColorMode?: 'filament' | 'lineType' | 'speed';
   showAllLayers?: boolean;
@@ -380,6 +381,11 @@ export default function App() {
 
   // UI
   const [view, setView] = useState<'home' | 'slice' | 'jobs' | 'printer' | 'settings'>(() => persisted.current?.view ?? 'home');
+  // 3D viewer toggle. Default OFF on mobile (huge STLs OOM iOS Safari),
+  // ON on desktop. User can flip from the slice view.
+  const isMobileUA = typeof navigator !== 'undefined'
+    && /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+  const [viewer3DEnabled, setViewer3DEnabled] = useState(() => persisted.current?.viewer3DEnabled ?? !isMobileUA);
   const [selectedPrinterId, setSelectedPrinterId] = useState<string | null>(() => persisted.current?.selectedPrinterId ?? null);
   const [showSidebar, setShowSidebar] = useState(() => persisted.current?.showSidebar ?? false);
   const [showSettings, setShowSettings] = useState(() => persisted.current?.showSettings ?? true);
@@ -515,15 +521,20 @@ export default function App() {
     persisted.current = null; // only use once
   }, []);
 
-  // Fetch face colors for each model on load
+  // Fetch face colors for each unique model on load (dedupe by modelId).
+  // Skip entirely when 3D viewer is off — colors only needed for painting UI.
   useEffect(() => {
+    if (!viewer3DEnabled) return;
+    const seen = new Set<string>();
     for (const pm of projectModels) {
       if (pm.faceColors !== null) continue;
+      if (seen.has(pm.modelId)) continue;
+      seen.add(pm.modelId);
       api.getModelColors(pm.modelId).then(colors => {
         setProjectModels(prev => prev.map(p => p.modelId === pm.modelId ? { ...p, faceColors: colors } : p));
       }).catch(() => {});
     }
-  }, [projectModels.length]); // re-run when models added
+  }, [projectModels.length, viewer3DEnabled]);
 
   // Load default settings when engine changes
   useEffect(() => {
@@ -561,13 +572,14 @@ export default function App() {
         activeColor,
         selectedPrinterId,
         targetPrinterId,
+        viewer3DEnabled,
         gcodeColorMode,
         showAllLayers,
         currentPreviewLayer,
       });
     }, 500);
     return () => clearTimeout(timer);
-  }, [projectModels, plates, activePlateId, activeModelIndex, engine, settings, selectedProfiles, filamentSlots, multiMaterial, printerIp, view, showSidebar, showSettings, showJobs, showInventory, paintMode, activeColor, selectedPrinterId, targetPrinterId, gcodeColorMode, showAllLayers, currentPreviewLayer]);
+  }, [projectModels, plates, activePlateId, activeModelIndex, engine, settings, selectedProfiles, filamentSlots, multiMaterial, printerIp, view, showSidebar, showSettings, showJobs, showInventory, paintMode, activeColor, selectedPrinterId, targetPrinterId, viewer3DEnabled, gcodeColorMode, showAllLayers, currentPreviewLayer]);
 
   // SSE updates
   useEffect(() => {
@@ -601,23 +613,31 @@ export default function App() {
   }, [sseMsgs]);
 
   // Poll running jobs
+  const hasRunningJobs = jobs.some((j) => j.status === 'running' || j.status === 'queued');
   useEffect(() => {
-    const running = jobs.filter((j) => j.status === 'running' || j.status === 'queued');
-    if (running.length === 0) return;
+    if (!hasRunningJobs) return;
     const interval = setInterval(async () => {
-      for (const job of running) {
-        try {
-          const updated = await api.getJob(job.id);
-          setJobs((prev) => prev.map((j) => j.id === job.id ? {
-            ...j, status: updated.status, progress: updated.progress, currentStep: updated.currentStep,
-            errorMessage: updated.errorMessage, gcodeSize: updated.gcodeSize, modelName: updated.modelName,
-            estimatedTime: updated.estimatedTime, filamentUsedG: updated.filamentUsedG, filamentCost: updated.filamentCost,
-          } : j));
-        } catch {}
-      }
+      // Re-read latest job IDs at tick time — avoid stale closure + avoid
+      // re-running this effect on every job state change.
+      setJobs((prev) => {
+        const running = prev.filter((j) => j.status === 'running' || j.status === 'queued');
+        if (running.length === 0) return prev;
+        Promise.all(running.map(j => api.getJob(j.id).catch(() => null))).then((results) => {
+          setJobs((cur) => cur.map((j) => {
+            const r = results.find((u, i) => u && running[i].id === j.id);
+            if (!r) return j;
+            return {
+              ...j, status: r.status, progress: r.progress, currentStep: r.currentStep,
+              errorMessage: r.errorMessage, gcodeSize: r.gcodeSize, modelName: r.modelName,
+              estimatedTime: r.estimatedTime, filamentUsedG: r.filamentUsedG, filamentCost: r.filamentCost,
+            };
+          }));
+        });
+        return prev;
+      });
     }, 2000);
     return () => clearInterval(interval);
-  }, [jobs.length, jobs.filter((j) => j.status === 'running' || j.status === 'queued').length]);
+  }, [hasRunningJobs]);
 
   // Upload: add to project (not replace)
   const handleUpload = useCallback(async (file: File) => {
@@ -817,8 +837,20 @@ export default function App() {
   // Slice: send first visible model (multi-model slicing to be added later)
   const saveAllColors = useCallback(async () => {
     const plateIndex = plates.findIndex(p => p.id === activePlateId) + 1 || 1;
+    const savedModelIds = new Set<string>();
     for (const pm of projectModels) {
+      // Skip negative/modifier/support volumes — they share parent's modelId
+      // (App.tsx:659) and would overwrite the parent's paint with their own
+      // (smaller, often all-default) colors under the same DB row.
+      if (pm.kind && pm.kind !== 'model') continue;
+      if (pm.negativePartRef) continue;
       if (pm.plateId !== activePlateId || !pm.visible) continue;
+      // First instance per modelId wins. Multiple clones in the scene share
+      // one DB row (face_colors keyed by modelId+plate). Later clones often
+      // carry stale geometry (e.g. 1440-face buffer from a prior upload) that
+      // would overwrite the first clone's correct full-size paint.
+      if (savedModelIds.has(pm.modelId)) continue;
+      savedModelIds.add(pm.modelId);
       const mesh = meshRefs.current[pm.uid];
       if (!mesh) continue;
       const colors = extractFaceColors(mesh.geometry);
@@ -1577,15 +1609,39 @@ export default function App() {
           <button onClick={() => setShowSidebar(!showSidebar)} className="p-1.5 rounded-lg bg-gray-700 text-gray-300 hover:bg-gray-600 transition">
             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" /></svg>
           </button>
-          <span className="text-sm font-bold">Snorcal</span>
         </div>
 
         {/* 3D Viewer */}
         <div className="flex-1 relative overflow-hidden">
           <Scene onReady={setSceneRefs} />
 
-          {/* Multi-model STL viewers — all visible models across all plates */}
-          {sceneRefs && !previewJobId && projectModels.filter(m => m.visible).map((pm) => {
+          {/* Viewer enable/disable toggle — escape hatch for mobile OOM */}
+          <button
+            type="button"
+            onClick={() => setViewer3DEnabled(v => !v)}
+            className="absolute top-2 right-2 z-20 px-2 py-1 text-xs rounded bg-gray-800/80 text-gray-200 hover:bg-gray-700/80 border border-gray-600/50"
+            title={viewer3DEnabled ? 'Disable 3D viewer (saves memory on mobile)' : 'Enable 3D viewer'}
+          >
+            {viewer3DEnabled ? '3D: On' : '3D: Off'}
+          </button>
+          {!viewer3DEnabled && (
+            <div className="absolute inset-0 flex items-center justify-center text-gray-400 text-sm bg-gray-900/60 pointer-events-none">
+              3D viewer disabled — tap "3D: Off" to re-enable
+            </div>
+          )}
+
+          {/* Multi-model STL viewers — all visible models across all plates.
+              On mobile or when viewer disabled, skip — full 3D for 100k+ face
+              STLs OOM-kills iOS Safari tab. Toggle lives in slice toolbar. */}
+          {sceneRefs && !previewJobId && viewer3DEnabled && (() => {
+            const isMobile = typeof navigator !== 'undefined'
+              && /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+            const visible = projectModels.filter(m => m.visible);
+            // Mobile: only active model (if any). Desktop: all visible.
+            const capped = isMobile && activeModelIndex != null
+              ? visible.filter((_, i) => i === activeModelIndex)
+              : isMobile ? visible.slice(0, 1) : visible;
+            return capped.map((pm) => {
             const plateOff = plateOffsets[pm.plateId] ?? { x: 0, y: 0, z: 0 };
             const combined = new THREE.Vector3(
               pm.positionOffset.x + plateOff.x,
@@ -1610,7 +1666,8 @@ export default function App() {
                 onGeometryReady={(geometry, mesh) => handleGeometryReady(pm.uid, geometry, mesh)}
               />
             );
-          })}
+          });
+          })()}
 
           {/* Bed grids — one per plate, side-by-side; active plate highlighted */}
           {sceneRefs && (
