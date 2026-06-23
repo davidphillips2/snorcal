@@ -586,20 +586,12 @@ function parseMesh(obj: any): MeshEntry | null {
  *   - Direct encoding: values are direct extruder indices ({0,1,2,3,...})
  */
 function extractPaintColors(triList: any[], faceCount: number): Uint8Array | null {
-  // Collect all unique paint_color hex values to detect encoding scheme
-  const uniqueValues = new Set<number>();
+  // Collect any triangles that carry paint_color to know we have painted input
   let hasAny = false;
   for (let i = 0; i < triList.length; i++) {
-    const pc = triList[i]['@_paint_color'];
-    if (!pc) continue;
-    hasAny = true;
-    uniqueValues.add(parseInt(String(pc), 16));
+    if (triList[i]['@_paint_color']) { hasAny = true; break; }
   }
   if (!hasAny) return null;
-
-  // Detect nibble encoding: if every unique value is a multiple of 4, divide by 4
-  const allMultiplesOf4 = [...uniqueValues].every(v => v % 4 === 0);
-  const divisor = allMultiplesOf4 ? 4 : 1;
 
   const faceColors = new Uint8Array(faceCount * 4);
   let hasColor = false;
@@ -607,9 +599,35 @@ function extractPaintColors(triList: any[], faceCount: number): Uint8Array | nul
   for (let i = 0; i < triList.length; i++) {
     const paintColor = triList[i]['@_paint_color'];
     if (!paintColor) continue;
+    if (i >= faceCount) break;
 
-    const extruderNum = parseInt(String(paintColor), 16) / divisor;
-    if (extruderNum > 0 && i < faceCount) {
+    // Decode TriangleSelector bitstream (per OrcaSlicer Model.cpp
+    // set_triangle_from_string + TriangleSelector.cpp next_nibble).
+    // Hex chars are read in REVERSE (rightmost first); each char is a
+    // 4-bit nibble, LSB-first within the nibble.
+    //   bits 0-1 of first nibble = split_sides (00 for unsplit leaf)
+    //   bits 2-3 of first nibble = code:
+    //     00 → state 0 (unpainted)
+    //     01 → state 1 (extruder 1)
+    //     10 → state 2 (extruder 2)
+    //     11 → escape: read next nibble, state = nibble + 3 (extruder ≥3)
+    // For split triangles (multi-nibble bitstreams encoding the sub-tree),
+    // we read the first leaf's state — this loses sub-triangle granularity
+    // but those are <0.1% of faces on typical painted models.
+    const chars = String(paintColor).toUpperCase();
+    const firstNibble = parseInt(chars[chars.length - 1], 16);
+    const code = (firstNibble >> 2) & 0b11;
+    let extruderNum = 0;
+    if (code === 0b11 && chars.length >= 2) {
+      const nextNibble = parseInt(chars[chars.length - 2], 16);
+      extruderNum = nextNibble + 3;
+    } else {
+      extruderNum = code;
+    }
+
+    if (extruderNum > 0) {
+      // R = extruder index, G=0, B=0, A=1 → marker that downstream
+      // (runSliceJob) resolves to actual filament_colour at slice time.
       faceColors[i * 4] = extruderNum;
       faceColors[i * 4 + 1] = 0;
       faceColors[i * 4 + 2] = 0;

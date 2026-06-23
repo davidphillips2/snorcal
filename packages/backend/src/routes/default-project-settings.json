@@ -632,7 +632,7 @@
     "skin_infill_line_width": "100%",
     "skirt_distance": "2",
     "skirt_height": "1",
-    "skirt_loops": "1",
+    "skirt_loops": "0",
     "skirt_speed": "50",
     "skirt_start_angle": "-135",
     "skirt_type": "combined",
