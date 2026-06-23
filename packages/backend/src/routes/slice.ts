@@ -553,14 +553,19 @@ export async function runSliceJob(
       const parentModelIds: (string | undefined)[] = [];
 
       if (body.models && body.models.length > 0) {
-        // Multi-model: resolve each model's STL path and face colors.
-        // Skip non-model entries (negative/modifier/support) — frontend sends
-        // them in body.models, but they reuse the parent's modelId, so treating
-        // them as regular models would load the parent STL and emit a
-        // full-model-sized negative cutter. They're re-emitted via the
-        // DB listNegativeParts path below using the correct cutter STL.
-        const rawEntries = body.models
-          .filter((entry: any) => !entry.kind || entry.kind === 'model')
+        // Filter out invisible entries — frontend pre-filters too, but this
+        // is the authoritative gate so hidden parts never reach the 3MF.
+        const visibleEntries = body.models.filter((entry: any) => entry.visible !== false);
+
+        // Split into regular models (kind=model/undefined) and inline child
+        // entries (kind=negative/modifier/support). Inline children are the
+        // source of truth — user-added cutters + MakerWorld embedded
+        // negatives both arrive this way. DB pull below is fallback only.
+        const modelEntries = visibleEntries.filter((e: any) => !e.kind || e.kind === 'model');
+        const inlineChildEntries = visibleEntries.filter((e: any) => e.kind && e.kind !== 'model');
+
+        // Resolve parent models + populate modelIdToIndex for child linking.
+        const rawEntries = modelEntries
           .map((entry: any, mi: number) => {
           const rec = db.getModel(entry.modelId);
           // Frontend sends 1-based for multi-plate, undefined for single-plate.
@@ -590,8 +595,7 @@ export async function runSliceJob(
             _linkedToIds: linkedToIds,
           } as ThreeMFModelInput & { _linkedToIds?: string[] };
         });
-        // Resolve linkedTo (modelId[] → index of first match)
-        // (negatives were filtered out above; only parent models remain)
+        // Resolve linkedTo (modelId[] → index of first match) for parent models.
         buildModels = rawEntries.map(({ _linkedToIds, ...rest }) => {
           if (_linkedToIds && _linkedToIds.length > 0) {
             for (const id of _linkedToIds) {
@@ -601,6 +605,92 @@ export async function runSliceJob(
           }
           return rest;
         });
+
+        // Resolve inline child entries (part/negative/modifier/support).
+        // STL lookup priority:
+        //   1. printablePartRef → db.listPrintableParts(parentModelId, plate)[part_index]
+        //      (per-`<object>` sub-parts of a 3MF assembly, captured at upload)
+        //   2. negativePartRef → db.listNegativeParts(parentModelId, plate)[part_index]
+        //      (MakerWorld embedded negatives pulled from the original 3MF)
+        //   3. db.getModel(entry.modelId)?.file_path (user-uploaded cutter STL
+        //      registered via POST /api/models, then linked via kind=negative)
+        const plateIndexForInline = (body.plateIndex && body.plateIndex > 0) ? body.plateIndex : 1;
+        const inlineResolved: (ThreeMFModelInput & { _linkedToIds?: string[] })[] = [];
+        const parentsWithInlineChildren = new Set<string>();
+        for (const child of inlineChildEntries) {
+          let stlPath = '';
+          let faceColors: Uint8Array | undefined;
+          if (child.printablePartRef) {
+            const ref = child.printablePartRef;
+            const printableParts = db.listPrintableParts(ref.parentModelId, ref.plate);
+            const pp = printableParts.find(p => p.part_index === ref.part);
+            if (pp) {
+              stlPath = pp.file_path;
+              if (pp.face_colors) faceColors = new Uint8Array(pp.face_colors);
+            }
+          } else if (child.negativePartRef) {
+            const ref = child.negativePartRef;
+            const negParts = db.listNegativeParts(ref.parentModelId, ref.plate);
+            const np = negParts.find(p => p.part_index === ref.part);
+            if (np) stlPath = np.file_path;
+          } else if (child.modelId) {
+            const rec = db.getModel(child.modelId);
+            const plate = db.getPlate(child.modelId, plateIndexForInline);
+            stlPath = plate?.file_path ?? rec?.file_path ?? '';
+          }
+          // Track which parents already have inline children so DB fallback skips them.
+          if (child.linkedTo) {
+            for (const pid of child.linkedTo) parentsWithInlineChildren.add(pid);
+          }
+          const { linkedTo: linkedToIds, ...rest } = child;
+          inlineResolved.push({
+            ...rest,
+            stlPath,
+            faceColors,
+            _linkedToIds: linkedToIds,
+          } as ThreeMFModelInput & { _linkedToIds?: string[] });
+        }
+        // Resolve linkedTo for inline children (same pattern as parent resolution).
+        const inlineWithIndices = inlineResolved.map(({ _linkedToIds, ...rest }) => {
+          if (_linkedToIds && _linkedToIds.length > 0) {
+            for (const id of _linkedToIds) {
+              const idx = modelIdToIndex.get(id);
+              if (idx != null) { rest.linkedTo = idx; break; }
+            }
+          }
+          return rest;
+        });
+        if (inlineWithIndices.length > 0) {
+          buildModels = [...buildModels, ...inlineWithIndices];
+        }
+
+        // Fallback: pull negatives from DB for parents that didn't receive
+        // any inline children. Old clients without inline entries still
+        // get their embedded negatives this way. Also runs when user has
+        // explicitly hidden/toggled off all inline children.
+        const plateIndexForNegatives = (body.plateIndex && body.plateIndex > 0) ? body.plateIndex : 1;
+        const negativeChildren: ThreeMFModelInput[] = [];
+        const seenParentIds = new Set<string>();
+        for (let pi = 0; pi < parentModelIds.length; pi++) {
+          const parentModelId = parentModelIds[pi];
+          if (!parentModelId) continue;
+          if (seenParentIds.has(parentModelId)) continue;
+          seenParentIds.add(parentModelId);
+          // Skip DB pull if frontend already sent inline children for this parent.
+          if (parentsWithInlineChildren.has(parentModelId)) continue;
+          const negParts = db.listNegativeParts(parentModelId, plateIndexForNegatives);
+          negParts.forEach((np, ni) => {
+            negativeChildren.push({
+              stlPath: np.file_path,
+              kind: 'negative',
+              linkedTo: pi,
+              name: `negative_${pi + 1}_${ni + 1}`,
+            });
+          });
+        }
+        if (negativeChildren.length > 0) {
+          buildModels = [...buildModels, ...negativeChildren];
+        }
       } else {
         // Single model (backwards compat)
         const modelRecord = db.getModel(body.modelId!);
@@ -617,34 +707,18 @@ export async function runSliceJob(
         }
         buildModels = [{ stlPath, faceColors, rotation: body.rotation, positionOffset: body.positionOffset }];
         parentModelIds[0] = body.modelId;
-      }
 
-      // Append negative parts (cutters/modifiers) captured at import time as
-      // children of their parent model. Slicer applies boolean cut at slice
-      // time. Without this, MakerWorld imports lose keyring holes etc.
-      // Dedupe by parentModelId: multiple clones share modelId, and each
-      // clone's DB rows are identical — emitting them N times produces N
-      // overlapping cuts and wastes 3MF bandwidth.
-      const plateIndexForNegatives = (body.plateIndex && body.plateIndex > 0) ? body.plateIndex : 1;
-      const negativeChildren: ThreeMFModelInput[] = [];
-      const seenParentIds = new Set<string>();
-      for (let pi = 0; pi < buildModels.length; pi++) {
-        const parentModelId = parentModelIds[pi];
-        if (!parentModelId) continue;
-        if (seenParentIds.has(parentModelId)) continue;
-        seenParentIds.add(parentModelId);
-        const negParts = db.listNegativeParts(parentModelId, plateIndexForNegatives);
+        // Single-model DB fallback for negatives — same as multi-model.
+        const plateIndexForNegatives = (body.plateIndex && body.plateIndex > 0) ? body.plateIndex : 1;
+        const negParts = db.listNegativeParts(body.modelId!, plateIndexForNegatives);
         negParts.forEach((np, ni) => {
-          negativeChildren.push({
+          buildModels.push({
             stlPath: np.file_path,
             kind: 'negative',
-            linkedTo: pi,
-            name: `negative_${pi + 1}_${ni + 1}`,
+            linkedTo: 0,
+            name: `negative_1_${ni + 1}`,
           });
         });
-      }
-      if (negativeChildren.length > 0) {
-        buildModels = [...buildModels, ...negativeChildren];
       }
 
       const threemfBuffer = await build3MF({

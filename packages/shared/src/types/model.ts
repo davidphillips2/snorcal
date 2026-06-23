@@ -2,12 +2,13 @@ export type ModelFormat = 'stl' | 'step';
 
 /**
  * Object kind carried through to 3MF as `<object type="...">`.
- * - `model` — printable geometry
+ * - `model` — printable geometry (top-level assembly root)
+ * - `part` — printable child of a `model` parent (becomes a `<component>` of the assembly wrapper)
  * - `negative` — subtractive volume (3MF `negative_part`)
  * - `modifier` — settings override region (3MF `modifier`)
  * - `support` — custom support pillar (3MF `support_model`)
  */
-export type ModelKind = 'model' | 'negative' | 'modifier' | 'support';
+export type ModelKind = 'model' | 'part' | 'negative' | 'modifier' | 'support';
 
 /** Non-uniform scale factors per axis. */
 export interface Scale3D {

@@ -17,6 +17,8 @@ export function parseSTL(filePath: string): {
   faceCount: number;
   vertexCount: number;
   bounds: Bounds;
+  boundsMin?: { x: number; y: number; z: number };
+  boundsMax?: { x: number; y: number; z: number };
 } {
   const buf = fs.readFileSync(filePath);
 
@@ -62,6 +64,8 @@ export function parseSTL(filePath: string): {
       y: Math.abs(maxY - minY),
       z: Math.abs(maxZ - minZ),
     },
+    boundsMin: { x: minX, y: minY, z: minZ },
+    boundsMax: { x: maxX, y: maxY, z: maxZ },
   };
 }
 
@@ -70,7 +74,7 @@ function isBinarySTL(buf: Buffer): boolean {
   return buf.length === 84 + faceCount * 50;
 }
 
-function parseASCIISTL(text: string): { faceCount: number; vertexCount: number; bounds: Bounds } {
+function parseASCIISTL(text: string): { faceCount: number; vertexCount: number; bounds: Bounds; boundsMin?: { x: number; y: number; z: number }; boundsMax?: { x: number; y: number; z: number } } {
   let faceCount = 0;
   let minX = Infinity, minY = Infinity, minZ = Infinity;
   let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
@@ -96,6 +100,8 @@ function parseASCIISTL(text: string): { faceCount: number; vertexCount: number; 
       y: Math.abs(maxY - minY),
       z: Math.abs(maxZ - minZ),
     },
+    boundsMin: { x: minX, y: minY, z: minZ },
+    boundsMax: { x: maxX, y: maxY, z: maxZ },
   };
 }
 

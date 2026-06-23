@@ -26,12 +26,17 @@ export class Db {
     id: string; name: string; filePath: string; fileSize: number;
     format: string; faceCount: number; boundsX: number; boundsY: number; boundsZ: number;
     plateCount?: number;
+    boundsMinX?: number; boundsMinY?: number; boundsMinZ?: number;
+    boundsMaxX?: number; boundsMaxY?: number; boundsMaxZ?: number;
   }) {
     this.db.prepare(`
-      INSERT INTO models (id, name, file_path, file_size, format, face_count, bounds_x, bounds_y, bounds_z, plate_count)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO models (id, name, file_path, file_size, format, face_count, bounds_x, bounds_y, bounds_z, plate_count,
+        bounds_min_x, bounds_min_y, bounds_min_z, bounds_max_x, bounds_max_y, bounds_max_z)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(model.id, model.name, model.filePath, model.fileSize, model.format,
-      model.faceCount, model.boundsX, model.boundsY, model.boundsZ, model.plateCount ?? 1);
+      model.faceCount, model.boundsX, model.boundsY, model.boundsZ, model.plateCount ?? 1,
+      model.boundsMinX ?? null, model.boundsMinY ?? null, model.boundsMinZ ?? null,
+      model.boundsMaxX ?? null, model.boundsMaxY ?? null, model.boundsMaxZ ?? null);
   }
 
   getModel(id: string) {
@@ -217,17 +222,50 @@ export class Db {
   insertNegativePart(part: {
     modelId: string; plateIndex: number; partIndex: number;
     filePath: string; faceCount: number;
+    boundsMinX?: number; boundsMinY?: number; boundsMinZ?: number;
+    boundsMaxX?: number; boundsMaxY?: number; boundsMaxZ?: number;
   }) {
     this.db.prepare(`
-      INSERT INTO model_negative_parts (model_id, plate_index, part_index, file_path, face_count)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(part.modelId, part.plateIndex, part.partIndex, part.filePath, part.faceCount);
+      INSERT INTO model_negative_parts (model_id, plate_index, part_index, file_path, face_count,
+        bounds_min_x, bounds_min_y, bounds_min_z, bounds_max_x, bounds_max_y, bounds_max_z)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(part.modelId, part.plateIndex, part.partIndex, part.filePath, part.faceCount,
+      part.boundsMinX ?? null, part.boundsMinY ?? null, part.boundsMinZ ?? null,
+      part.boundsMaxX ?? null, part.boundsMaxY ?? null, part.boundsMaxZ ?? null);
   }
 
   listNegativeParts(modelId: string, plateIndex: number): DbNegativePart[] {
     return this.db.prepare(
       'SELECT * FROM model_negative_parts WHERE model_id = ? AND plate_index = ? ORDER BY part_index',
     ).all(modelId, plateIndex) as DbNegativePart[];
+  }
+
+  // --- Printable parts (one per `<object>` in a 3MF assembly) ---
+
+  insertPrintablePart(part: {
+    modelId: string; plateIndex: number; partIndex: number;
+    filePath: string; faceCount: number;
+    name?: string; extruder?: number;
+    boundsMinX?: number; boundsMinY?: number; boundsMinZ?: number;
+    boundsMaxX?: number; boundsMaxY?: number; boundsMaxZ?: number;
+    faceColors?: Buffer;
+  }) {
+    this.db.prepare(`
+      INSERT INTO model_printable_parts
+        (model_id, plate_index, part_index, file_path, face_count, name, extruder,
+         bounds_min_x, bounds_min_y, bounds_min_z, bounds_max_x, bounds_max_y, bounds_max_z, face_colors)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(part.modelId, part.plateIndex, part.partIndex, part.filePath, part.faceCount,
+      part.name ?? null, part.extruder ?? null,
+      part.boundsMinX ?? null, part.boundsMinY ?? null, part.boundsMinZ ?? null,
+      part.boundsMaxX ?? null, part.boundsMaxY ?? null, part.boundsMaxZ ?? null,
+      part.faceColors ?? null);
+  }
+
+  listPrintableParts(modelId: string, plateIndex: number): DbPrintablePart[] {
+    return this.db.prepare(
+      'SELECT * FROM model_printable_parts WHERE model_id = ? AND plate_index = ? ORDER BY part_index',
+    ).all(modelId, plateIndex) as DbPrintablePart[];
   }
 
   // --- Spools ---
@@ -369,6 +407,8 @@ export interface DbModel {
   source_type: string | null;
   source_url: string | null;
   source_settings: string | null;
+  bounds_min_x: number | null; bounds_min_y: number | null; bounds_min_z: number | null;
+  bounds_max_x: number | null; bounds_max_y: number | null; bounds_max_z: number | null;
 }
 
 export interface DbModelSummary {
@@ -403,6 +443,17 @@ export interface DbPlate {
 export interface DbNegativePart {
   model_id: string; plate_index: number; part_index: number;
   file_path: string; face_count: number;
+  bounds_min_x: number | null; bounds_min_y: number | null; bounds_min_z: number | null;
+  bounds_max_x: number | null; bounds_max_y: number | null; bounds_max_z: number | null;
+}
+
+export interface DbPrintablePart {
+  model_id: string; plate_index: number; part_index: number;
+  file_path: string; face_count: number;
+  name: string | null; extruder: number | null;
+  bounds_min_x: number | null; bounds_min_y: number | null; bounds_min_z: number | null;
+  bounds_max_x: number | null; bounds_max_y: number | null; bounds_max_z: number | null;
+  face_colors: Buffer | null;
 }
 
 export interface DbPrinter {

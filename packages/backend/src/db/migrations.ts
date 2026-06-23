@@ -1,4 +1,6 @@
 import type Database from 'better-sqlite3';
+import fs from 'fs';
+import { parseSTL } from '../services/model-parser';
 
 export const MIGRATIONS = [
   `CREATE TABLE IF NOT EXISTS models (
@@ -234,6 +236,29 @@ export function runSchemaMigrations(db: Database.Database) {
     `);
   } catch { /* already exists */ }
 
+  // Printable parts (one per `<object>` in a 3MF assembly) — surfaces
+  // multi-object imports as interactable children of the parent model.
+  // Distinct from model_negative_parts: these are printable geometry that
+  // compose the assembly (each becomes a `<component>` of the wrapper object
+  // in the output 3MF). Model_negative_parts stay non-printable cutters.
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS model_printable_parts (
+        model_id TEXT NOT NULL REFERENCES models(id) ON DELETE CASCADE,
+        plate_index INTEGER NOT NULL,
+        part_index INTEGER NOT NULL,
+        file_path TEXT NOT NULL,
+        face_count INTEGER NOT NULL,
+        name TEXT,
+        extruder INTEGER,
+        bounds_min_x REAL, bounds_min_y REAL, bounds_min_z REAL,
+        bounds_max_x REAL, bounds_max_y REAL, bounds_max_z REAL,
+        face_colors BLOB,
+        PRIMARY KEY (model_id, plate_index, part_index)
+      )
+    `);
+  } catch { /* already exists */ }
+
   // app_settings — key/value, runtime-editable (e.g. bambu_cloud_token)
   try {
     db.exec(`
@@ -257,6 +282,67 @@ export function runSchemaMigrations(db: Database.Database) {
     if (!mCols.some(c => c.name === 'source_settings')) {
       db.exec("ALTER TABLE models ADD COLUMN source_settings TEXT");
     }
+    // Plate-1 bounds (min + max in raw STL coordinates). Lets the frontend
+    // surface embedded negative parts as children on MakerWorld imports,
+    // which go through GET /api/models/:id (not the upload response).
+    if (!mCols.some(c => c.name === 'bounds_min_x')) {
+      db.exec("ALTER TABLE models ADD COLUMN bounds_min_x REAL");
+      db.exec("ALTER TABLE models ADD COLUMN bounds_min_y REAL");
+      db.exec("ALTER TABLE models ADD COLUMN bounds_min_z REAL");
+      db.exec("ALTER TABLE models ADD COLUMN bounds_max_x REAL");
+      db.exec("ALTER TABLE models ADD COLUMN bounds_max_y REAL");
+      db.exec("ALTER TABLE models ADD COLUMN bounds_max_z REAL");
+    }
     db.exec("CREATE INDEX IF NOT EXISTS idx_models_source_url ON models(source_url)");
   } catch { /* migration not needed */ }
+
+  // Negative parts bounds — same reason. Without these, MakerWorld imports
+  // (which don't see the upload response) can't compute child offsets.
+  try {
+    const npCols = db.prepare("PRAGMA table_info(model_negative_parts)").all() as { name: string }[];
+    if (!npCols.some(c => c.name === 'bounds_min_x')) {
+      db.exec("ALTER TABLE model_negative_parts ADD COLUMN bounds_min_x REAL");
+      db.exec("ALTER TABLE model_negative_parts ADD COLUMN bounds_min_y REAL");
+      db.exec("ALTER TABLE model_negative_parts ADD COLUMN bounds_min_z REAL");
+      db.exec("ALTER TABLE model_negative_parts ADD COLUMN bounds_max_x REAL");
+      db.exec("ALTER TABLE model_negative_parts ADD COLUMN bounds_max_y REAL");
+      db.exec("ALTER TABLE model_negative_parts ADD COLUMN bounds_max_z REAL");
+    }
+  } catch { /* migration not needed */ }
+
+  // Backfill bounds_min/max for rows that predate the columns above. Without
+  // this, MakerWorld imports (which read bounds via GET /api/models/:id) can't
+  // surface embedded negatives as children. Re-parses the stored STL plate.
+  try {
+    const staleModels = db.prepare(
+      "SELECT id, file_path FROM models WHERE bounds_min_x IS NULL",
+    ).all() as { id: string; file_path: string }[];
+    for (const row of staleModels) {
+      if (!fs.existsSync(row.file_path)) continue;
+      try {
+        const parsed = parseSTL(row.file_path);
+        if (!parsed.boundsMin || !parsed.boundsMax) continue;
+        db.prepare(
+          "UPDATE models SET bounds_min_x=?, bounds_min_y=?, bounds_min_z=?, bounds_max_x=?, bounds_max_y=?, bounds_max_z=? WHERE id=?",
+        ).run(parsed.boundsMin.x, parsed.boundsMin.y, parsed.boundsMin.z,
+          parsed.boundsMax.x, parsed.boundsMax.y, parsed.boundsMax.z, row.id);
+      } catch { /* skip unreadable STL */ }
+    }
+
+    const staleNegatives = db.prepare(
+      "SELECT model_id, plate_index, part_index, file_path FROM model_negative_parts WHERE bounds_min_x IS NULL",
+    ).all() as { model_id: string; plate_index: number; part_index: number; file_path: string }[];
+    for (const row of staleNegatives) {
+      if (!fs.existsSync(row.file_path)) continue;
+      try {
+        const parsed = parseSTL(row.file_path);
+        if (!parsed.boundsMin || !parsed.boundsMax) continue;
+        db.prepare(
+          "UPDATE model_negative_parts SET bounds_min_x=?, bounds_min_y=?, bounds_min_z=?, bounds_max_x=?, bounds_max_y=?, bounds_max_z=? WHERE model_id=? AND plate_index=? AND part_index=?",
+        ).run(parsed.boundsMin.x, parsed.boundsMin.y, parsed.boundsMin.z,
+          parsed.boundsMax.x, parsed.boundsMax.y, parsed.boundsMax.z,
+          row.model_id, row.plate_index, row.part_index);
+      } catch { /* skip unreadable STL */ }
+    }
+  } catch { /* backfill best-effort */ }
 }

@@ -189,7 +189,7 @@ export function ViewerToolbar({
   return (
     <>
       {/* Toolbar */}
-      <div className="absolute top-2 left-2 right-2 z-20 flex items-center gap-2">
+      <div className="absolute top-2 left-2 z-20 flex items-center gap-2">
         <div className="flex items-center gap-1 bg-gray-800/90 backdrop-blur rounded-lg px-2 py-1.5 shadow-lg">
           {MODES.map(({ key, label, Icon }) => (
             <button

@@ -22,6 +22,7 @@ export async function register3MFModel(
   boundsMax?: { x: number; y: number; z: number };
   plateCount: number;
   negativeParts?: Array<{ plateIndex: number; partIndex: number; faceCount: number; boundsMin?: { x: number; y: number; z: number }; boundsMax?: { x: number; y: number; z: number } }>;
+  parts?: Array<{ plateIndex: number; partIndex: number; faceCount: number; name?: string; extruder?: number; boundsMin?: { x: number; y: number; z: number }; boundsMax?: { x: number; y: number; z: number } }>;
 }> {
   const id = uuid();
   const modelDir = path.join(getModelsDir(), id);
@@ -36,6 +37,8 @@ export async function register3MFModel(
     // Collect negative parts during the parse loop, flush AFTER insertModel
     // so the FK on model_negative_parts.model_id is satisfiable.
     const negativeData: { plateIndex: number; partIndex: number; filePath: string; faceCount: number; boundsMin?: { x: number; y: number; z: number }; boundsMax?: { x: number; y: number; z: number } }[] = [];
+    // Same pattern for printable parts (sub-objects of a 3MF assembly).
+    const printableData: { plateIndex: number; partIndex: number; filePath: string; faceCount: number; name?: string; extruder?: number; boundsMin?: { x: number; y: number; z: number }; boundsMax?: { x: number; y: number; z: number }; faceColors?: Uint8Array }[] = [];
 
     let faceCount = 0;
     let bounds = { x: 0, y: 0, z: 0 };
@@ -72,6 +75,27 @@ export async function register3MFModel(
         });
       }
 
+      // Stage printable parts (sub-objects of a 3MF assembly) so the slice
+      // pipeline can re-emit them as printable `<component>` entries of the
+      // wrapper object — surfaces them as interactable children in the UI.
+      if (parsed.parts && parsed.parts.length > 0) {
+        parsed.parts.forEach((pp, i) => {
+          const partPath = path.join(modelDir, `part_${p}_${i + 1}.stl`);
+          writePositionsToSTL(pp.positions, partPath);
+          printableData.push({
+            plateIndex: p,
+            partIndex: i + 1,
+            filePath: partPath,
+            faceCount: pp.faceCount,
+            name: pp.name,
+            extruder: pp.extruder,
+            boundsMin: pp.boundsMin,
+            boundsMax: pp.boundsMax,
+            faceColors: pp.faceColors ?? undefined,
+          });
+        });
+      }
+
       plateData.push({ index: p, faceCount: parsed.faceCount, bounds: parsed.bounds, positions: parsed.positions, faceColors: parsed.faceColors ?? undefined });
 
       if (p === 1) {
@@ -94,6 +118,12 @@ export async function register3MFModel(
       boundsY: bounds.y,
       boundsZ: bounds.z,
       plateCount,
+      boundsMinX: boundsMin?.x,
+      boundsMinY: boundsMin?.y,
+      boundsMinZ: boundsMin?.z,
+      boundsMaxX: boundsMax?.x,
+      boundsMaxY: boundsMax?.y,
+      boundsMaxZ: boundsMax?.z,
     });
 
     for (const pd of plateData) {
@@ -118,6 +148,31 @@ export async function register3MFModel(
         partIndex: nd.partIndex,
         filePath: nd.filePath,
         faceCount: nd.faceCount,
+        boundsMinX: nd.boundsMin?.x,
+        boundsMinY: nd.boundsMin?.y,
+        boundsMinZ: nd.boundsMin?.z,
+        boundsMaxX: nd.boundsMax?.x,
+        boundsMaxY: nd.boundsMax?.y,
+        boundsMaxZ: nd.boundsMax?.z,
+      });
+    }
+
+    for (const pp of printableData) {
+      db.insertPrintablePart({
+        modelId: id,
+        plateIndex: pp.plateIndex,
+        partIndex: pp.partIndex,
+        filePath: pp.filePath,
+        faceCount: pp.faceCount,
+        name: pp.name,
+        extruder: pp.extruder,
+        boundsMinX: pp.boundsMin?.x,
+        boundsMinY: pp.boundsMin?.y,
+        boundsMinZ: pp.boundsMin?.z,
+        boundsMaxX: pp.boundsMax?.x,
+        boundsMaxY: pp.boundsMax?.y,
+        boundsMaxZ: pp.boundsMax?.z,
+        faceColors: pp.faceColors ? Buffer.from(pp.faceColors) : undefined,
       });
     }
 
@@ -147,6 +202,17 @@ export async function register3MFModel(
             faceCount: nd.faceCount,
             boundsMin: nd.boundsMin,
             boundsMax: nd.boundsMax,
+          }))
+        : undefined,
+      parts: printableData.length > 0
+        ? printableData.map(pp => ({
+            plateIndex: pp.plateIndex,
+            partIndex: pp.partIndex,
+            faceCount: pp.faceCount,
+            name: pp.name,
+            extruder: pp.extruder,
+            boundsMin: pp.boundsMin,
+            boundsMax: pp.boundsMax,
           }))
         : undefined,
     };
@@ -254,6 +320,33 @@ export async function modelRoutes(app: FastifyInstance, options: { db: Db }) {
     if (!model) {
       return reply.status(404).send({ ok: false, error: 'Model not found' });
     }
+    // Surface plate-1 negative parts so MakerWorld imports (which don't see
+    // the upload response) can build child ProjectModels the same way plain
+    // uploads do.
+    const negativeParts = db.listNegativeParts(model.id, 1).map(np => ({
+      plateIndex: np.plate_index,
+      partIndex: np.part_index,
+      faceCount: np.face_count,
+      boundsMin: np.bounds_min_x != null && np.bounds_min_y != null && np.bounds_min_z != null
+        ? { x: np.bounds_min_x, y: np.bounds_min_y, z: np.bounds_min_z }
+        : undefined,
+      boundsMax: np.bounds_max_x != null && np.bounds_max_y != null && np.bounds_max_z != null
+        ? { x: np.bounds_max_x, y: np.bounds_max_y, z: np.bounds_max_z }
+        : undefined,
+    }));
+    const parts = db.listPrintableParts(model.id, 1).map(pp => ({
+      plateIndex: pp.plate_index,
+      partIndex: pp.part_index,
+      faceCount: pp.face_count,
+      name: pp.name ?? undefined,
+      extruder: pp.extruder ?? undefined,
+      boundsMin: pp.bounds_min_x != null && pp.bounds_min_y != null && pp.bounds_min_z != null
+        ? { x: pp.bounds_min_x, y: pp.bounds_min_y, z: pp.bounds_min_z }
+        : undefined,
+      boundsMax: pp.bounds_max_x != null && pp.bounds_max_y != null && pp.bounds_max_z != null
+        ? { x: pp.bounds_max_x, y: pp.bounds_max_y, z: pp.bounds_max_z }
+        : undefined,
+    }));
     return {
       ok: true,
       data: {
@@ -263,11 +356,19 @@ export async function modelRoutes(app: FastifyInstance, options: { db: Db }) {
         faceCount: model.face_count,
         fileSize: model.file_size,
         bounds: { x: model.bounds_x, y: model.bounds_y, z: model.bounds_z },
+        boundsMin: model.bounds_min_x != null && model.bounds_min_y != null && model.bounds_min_z != null
+          ? { x: model.bounds_min_x, y: model.bounds_min_y, z: model.bounds_min_z }
+          : undefined,
+        boundsMax: model.bounds_max_x != null && model.bounds_max_y != null && model.bounds_max_z != null
+          ? { x: model.bounds_max_x, y: model.bounds_max_y, z: model.bounds_max_z }
+          : undefined,
         hasColors: (model.face_colors !== null) || (db.getPlate(model.id, 1)?.face_colors != null),
         plateCount: model.plate_count,
         createdAt: model.created_at,
         sourceType: model.source_type ?? null,
         hasSourceSettings: model.source_settings != null,
+        negativeParts: negativeParts.length > 0 ? negativeParts : undefined,
+        parts: parts.length > 0 ? parts : undefined,
       },
     };
   });
@@ -339,6 +440,25 @@ export async function modelRoutes(app: FastifyInstance, options: { db: Db }) {
 
     return { ok: true };
   });
+
+  // GET /api/models/:id/parts/:plate/:part/colors — Get per-part face colors
+  // (parts have their own face_colors blob; parent's merged blob uses different indices)
+  app.get<{ Params: { id: string; plate: string; part: string } }>(
+    '/api/models/:id/parts/:plate/:part/colors',
+    async (req, reply) => {
+      const plateNum = parseInt(req.params.plate);
+      const partNum = parseInt(req.params.part);
+      const parts = db.listPrintableParts(req.params.id, plateNum);
+      const pp = parts.find(p => p.part_index === partNum);
+      if (!pp) {
+        return reply.status(404).send({ ok: false, error: 'Printable part not found' });
+      }
+      if (!pp.face_colors) {
+        return { ok: true, data: { faceColors: null } };
+      }
+      return { ok: true, data: { faceColors: Buffer.from(pp.face_colors).toString('base64') } };
+    },
+  );
 
   // DELETE /api/models/:id — Delete model
   app.delete<{ Params: { id: string } }>('/api/models/:id', async (req, reply) => {

@@ -55,6 +55,16 @@ export interface NegativePartMeta {
   boundsMax?: { x: number; y: number; z: number };
 }
 
+export interface PrintablePartMeta {
+  plateIndex: number;
+  partIndex: number;
+  faceCount: number;
+  name?: string;
+  extruder?: number;
+  boundsMin?: { x: number; y: number; z: number };
+  boundsMax?: { x: number; y: number; z: number };
+}
+
 export async function uploadModel(file: File) {
   const formData = new FormData();
   formData.append('file', file);
@@ -64,6 +74,7 @@ export async function uploadModel(file: File) {
     boundsMin?: { x: number; y: number; z: number };
     boundsMax?: { x: number; y: number; z: number };
     negativeParts?: NegativePartMeta[];
+    parts?: PrintablePartMeta[];
   }>;
 }
 
@@ -185,6 +196,23 @@ export function getModelUrl(modelId: string, plate?: number) {
 
 export function getNegativePartUrl(modelId: string, plate: number, part: number) {
   return `${API_BASE}/files/model/${modelId}/negative/${plate}/${part}`;
+}
+
+export function getPrintablePartUrl(modelId: string, plate: number, part: number) {
+  return `${API_BASE}/files/model/${modelId}/part/${plate}/${part}`;
+}
+
+export async function getPrintablePartColors(modelId: string, plate: number, part: number): Promise<Uint8Array | null> {
+  try {
+    const data = await apiFetch(`/models/${modelId}/parts/${plate}/${part}/colors`) as { faceColors: string | null };
+    if (!data.faceColors) return null;
+    const binary = atob(data.faceColors);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    return bytes;
+  } catch {
+    return null;
+  }
 }
 
 export async function getDefaultSettings(engine: string) {

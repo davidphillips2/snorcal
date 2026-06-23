@@ -60,6 +60,10 @@ export interface ProjectModel {
   /** Set when this ProjectModel is an embedded negative part (sourced from a
    *  3MF upload). Renders via /files/model/:parentId/negative/:plate/:part. */
   negativePartRef?: { parentModelId: string; plate: number; part: number };
+  /** Set when this ProjectModel is a printable sub-object of a 3MF assembly
+   *  (one `<object>` inside the parent 3MF). Renders via
+   *  /files/model/:parentId/part/:plate/:part. */
+  printablePartRef?: { parentModelId: string; plate: number; part: number };
 }
 
 const DEFAULT_SCALE: Scale3D = { x: 1, y: 1, z: 1 };
@@ -98,6 +102,108 @@ function makeUid(): string {
   return Array.from(buf, b => b.toString(16).padStart(2, '0')).join('');
 }
 
+/**
+ * Build child ProjectModels (kind=negative) for every embedded negative part
+ * that ships with a 3MF (e.g. MakerWorld keyring holes). Each child links to
+ * its parent via `linkedTo` and carries a `negativePartRef` so the slicer can
+ * resolve geometry via /files/model/:parentId/negative/:plate/:part.
+ *
+ * Delta offset puts the child next to the parent after STLViewer's per-mesh
+ * centering (parent gets centered to origin; child needs to compensate).
+ */
+function buildNegativeChildPms(
+  model: {
+    id: string;
+    name: string;
+    negativeParts?: Array<{ plateIndex: number; partIndex: number; faceCount: number; boundsMin?: { x: number; y: number; z: number }; boundsMax?: { x: number; y: number; z: number } }>;
+    boundsMin?: { x: number; y: number; z: number };
+    boundsMax?: { x: number; y: number; z: number };
+  },
+  plateId: string,
+  offset: number,
+): ProjectModel[] {
+  if (!model.negativeParts || model.negativeParts.length === 0 || !model.boundsMin || !model.boundsMax) {
+    return [];
+  }
+  const pCx = (model.boundsMin.x + model.boundsMax.x) / 2;
+  const pCz = (model.boundsMin.z + model.boundsMax.z) / 2;
+  const pMinY = model.boundsMin.y;
+  const children: ProjectModel[] = [];
+  for (const np of model.negativeParts) {
+    if (np.plateIndex !== 1) continue; // multi-plate imports surface only plate-1 children on the freshly-created pm
+    if (!np.boundsMin || !np.boundsMax) continue;
+    const cCx = (np.boundsMin.x + np.boundsMax.x) / 2;
+    const cCz = (np.boundsMin.z + np.boundsMax.z) / 2;
+    children.push({
+      uid: makeUid(),
+      modelId: model.id, // child reuses parent id; URL resolved via negativePartRef
+      name: `${model.name} (neg ${np.partIndex})`,
+      faceCount: np.faceCount,
+      plateCount: 1,
+      plateId,
+      rotation: { x: 0, y: 0, z: 0 },
+      positionOffset: {
+        x: offset + (cCx - pCx),
+        y: np.boundsMin.y - pMinY,
+        z: cCz - pCz,
+      },
+      scale: { ...DEFAULT_SCALE },
+      mirror: { ...DEFAULT_MIRROR },
+      faceColors: null,
+      visible: true,
+      kind: 'negative',
+      linkedTo: [model.id],
+      negativePartRef: { parentModelId: model.id, plate: np.plateIndex, part: np.partIndex },
+    });
+  }
+  return children;
+}
+
+/**
+ * Build child ProjectModels (kind=part) for every printable sub-object in a
+ * 3MF assembly (each `<object>` in the source file). Mirrors
+ * `buildNegativeChildPms` but for printable parts that compose the parent
+ * assembly rather than cutters that subtract from it.
+ *
+ * Each child links via `linkedTo` and carries a `printablePartRef` so the
+ * slicer resolves geometry via /files/model/:parentId/part/:plate/:part.
+ */
+function buildPrintableChildPms(
+  model: {
+    id: string;
+    name: string;
+    parts?: Array<{ plateIndex: number; partIndex: number; faceCount: number; name?: string; extruder?: number; boundsMin?: { x: number; y: number; z: number }; boundsMax?: { x: number; y: number; z: number } }>;
+  },
+  plateId: string,
+): ProjectModel[] {
+  if (!model.parts || model.parts.length === 0) return [];
+  // Only plate-1 parts attach to the freshly-created pm (mirrors the
+  // negative-parts rule). Multi-plate uploads create one pm per plate.
+  return model.parts
+    .filter(pp => pp.plateIndex === 1)
+    .map(pp => ({
+      uid: makeUid(),
+      modelId: model.id,
+      name: pp.name ?? `${model.name} (part ${pp.partIndex})`,
+      faceCount: pp.faceCount,
+      plateCount: 1,
+      plateId,
+      // Identity transform — the per-part STL already has Y-up coordinates
+      // captured at parse time. Parent's plate-centering happens in
+      // threemf-builder, applied via the parentOffset mechanism that all
+      // children share.
+      rotation: { x: 0, y: 0, z: 0 },
+      positionOffset: { x: 0, y: 0, z: 0 },
+      scale: { x: 1, y: 1, z: 1 },
+      mirror: { x: false, y: false, z: false },
+      faceColors: null,
+      visible: true,
+      kind: 'part',
+      linkedTo: [model.id],
+      printablePartRef: { parentModelId: model.id, plate: pp.plateIndex, part: pp.partIndex },
+    }));
+}
+
 interface PersistedModel {
   uid?: string; // optional for backwards compat (older saves lack this)
   modelId: string;
@@ -114,6 +220,7 @@ interface PersistedModel {
   linkedTo?: string[];
   settings?: Record<string, unknown>;
   negativePartRef?: { parentModelId: string; plate: number; part: number };
+  printablePartRef?: { parentModelId: string; plate: number; part: number };
 }
 
 interface PersistedState {
@@ -202,6 +309,9 @@ export default function App() {
   const [paintMode, setPaintMode] = useState<PaintMode>(() => (persisted.current?.paintMode as PaintMode) || 'orbit');
   const [measurement, setMeasurement] = useState<Measurement | null>(null);
   const [addVolumeKind, setAddVolumeKind] = useState<'negative' | 'modifier' | null>(null);
+  // Optional explicit parent for the next AddVolumeModal submit (set by
+  // per-row ⊖ button in ObjectListPanel). Falls back to activeModel.modelId.
+  const [addVolumeParentId, setAddVolumeParentId] = useState<string | null>(null);
   const [activeColor, setActiveColor] = useState(() => persisted.current?.activeColor || '#FF0000');
   const [plates, setPlates] = useState<Array<{ id: string; name: string }>>(() => persisted.current?.plates ?? [{ id: defaultPlateId, name: 'Plate 1' }]);
   const [activePlateId, setActivePlateId] = useState(() => persisted.current?.activePlateId ?? defaultPlateId);
@@ -514,6 +624,7 @@ export default function App() {
         kind: m.kind ?? 'model',
         faceColors: null, // will be fetched via effect below
         negativePartRef: m.negativePartRef,
+        printablePartRef: m.printablePartRef,
       }));
       setProjectModels(restored);
       setActiveModelIndex(saved.activeModelIndex);
@@ -526,8 +637,36 @@ export default function App() {
   useEffect(() => {
     if (!viewer3DEnabled) return;
     const seen = new Set<string>();
+    // Parents whose geometry is replaced by per-part STLs — their merged face_colors
+    // blob has indices that don't map to any rendered mesh, so skip the fetch.
+    const parentsWithParts = new Set(
+      projectModels
+        .filter(pm => pm.printablePartRef)
+        .map(pm => pm.printablePartRef!.parentModelId),
+    );
     for (const pm of projectModels) {
       if (pm.faceColors !== null) continue;
+      // Negatives/modifiers/support use solid translucent material — no per-face paint.
+      if (pm.kind === 'negative' || pm.kind === 'modifier' || pm.kind === 'support') continue;
+      // Parents covered by per-part STLs: their merged blob has no rendered target.
+      if (pm.kind === 'model' && parentsWithParts.has(pm.modelId)) continue;
+      // Parts: per-part face_colors blob. Parent's merged blob uses different face indices.
+      if (pm.printablePartRef) {
+        const ref = pm.printablePartRef;
+        const key = `part:${ref.parentModelId}:${ref.plate}:${ref.part}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        api.getPrintablePartColors(ref.parentModelId, ref.plate, ref.part).then(colors => {
+          setProjectModels(prev => prev.map(p =>
+            p.printablePartRef?.parentModelId === ref.parentModelId &&
+            p.printablePartRef?.plate === ref.plate &&
+            p.printablePartRef?.part === ref.part
+              ? { ...p, faceColors: colors }
+              : p,
+          ));
+        }).catch(() => {});
+        continue;
+      }
       if (seen.has(pm.modelId)) continue;
       seen.add(pm.modelId);
       api.getModelColors(pm.modelId).then(colors => {
@@ -555,6 +694,7 @@ export default function App() {
           scale: m.scale, mirror: m.mirror, visible: m.visible,
           kind: m.kind, linkedTo: m.linkedTo, settings: m.settings,
           negativePartRef: m.negativePartRef,
+          printablePartRef: m.printablePartRef,
         })),
         activeModelIndex,
         engine,
@@ -664,41 +804,12 @@ export default function App() {
       // Surface embedded negative parts (e.g. MakerWorld keyring holes) as
       // child ProjectModels kind=negative. Each gets a delta offset so the
       // part lines up with the parent after STLViewer's per-mesh centering.
-      const childPms: ProjectModel[] = [];
-      if (model.negativeParts && model.negativeParts.length > 0 && model.boundsMin && model.boundsMax) {
-        const pCx = (model.boundsMin.x + model.boundsMax.x) / 2;
-        const pCz = (model.boundsMin.z + model.boundsMax.z) / 2;
-        const pMinY = model.boundsMin.y;
-        for (const np of model.negativeParts) {
-          if (np.plateIndex !== 1) continue; // only plate-1 parts attach to the freshly-created pm
-          if (!np.boundsMin || !np.boundsMax) continue;
-          const cCx = (np.boundsMin.x + np.boundsMax.x) / 2;
-          const cCz = (np.boundsMin.z + np.boundsMax.z) / 2;
-          childPms.push({
-            uid: makeUid(),
-            modelId: model.id, // child reuses parent id; URL resolved via negativePartRef
-            name: `${model.name} (neg ${np.partIndex})`,
-            faceCount: np.faceCount,
-            plateCount: 1,
-            plateId: activePlateId,
-            rotation: { x: 0, y: 0, z: 0 },
-            positionOffset: {
-              x: offset + (cCx - pCx),
-              y: np.boundsMin.y - pMinY,
-              z: (cCz - pCz),
-            },
-            scale: { ...DEFAULT_SCALE },
-            mirror: { ...DEFAULT_MIRROR },
-            faceColors: null,
-            visible: true,
-            kind: 'negative',
-            linkedTo: [model.id],
-            negativePartRef: { parentModelId: model.id, plate: np.plateIndex, part: np.partIndex },
-          });
-        }
-      }
+      const negativePms = buildNegativeChildPms(model, activePlateId, offset);
+      // Surface printable sub-objects (kind=part) — each `<object>` in a
+      // 3MF assembly becomes its own row, interactable independently.
+      const partPms = buildPrintableChildPms(model, activePlateId);
 
-      updateModels(prev => [...prev, newPm, ...childPms]);
+      updateModels(prev => [...prev, newPm, ...partPms, ...negativePms]);
       setActiveModelIndex(projectModels.length); // select new model
 
       // 3MF uploads may carry filament_colour/type arrays in their embedded
@@ -766,7 +877,25 @@ export default function App() {
         visible: true,
         kind: 'model',
       };
-      updateModels(prev => [...prev, newPm]);
+      // Surface embedded negatives (same path as plain uploads). Without this,
+      // MakerWorld imports silently lost their cutters / keyring holes.
+      const negativePms = buildNegativeChildPms(
+        {
+          id: m.modelId,
+          name: m.name,
+          negativeParts: meta?.negativeParts,
+          boundsMin: meta?.boundsMin,
+          boundsMax: meta?.boundsMax,
+        },
+        activePlateId,
+        offset,
+      );
+      // Surface printable sub-objects (same path as plain uploads).
+      const partPms = buildPrintableChildPms(
+        { id: m.modelId, name: m.name, parts: meta?.parts },
+        activePlateId,
+      );
+      updateModels(prev => [...prev, newPm, ...partPms, ...negativePms]);
       setActiveModelIndex(projectModels.length);
 
       // MakerWorld imports explicitly overwrite project settings (user opted
@@ -844,6 +973,7 @@ export default function App() {
       // (smaller, often all-default) colors under the same DB row.
       if (pm.kind && pm.kind !== 'model') continue;
       if (pm.negativePartRef) continue;
+      if (pm.printablePartRef) continue;
       if (pm.plateId !== activePlateId || !pm.visible) continue;
       // First instance per modelId wins. Multiple clones in the scene share
       // one DB row (face_colors keyed by modelId+plate). Later clones often
@@ -879,6 +1009,9 @@ export default function App() {
         linkedTo: pm.linkedTo,
         name: pm.name,
         settings: pm.settings,
+        visible: pm.visible,
+        negativePartRef: pm.negativePartRef,
+        printablePartRef: pm.printablePartRef,
       })),
       engine,
       plateIndex: anyMultiPlate ? firstPlateIdx : undefined,
@@ -1139,19 +1272,26 @@ export default function App() {
     updateModels(prev => prev.map((p, i) => i === idx ? { ...p, visible: !p.visible } : p));
   }, [updateModels]);
 
-  const handleDuplicate = useCallback(() => {
-    if (!activeModel) return;
+  const handleDuplicateAt = useCallback((idx: number) => {
+    const src = projectModels[idx];
+    if (!src) return;
     const dup: ProjectModel = {
-      ...activeModel,
+      ...src,
+      uid: makeUid(),
       positionOffset: {
-        x: activeModel.positionOffset.x + 20,
-        y: activeModel.positionOffset.y,
-        z: activeModel.positionOffset.z,
+        x: src.positionOffset.x + 20,
+        y: src.positionOffset.y,
+        z: src.positionOffset.z,
       },
     };
     updateModels(prev => [...prev, dup]);
+  }, [projectModels, updateModels]);
+
+  const handleDuplicate = useCallback(() => {
+    if (activeModelIndex == null) return;
+    handleDuplicateAt(activeModelIndex);
     setActiveModelIndex(prev => prev == null ? prev : prev + 1);
-  }, [activeModel, updateModels]);
+  }, [activeModelIndex, handleDuplicateAt]);
 
   const handleLinearArray = useCallback((count: number, dx: number, dy: number) => {
     if (!activeModel || count < 2) return;
@@ -1159,6 +1299,7 @@ export default function App() {
     for (let i = 1; i < count; i++) {
       copies.push({
         ...activeModel,
+        uid: makeUid(),
         positionOffset: {
           x: activeModel.positionOffset.x + dx * i,
           y: activeModel.positionOffset.y,
@@ -1178,6 +1319,7 @@ export default function App() {
       const angle = (i / count) * Math.PI * 2;
       copies.push({
         ...activeModel,
+        uid: makeUid(),
         positionOffset: {
           x: cx + Math.cos(angle) * radius,
           y: activeModel.positionOffset.y,
@@ -1233,11 +1375,14 @@ export default function App() {
   }, [activeModel, activeModelIndex, activePlateId]);
 
   // Add negative/modifier volume — uploads primitive STL, links to active model
+  // (or to addVolumeParentId when triggered from a per-row ⊖ button).
   const handleAddVolume = useCallback(async (file: File, settings?: Record<string, unknown>) => {
     const kind = addVolumeKind;
     if (!kind) return;
-    const parentId = activeModel?.modelId;
+    const parentId = addVolumeParentId ?? activeModel?.modelId;
+    const parentPm = parentId ? projectModels.find(p => p.modelId === parentId) : undefined;
     setAddVolumeKind(null);
+    setAddVolumeParentId(null);
     if (!parentId) {
       alert('Select a model first to attach a volume.');
       return;
@@ -1251,9 +1396,9 @@ export default function App() {
         name: uploaded.name,
         faceCount: uploaded.faceCount,
         plateCount: uploaded.plateCount ?? 1,
-        plateId: activePlateId,
+        plateId: parentPm?.plateId ?? activePlateId,
         rotation: { x: 0, y: 0, z: 0 },
-        positionOffset: activeModel ? { ...activeModel.positionOffset } : { x: 0, y: 0, z: 0 },
+        positionOffset: parentPm ? { ...parentPm.positionOffset } : (activeModel ? { ...activeModel.positionOffset } : { x: 0, y: 0, z: 0 }),
         scale: { ...DEFAULT_SCALE },
         mirror: { ...DEFAULT_MIRROR },
         faceColors: null,
@@ -1268,7 +1413,14 @@ export default function App() {
     } finally {
       setIsUploading(false);
     }
-  }, [addVolumeKind, activeModel, activePlateId, updateModels]);
+  }, [addVolumeKind, addVolumeParentId, activeModel, projectModels, activePlateId, updateModels]);
+
+  // Per-row ⊖ button: opens AddVolumeModal with kind=negative and the
+  // target parent baked in. Closes the loop without requiring active selection.
+  const handleAddNegativeToParent = useCallback((parentId: string) => {
+    setAddVolumeParentId(parentId);
+    setAddVolumeKind('negative');
+  }, []);
 
   // Support painter — click mesh → upload pillar STL linked to that parent
   const [supportDiameter, setSupportDiameter] = useState(5);
@@ -1413,6 +1565,8 @@ export default function App() {
           onAutoArrange={handleAutoArrange}
           isUploading={isUploading}
           onOpenMakerworld={() => setShowMwImport(true)}
+          onDuplicateAt={handleDuplicateAt}
+          onAddNegativeToParent={handleAddNegativeToParent}
         />
 
         {/* Target printer picker */}
@@ -1626,7 +1780,7 @@ export default function App() {
           </button>
           {!viewer3DEnabled && (
             <div className="absolute inset-0 flex items-center justify-center text-gray-400 text-sm bg-gray-900/60 pointer-events-none">
-              3D viewer disabled — tap "3D: Off" to re-enable
+              3D viewer disabled — tap "3D: Off" (top-right) to re-enable
             </div>
           )}
 
@@ -1636,7 +1790,17 @@ export default function App() {
           {sceneRefs && !previewJobId && viewer3DEnabled && (() => {
             const isMobile = typeof navigator !== 'undefined'
               && /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
-            const visible = projectModels.filter(m => m.visible);
+            // Parents that own printable parts duplicate all part geometry via
+            // their merged plate STL — skip rendering to avoid 2x scene cost.
+            const parentsWithParts = new Set(
+              projectModels
+                .filter(pm => pm.printablePartRef)
+                .map(pm => pm.printablePartRef!.parentModelId),
+            );
+            const visible = projectModels.filter(m => m.visible && !(
+              m.kind === 'model' && parentsWithParts.has(m.modelId) &&
+              projectModels.some(other => other.printablePartRef?.parentModelId === m.modelId)
+            ));
             // Mobile: only active model (if any). Desktop: all visible.
             const capped = isMobile && activeModelIndex != null
               ? visible.filter((_, i) => i === activeModelIndex)
@@ -1654,7 +1818,9 @@ export default function App() {
                 modelUrl={
                   pm.negativePartRef
                     ? api.getNegativePartUrl(pm.negativePartRef.parentModelId, pm.negativePartRef.plate, pm.negativePartRef.part)
-                    : api.getModelUrl(pm.modelId)
+                    : pm.printablePartRef
+                      ? api.getPrintablePartUrl(pm.printablePartRef.parentModelId, pm.printablePartRef.plate, pm.printablePartRef.part)
+                      : api.getModelUrl(pm.modelId)
                 }
                 faceColors={pm.faceColors || undefined}
                 rotation={pm.rotation}

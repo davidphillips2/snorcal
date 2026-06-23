@@ -1,4 +1,4 @@
-import { useMemo, useRef } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import type { ModelKind } from '@snorcal/shared';
 import type { ProjectModel } from '../../App';
 import { ModelUploader } from '../ModelUploader';
@@ -15,6 +15,8 @@ interface ObjectListPanelProps {
   onAutoArrange?: () => void;
   isUploading: boolean;
   onOpenMakerworld?: () => void;
+  onDuplicateAt?: (globalIdx: number) => void;
+  onAddNegativeToParent?: (parentModelId: string) => void;
 }
 
 interface HierarchyNode {
@@ -62,10 +64,22 @@ function buildHierarchy(plateModels: ProjectModel[], allModels: ProjectModel[]):
 
 export function ObjectListPanel({
   models, allModels, activeIndex, onSelect, onRemove, onToggleVisible, onUpload, onUploadMany, onAutoArrange, isUploading,
-  onOpenMakerworld,
+  onOpenMakerworld, onDuplicateAt, onAddNegativeToParent,
 }: ObjectListPanelProps) {
   const hierarchy = useMemo(() => buildHierarchy(models, allModels), [models, allModels]);
   const fileRef = useRef<HTMLInputElement>(null);
+
+  // Collapse state keyed by ProjectModel.uid (stable across reorders, unlike
+  // modelId which is shared between parent + embedded negative parts + clones).
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  const toggleCollapse = useCallback((uid: string) => {
+    setCollapsed(prev => {
+      const next = new Set(prev);
+      if (next.has(uid)) next.delete(uid);
+      else next.add(uid);
+      return next;
+    });
+  }, []);
 
   if (models.length === 0) {
     return (
@@ -136,16 +150,20 @@ export function ObjectListPanel({
         />
       </div>
 
-      <div className="space-y-0.5 max-h-60 overflow-y-auto">
+      <div className="space-y-px max-h-60 overflow-y-auto">
         {hierarchy.map(node => (
           <ObjectRow
-            key={node.model.modelId}
+            key={node.model.uid}
             node={node}
             depth={0}
             activeIndex={activeIndex}
             onSelect={onSelect}
             onRemove={onRemove}
             onToggleVisible={onToggleVisible}
+            collapsed={collapsed}
+            onToggleCollapse={toggleCollapse}
+            onDuplicate={onDuplicateAt}
+            onAddNegative={onAddNegativeToParent}
           />
         ))}
       </div>
@@ -153,60 +171,128 @@ export function ObjectListPanel({
   );
 }
 
-function ObjectRow({
-  node, depth, activeIndex, onSelect, onRemove, onToggleVisible,
-}: {
+interface ObjectRowProps {
   node: HierarchyNode;
   depth: number;
   activeIndex: number | null;
   onSelect: (idx: number) => void;
   onRemove: (idx: number) => void;
   onToggleVisible: (idx: number) => void;
-}) {
+  collapsed: Set<string>;
+  onToggleCollapse: (uid: string) => void;
+  onDuplicate?: (idx: number) => void;
+  onAddNegative?: (parentModelId: string) => void;
+}
+
+function ObjectRow({
+  node, depth, activeIndex, onSelect, onRemove, onToggleVisible,
+  collapsed, onToggleCollapse, onDuplicate, onAddNegative,
+}: ObjectRowProps) {
   const { model, globalIdx, children, isOrphan } = node;
   const isActive = activeIndex === globalIdx;
+  const isCollapsed = collapsed.has(model.uid);
+  const hasChildren = children.length > 0;
 
   return (
     <>
       <div
         onClick={() => onSelect(globalIdx)}
-        style={{ paddingLeft: `${depth * 12 + 8}px` }}
-        className={`flex items-center gap-1.5 pr-2 py-1.5 rounded-lg cursor-pointer transition text-sm border ${
+        className={`group relative flex items-center h-7 pr-1 rounded cursor-pointer transition text-sm ${
           isActive
-            ? 'bg-blue-600/20 text-blue-300 border-blue-600/30'
-            : 'bg-gray-700/30 text-gray-300 hover:bg-gray-700/60 border-transparent'
+            ? 'bg-blue-600/20 text-blue-200'
+            : 'text-gray-300 hover:bg-gray-700/40'
         } ${isOrphan ? 'ring-1 ring-yellow-600/40' : ''}`}
         title={isOrphan ? 'Parent missing or on another plate' : undefined}
       >
+        {/* Indent guides — vertical line per depth level */}
+        <div className="flex shrink-0 h-full">
+          {Array.from({ length: depth }).map((_, i) => (
+            <span key={i} className="w-3 h-full border-l border-gray-700/60 ml-3" />
+          ))}
+        </div>
+
+        {/* Chevron column — fixed width */}
+        <div className="shrink-0 w-5 flex items-center justify-center">
+          {hasChildren ? (
+            <button
+              onClick={(e) => { e.stopPropagation(); onToggleCollapse(model.uid); }}
+              className="w-4 h-4 flex items-center justify-center text-gray-500 hover:text-white text-[10px]"
+              title={isCollapsed ? 'Expand' : 'Collapse'}
+            >
+              {isCollapsed ? '\u25B6' : '\u25BC'}
+            </button>
+          ) : null}
+        </div>
+
+        {/* Selection indicator — green check when active */}
+        <div className="shrink-0 w-4 flex items-center justify-center">
+          {isActive ? (
+            <svg className="w-3.5 h-3.5 text-emerald-400" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round">
+              <path d="M3 8.5l3 3 7-7" />
+            </svg>
+          ) : (
+            <span className="w-1.5 h-1.5 rounded-full bg-gray-600 group-hover:bg-gray-500" />
+          )}
+        </div>
+
+        {/* Kind icon */}
         <KindIcon kind={model.kind} />
-        <span className={`truncate flex-1 text-xs ${!model.visible ? 'opacity-40' : ''}`}>
+
+        {/* Name */}
+        <span className={`truncate flex-1 text-xs ml-1 ${!model.visible ? 'opacity-40' : ''}`}>
           {model.name}
         </span>
-        <button
-          onClick={(e) => { e.stopPropagation(); onToggleVisible(globalIdx); }}
-          className="shrink-0 w-5 h-5 flex items-center justify-center rounded text-gray-500 hover:text-white hover:bg-gray-600/50"
-          title={model.visible ? 'Hide' : 'Show'}
-        >
-          {model.visible ? '◉' : '◯'}
-        </button>
-        <button
-          onClick={(e) => { e.stopPropagation(); onRemove(globalIdx); }}
-          className="shrink-0 w-5 h-5 flex items-center justify-center rounded text-gray-500 hover:text-red-400 hover:bg-red-600/20 text-xs"
-          title="Remove"
-        >
-          &times;
-        </button>
+
+        {/* Hover-only actions */}
+        <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition">
+          {model.kind === 'model' && onAddNegative && (
+            <button
+              onClick={(e) => { e.stopPropagation(); onAddNegative(model.modelId); }}
+              className="shrink-0 w-5 h-5 flex items-center justify-center rounded text-red-400/80 hover:text-red-300 hover:bg-red-600/20 text-xs"
+              title="Add negative volume to this object"
+            >
+              {'\u2296'}
+            </button>
+          )}
+          {onDuplicate && (
+            <button
+              onClick={(e) => { e.stopPropagation(); onDuplicate(globalIdx); }}
+              className="shrink-0 w-5 h-5 flex items-center justify-center rounded text-gray-400 hover:text-white hover:bg-gray-600/50 text-[10px]"
+              title="Duplicate"
+            >
+              {'\u2398'}
+            </button>
+          )}
+          <button
+            onClick={(e) => { e.stopPropagation(); onToggleVisible(globalIdx); }}
+            className="shrink-0 w-5 h-5 flex items-center justify-center rounded text-gray-400 hover:text-white hover:bg-gray-600/50"
+            title={model.visible ? 'Hide' : 'Show'}
+          >
+            {model.visible ? '\u25C9' : '\u25EF'}
+          </button>
+          <button
+            onClick={(e) => { e.stopPropagation(); onRemove(globalIdx); }}
+            className="shrink-0 w-5 h-5 flex items-center justify-center rounded text-gray-400 hover:text-red-400 hover:bg-red-600/20 text-xs"
+            title="Remove"
+          >
+            &times;
+          </button>
+        </div>
       </div>
 
-      {children.map(child => (
+      {hasChildren && !isCollapsed && children.map(child => (
         <ObjectRow
-          key={child.model.modelId}
+          key={child.model.uid}
           node={child}
           depth={depth + 1}
           activeIndex={activeIndex}
           onSelect={onSelect}
           onRemove={onRemove}
           onToggleVisible={onToggleVisible}
+          collapsed={collapsed}
+          onToggleCollapse={onToggleCollapse}
+          onDuplicate={onDuplicate}
+          onAddNegative={onAddNegative}
         />
       ))}
     </>
@@ -214,30 +300,37 @@ function ObjectRow({
 }
 
 function KindIcon({ kind }: { kind: ModelKind }) {
+  if (kind === 'part') {
+    return (
+      <span className="shrink-0 w-4 h-4 flex items-center justify-center text-emerald-400 text-xs" title="Assembly part">
+        {'\u25AD'}
+      </span>
+    );
+  }
   if (kind === 'negative') {
     return (
       <span className="shrink-0 w-4 h-4 flex items-center justify-center text-red-400 text-xs" title="Negative volume">
-        ⊖
+        {'\u2296'}
       </span>
     );
   }
   if (kind === 'modifier') {
     return (
       <span className="shrink-0 w-4 h-4 flex items-center justify-center text-blue-400 text-xs" title="Modifier">
-        ⚙
+        {'\u2699'}
       </span>
     );
   }
   if (kind === 'support') {
     return (
       <span className="shrink-0 w-4 h-4 flex items-center justify-center text-purple-400 text-xs" title="Custom support">
-        ⊿
+        {'\u25BF'}
       </span>
     );
   }
   return (
     <span className="shrink-0 w-4 h-4 flex items-center justify-center text-gray-400 text-xs" title="Model">
-      ▣
+      {'\u25A3'}
     </span>
   );
 }

@@ -84,6 +84,28 @@ export async function fileRoutes(app: FastifyInstance, options: { db: Db }) {
     },
   );
 
+  // GET /api/files/model/:modelId/part/:plate/:part — Serve printable sub-object STL
+  app.get<{ Params: { modelId: string; plate: string; part: string } }>(
+    '/api/files/model/:modelId/part/:plate/:part',
+    async (req, reply) => {
+      const plateNum = parseInt(req.params.plate);
+      const partNum = parseInt(req.params.part);
+      const parts = db.listPrintableParts(req.params.modelId, plateNum);
+      const pp = parts.find(p => p.part_index === partNum);
+      if (!pp) {
+        return reply.status(404).send({ ok: false, error: 'Printable part not found' });
+      }
+      if (!fs.existsSync(pp.file_path)) {
+        return reply.status(404).send({ ok: false, error: 'Printable part file not found on disk' });
+      }
+      const stat = fs.statSync(pp.file_path);
+      reply.header('Content-Type', 'application/octet-stream');
+      reply.header('Content-Length', stat.size);
+      reply.header('Content-Disposition', `attachment; filename="part_${plateNum}_${partNum}.stl"`);
+      return reply.send(fs.createReadStream(pp.file_path));
+    },
+  );
+
   // GET /api/files/threemf/:jobId — Download input 3MF used for slicing
   app.get<{ Params: { jobId: string } }>('/api/files/threemf/:jobId', async (req, reply) => {
     const job = db.getJob(req.params.jobId);

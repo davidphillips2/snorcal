@@ -4,7 +4,7 @@ import fs from 'node:fs';
 
 // --- Types ---
 
-export type ThreeMFObjectKind = 'model' | 'negative' | 'modifier' | 'support';
+export type ThreeMFObjectKind = 'model' | 'part' | 'negative' | 'modifier' | 'support';
 
 export interface ThreeMFModelInput {
   stlPath: string;
@@ -79,6 +79,15 @@ export async function build3MF(input: ThreeMFBuildInput): Promise<Buffer> {
   const offsetByModelIndex = new Map<number, { x: number; y: number; z: number }>();
   let nextId = 1;
 
+  // Pre-scan: identify which parent model indices have at least one printable
+  // `kind='part'` child. Those parents skip their own merged-mesh emission —
+  // their parts ARE the printable geometry (avoids duplicating the assembly's
+  // triangles in the output 3MF).
+  const parentsWithParts = new Set<number>();
+  for (const m of models) {
+    if ((m.kind === 'part') && m.linkedTo != null) parentsWithParts.add(m.linkedTo);
+  }
+
   for (let mi = 0; mi < models.length; mi++) {
     const model = models[mi];
     const kind: ThreeMFObjectKind = model.kind ?? 'model';
@@ -91,7 +100,13 @@ export async function build3MF(input: ThreeMFBuildInput): Promise<Buffer> {
     if (kind === 'negative' || kind === 'modifier' || kind === 'support') {
       const parentId = model.linkedTo != null ? firstObjIdByModelIndex.get(model.linkedTo) : undefined;
       const parentOffset = model.linkedTo != null ? offsetByModelIndex.get(model.linkedTo) : undefined;
-      const geo = processChildGeometry(model.stlPath, parentOffset);
+      const geo = processChildGeometry(
+        model.stlPath,
+        parentOffset,
+        model.rotation,
+        model.scale,
+        model.mirror,
+      );
       const id = nextId++;
       allObjects.push({
         id,
@@ -104,6 +119,48 @@ export async function build3MF(input: ThreeMFBuildInput): Promise<Buffer> {
         settings: model.settings,
       });
       // Children don't go in the top-level <components>; they attach via parent
+      continue;
+    }
+
+    // Printable parts of an assembly (kind='part') — printable geometry that
+    // belongs to a parent. Same no-centering rule as negatives (reuse parent's
+    // offset so the part stays glued inside the assembly). Distinct from
+    // negatives: emitted as `<object type="model">` with subtype `normal_part`.
+    if (kind === 'part') {
+      const parentId = model.linkedTo != null ? firstObjIdByModelIndex.get(model.linkedTo) : undefined;
+      const parentOffset = model.linkedTo != null ? offsetByModelIndex.get(model.linkedTo) : undefined;
+      const geo = processChildGeometry(
+        model.stlPath,
+        parentOffset,
+        model.rotation,
+        model.scale,
+        model.mirror,
+      );
+      const paintData = processPaintColors(model.faceColors, geo.faceCount, colorToExtruder, defaultColor);
+      const hasPaint = model.faceColors && model.faceColors.length > 0 && paintData.some(pc => pc !== null);
+      const id = nextId++;
+      allObjects.push({
+        id,
+        name,
+        extruder: 1,
+        vertices: geo.vertices,
+        indices: geo.indices,
+        kind,
+        parentId,
+        paintData: hasPaint ? paintData : undefined,
+      });
+      continue;
+    }
+
+    // Parent has printable parts? Skip emitting the merged `plate_1.stl` —
+    // its triangles are already represented by the per-part STLs, and
+    // emitting both makes the slicer see double geometry. The wrapper object
+    // at topId still groups the parts into a single assembly.
+    if (parentsWithParts.has(mi)) {
+      // Reserve an id so children with linkedTo=mi can still resolve a
+      // parentId (used only for model_settings.config bookkeeping).
+      if (!firstObjIdByModelIndex.has(mi)) firstObjIdByModelIndex.set(mi, nextId++);
+      // No geometry push — parent is an assembly container, not a mesh.
       continue;
     }
 
@@ -274,16 +331,59 @@ function applyParentOffset(vertices: Float32Array, offset: { x: number; y: numbe
 }
 
 /**
- * Process a child mesh (negative/modifier) that must follow its parent's
- * placement. Mirrors the Y-up → Z-up swap from processModelGeometry, then
- * applies the parent's plate-centering offset (if any). Skips the parent's
- * rotation/scale/mirror — children are stored pre-rotated in the parser.
+ * Process a child mesh (negative/modifier/support) that must follow its
+ * parent's placement. Applies per-part rotation → scale/mirror in Three.js
+ * Y-up space (same pipeline as processModelGeometry), then Y-up → Z-up swap,
+ * then the parent's plate-centering offset. MakerWorld embedded negatives
+ * have identity transforms so this is a no-op for them; user-uploaded
+ * cutters honor rotation/scale/mirror from the per-row TransformPanel.
  */
-function processChildGeometry(stlPath: string, parentOffset?: { x: number; y: number; z: number }): ProcessedGeometry {
+function processChildGeometry(
+  stlPath: string,
+  parentOffset?: { x: number; y: number; z: number },
+  rotation?: { x: number; y: number; z: number },
+  scale?: { x: number; y: number; z: number },
+  mirror?: { x: boolean; y: boolean; z: boolean },
+): ProcessedGeometry {
   const rawPositions = readSTLPositions(stlPath);
   const { vertices, indices } = deduplicateVertices(rawPositions);
   const faceCount = indices.length / 3;
   const vertexCount = vertices.length / 3;
+
+  // Apply rotation (Euler XYZ in degrees, Three.js Y-up space)
+  if (rotation && (rotation.x !== 0 || rotation.y !== 0 || rotation.z !== 0)) {
+    const deg2rad = Math.PI / 180;
+    const rx = rotation.x * deg2rad;
+    const ry = rotation.y * deg2rad;
+    const rz = rotation.z * deg2rad;
+    const cx = Math.cos(rx), sx = Math.sin(rx);
+    const cy = Math.cos(ry), sy = Math.sin(ry);
+    const cz = Math.cos(rz), sz = Math.sin(rz);
+
+    for (let i = 0; i < vertexCount; i++) {
+      const x = vertices[i * 3], y = vertices[i * 3 + 1], z = vertices[i * 3 + 2];
+      const y1 = y * cx - z * sx, z1 = y * sx + z * cx;
+      const x2 = x * cy + z1 * sy, z2 = -x * sy + z1 * cy;
+      const x3 = x2 * cz - y1 * sz, y3 = x2 * sz + y1 * cz;
+      vertices[i * 3] = x3;
+      vertices[i * 3 + 1] = y3;
+      vertices[i * 3 + 2] = z2;
+    }
+  }
+
+  // Apply non-uniform scale + per-axis mirror (signed scale)
+  const s = scale ?? { x: 1, y: 1, z: 1 };
+  const m = mirror ?? { x: false, y: false, z: false };
+  const ssx = s.x * (m.x ? -1 : 1);
+  const ssy = s.y * (m.y ? -1 : 1);
+  const ssz = s.z * (m.z ? -1 : 1);
+  if (ssx !== 1 || ssy !== 1 || ssz !== 1) {
+    for (let i = 0; i < vertexCount; i++) {
+      vertices[i * 3] *= ssx;
+      vertices[i * 3 + 1] *= ssy;
+      vertices[i * 3 + 2] *= ssz;
+    }
+  }
 
   // Convert Three.js Y-up to 3MF Z-up: (x, y, z) → (x, -z, y)
   for (let i = 0; i < vertexCount; i++) {
@@ -359,6 +459,9 @@ function kindTo3MFType(kind: ThreeMFObjectKind): string {
   // Emitting type="negative_part" makes OrcaSlicer reject the 3MF with
   // "Found invalid object" at parse time.
   if (kind === 'negative' || kind === 'modifier' || kind === 'support') return 'other';
+  // 'model' (top-level parent) and 'part' (printable child) both emit as
+  // printable model objects — distinction between them lives in
+  // model_settings.config via subtype.
   return 'model';
 }
 
@@ -366,6 +469,7 @@ function kindToPartSubtype(kind: ThreeMFObjectKind): string {
   if (kind === 'negative') return 'negative_part';
   if (kind === 'modifier') return 'modifier';
   if (kind === 'support') return 'support_model';
+  // 'model' (parent) and 'part' (printable child) both render as normal_part.
   return 'normal_part';
 }
 
@@ -408,8 +512,9 @@ function buildModelSettings(objects: ObjectDef[], wrapperId: number): string {
   for (const obj of objects) {
     const fc = obj.indices.length / 3;
     // Negative/modifier/support parts use extruder="0" (BambuStudio sentinel
-    // for "no filament"); parent mesh uses its assigned extruder.
-    const partExtruder = obj.kind === 'model' ? obj.extruder : 0;
+    // for "no filament"); printable parts (model parent + part children) use
+    // their assigned extruder.
+    const partExtruder = (obj.kind === 'model' || obj.kind === 'part') ? obj.extruder : 0;
     xml += `
     <part id="${obj.id}" subtype="${kindToPartSubtype(obj.kind)}">
       <metadata key="name" value="${obj.name}"/>

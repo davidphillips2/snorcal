@@ -17,6 +17,11 @@ export interface Parse3MFResult {
    *  slice pipeline can re-emit them as Bambu negative volumes. Geometry is
    *  already Y-up + transforms applied, same convention as `positions`. */
   negativeParts?: NegativePart[];
+  /** Printable sub-objects (one per `<object>` in the 3MF) preserved as
+   *  discrete parts so the frontend can expose them as interactable children
+   *  of the parent model. Geometry is Y-up + transforms applied, same as
+   *  `positions` (the merged array is still produced for backward compat). */
+  parts?: PositivePart[];
 }
 
 export interface NegativePart {
@@ -26,6 +31,18 @@ export interface NegativePart {
   /** Per-axis min/max in Three Y-up coords (used by frontend to align part with parent mesh) */
   boundsMin?: { x: number; y: number; z: number };
   boundsMax?: { x: number; y: number; z: number };
+}
+
+export interface PositivePart {
+  /** Non-indexed positions: 9 floats per face (Y-up, transforms applied) */
+  positions: Float32Array;
+  /** RGBA per face (4 bytes per face), post extruder/paint_color resolution */
+  faceColors: Uint8Array | null;
+  faceCount: number;
+  boundsMin?: { x: number; y: number; z: number };
+  boundsMax?: { x: number; y: number; z: number };
+  name?: string;
+  extruder?: number;
 }
 
 interface MeshEntry {
@@ -220,20 +237,44 @@ export async function parse3MF(buffer: Buffer, plateNumber?: number): Promise<Pa
   const allColors = new Uint8Array(totalFaces * 4);
   let hasAnyColor = false;
   let faceOffset = 0;
+  // Per-part capture (mirrors the merged loop below). Each printable mesh
+  // entry becomes one PositivePart so the frontend can expose sub-objects as
+  // interactable children of the parent model.
+  const parts: PositivePart[] = [];
+  let partIndex = 0;
 
   for (const entry of meshEntries) {
+    if (entry.triCount === 0) { continue; }
+    partIndex += 1;
+    const partPositions = new Float32Array(entry.triCount * 9);
+    const partColors = new Uint8Array(entry.triCount * 4);
+    let partHasColor = false;
+    let pMinX = Infinity, pMinY = Infinity, pMinZ = Infinity;
+    let pMaxX = -Infinity, pMaxY = -Infinity, pMaxZ = -Infinity;
+
     // Copy positions with proper X-axis -90° rotation (3MF Z-up → Three Y-up).
     // Standard right-hand rotation: (x, y, z) → (x, z, -y). Skipping the
     // negation mirrors the model across the XZ plane (text reads backwards).
     for (let i = 0; i < entry.triCount; i++) {
       const src = i * 9;
       const dst = (faceOffset + i) * 9;
+      const pDst = i * 9;
       for (let v = 0; v < 3; v++) {
         const sv = src + v * 3;
         const dv = dst + v * 3;
-        allPositions[dv] = entry.positions[sv];        // X stays
-        allPositions[dv + 1] = entry.positions[sv + 2]; // 3MF.Z → Three.Y (up)
-        allPositions[dv + 2] = -entry.positions[sv + 1]; // 3MF.Y → -Three.Z (depth)
+        const pdv = pDst + v * 3;
+        const x = entry.positions[sv];
+        const y = entry.positions[sv + 2]; // 3MF.Z → Three.Y (up)
+        const z = -entry.positions[sv + 1]; // 3MF.Y → -Three.Z (depth)
+        allPositions[dv] = x;
+        allPositions[dv + 1] = y;
+        allPositions[dv + 2] = z;
+        partPositions[pdv] = x;
+        partPositions[pdv + 1] = y;
+        partPositions[pdv + 2] = z;
+        if (x < pMinX) pMinX = x; if (x > pMaxX) pMaxX = x;
+        if (y < pMinY) pMinY = y; if (y > pMaxY) pMaxY = y;
+        if (z < pMinZ) pMinZ = z; if (z > pMaxZ) pMaxZ = z;
       }
     }
 
@@ -246,45 +287,71 @@ export async function parse3MF(buffer: Buffer, plateNumber?: number): Promise<Pa
           const dOff = (faceOffset + i) * 4;
           const extNum = src[sOff]; // extruder number
           const color = filamentColors.get(extNum);
+          let r: number, g: number, b: number;
           if (color) {
-            allColors[dOff] = color[0];
-            allColors[dOff + 1] = color[1];
-            allColors[dOff + 2] = color[2];
-            allColors[dOff + 3] = 255;
+            r = color[0]; g = color[1]; b = color[2];
           } else {
             // Unknown extruder — use object's extruder color or white
             const fallback = (entry.extruder && filamentColors.get(entry.extruder)) || [255, 255, 255];
-            allColors[dOff] = fallback[0];
-            allColors[dOff + 1] = fallback[1];
-            allColors[dOff + 2] = fallback[2];
-            allColors[dOff + 3] = 255;
+            r = fallback[0]; g = fallback[1]; b = fallback[2];
           }
+          allColors[dOff] = r;
+          allColors[dOff + 1] = g;
+          allColors[dOff + 2] = b;
+          allColors[dOff + 3] = 255;
+          partColors[sOff] = r;
+          partColors[sOff + 1] = g;
+          partColors[sOff + 2] = b;
+          partColors[sOff + 3] = 255;
         }
       } else {
         allColors.set(entry.faceColors, faceOffset * 4);
+        partColors.set(entry.faceColors, 0);
       }
+      partHasColor = true;
       hasAnyColor = true;
     } else if (entry.extruder && filamentColors.has(entry.extruder)) {
       // Apply extruder color to all faces of this mesh entry
       const [r, g, b] = filamentColors.get(entry.extruder)!;
       for (let i = 0; i < entry.triCount; i++) {
         const off = (faceOffset + i) * 4;
+        const pOff = i * 4;
         allColors[off] = r;
         allColors[off + 1] = g;
         allColors[off + 2] = b;
         allColors[off + 3] = 255;
+        partColors[pOff] = r;
+        partColors[pOff + 1] = g;
+        partColors[pOff + 2] = b;
+        partColors[pOff + 3] = 255;
       }
+      partHasColor = true;
       hasAnyColor = true;
     } else {
       // Fill with white (opaque)
       for (let i = 0; i < entry.triCount * 4; i += 4) {
         const off = faceOffset * 4 + i;
+        const pOff = i;
         allColors[off] = 255;
         allColors[off + 1] = 255;
         allColors[off + 2] = 255;
         allColors[off + 3] = 255;
+        partColors[pOff] = 255;
+        partColors[pOff + 1] = 255;
+        partColors[pOff + 2] = 255;
+        partColors[pOff + 3] = 255;
       }
+      partHasColor = true;
     }
+    parts.push({
+      positions: partPositions,
+      faceColors: partHasColor ? partColors : null,
+      faceCount: entry.triCount,
+      boundsMin: isFinite(pMinX) ? { x: pMinX, y: pMinY, z: pMinZ } : undefined,
+      boundsMax: isFinite(pMaxX) ? { x: pMaxX, y: pMaxY, z: pMaxZ } : undefined,
+      name: `Part ${partIndex}`,
+      extruder: entry.extruder,
+    });
     faceOffset += entry.triCount;
   }
 
@@ -333,6 +400,7 @@ export async function parse3MF(buffer: Buffer, plateNumber?: number): Promise<Pa
     positions: allPositions,
     faceColors: hasAnyColor ? allColors : null,
     negativeParts: negativeParts.length > 0 ? negativeParts : undefined,
+    parts: parts.length > 1 ? parts : undefined,
     faceCount: totalFaces,
     bounds: {
       x: Math.abs(maxX - minX),
