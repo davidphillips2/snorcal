@@ -1215,6 +1215,17 @@ export default function App() {
     ? projectModels[activeModelIndex] : null;
   const activeMesh = activeModel != null ? meshRefs.current[activeModel.uid] : null;
 
+  // Paint/fill: auto-select first visible model on the active plate if none chosen,
+  // so FacePainter has a mesh to raycast against. Without this, entering paint
+  // mode with no selection leaves activeMesh null → clicks do nothing.
+  useEffect(() => {
+    if (paintMode !== 'paint' && paintMode !== 'fill') return;
+    if (activeModelIndex != null && projectModels[activeModelIndex]?.plateId === activePlateId) return;
+    const firstOnPlate = projectModels.findIndex(pm =>
+      pm.plateId === activePlateId && pm.visible && pm.kind !== 'negative' && pm.kind !== 'modifier' && pm.kind !== 'support');
+    if (firstOnPlate >= 0) setActiveModelIndex(firstOnPlate);
+  }, [paintMode, activeModelIndex, activePlateId, projectModels]);
+
   // Active plate world bounds for ModelMover clamp (plate X offset + bed half-size)
   const activePlateBounds = useMemo(() => {
     const off = plateOffsets[activePlateId];
