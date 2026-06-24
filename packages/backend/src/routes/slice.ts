@@ -8,7 +8,8 @@ import { getQueue } from '../jobs/queue.js';
 import { ensureDir, getJobsDir } from '../services/model-parser.js';
 import { build3MF, type ThreeMFModelInput } from '../services/threemf-builder.js';
 import { SlicerExecutor } from '../services/slicer-executor.js';
-import { PROJECT_SETTING_OVERRIDES } from '@snorcal/shared';
+import { PROJECT_SETTING_OVERRIDES, getMachineExtruderCount } from '@snorcal/shared';
+import { findGcodeFile } from '../services/gcode-utils.js';
 import type { SliceRequest, SliceJobData, MultiMaterialConfig, FilamentSlot } from '@snorcal/shared';
 import os from 'node:os';
 
@@ -49,11 +50,7 @@ function expandFilamentSlots(
   const n = slots.length;
 
   // Detect machine extruder count — must match printer's actual toolhead count
-  const existingNozzle = projectSettings['nozzle_diameter'] as any[] | undefined;
-  const printerModel = projectSettings['printer_model'] as string | undefined;
-  let machineExtruderCount = existingNozzle?.length ?? 1;
-  // Snapmaker U1 always has 4 toolheads regardless of profile loading
-  if (printerModel?.includes('U1')) machineExtruderCount = 4;
+  const machineExtruderCount = getMachineExtruderCount(projectSettings);
   const targetCount = Math.max(n, machineExtruderCount);
 
   // Set filament_colour/type from slots, pad to targetCount
@@ -857,15 +854,5 @@ function parseGcodeEstimates(gcodePath: string, modelName: string): {
 }
 
 function findJobGcode(dir: string): string | null {
-  if (!fs.existsSync(dir)) return null;
-  for (const f of fs.readdirSync(dir)) {
-    const full = path.join(dir, f);
-    const st = fs.statSync(full);
-    if (st.isFile() && f.endsWith('.gcode')) return full;
-    if (st.isDirectory()) {
-      const sub = findJobGcode(full);
-      if (sub) return sub;
-    }
-  }
-  return null;
+  return findGcodeFile(dir)?.path ?? null;
 }

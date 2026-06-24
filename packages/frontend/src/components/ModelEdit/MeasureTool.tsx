@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import type { SceneRefs } from '../Viewer/Scene';
+import { RAD_TO_DEG } from '../../lib/math';
 
 interface MeasureToolProps {
   sceneRefs: SceneRefs | null;
@@ -136,7 +137,7 @@ export function MeasureTool({ sceneRefs, meshes, active, onMeasurementChange }: 
         const dx = pt.x - a.x;
         const dy = pt.y - a.y;
         const dz = pt.z - a.z;
-        const angleXY = Math.atan2(dy, dx) * 180 / Math.PI;
+        const angleXY = Math.atan2(dy, dx) * RAD_TO_DEG;
         setMeasurement({ a: a.clone(), b: pt, distance, dx, dy, dz, angleXY });
         firstPointRef.current = null;
         setPending(null);

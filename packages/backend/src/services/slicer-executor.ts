@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { getSlicerBinary } from '@snorcal/shared';
 import type { SlicerEngine } from '@snorcal/shared';
+import { findGcodeFile } from './gcode-utils.js';
 
 export interface SliceCommand {
   engine: SlicerEngine;
@@ -381,21 +382,7 @@ export class SlicerExecutor {
   }
 
   private findGcode(outputDir: string): { path: string; size: number } | null {
-    if (!fs.existsSync(outputDir)) return null;
-
-    const files = fs.readdirSync(outputDir);
-    for (const file of files) {
-      const fullPath = path.join(outputDir, file);
-      const stat = fs.statSync(fullPath);
-      if (stat.isFile() && file.endsWith('.gcode')) {
-        return { path: fullPath, size: stat.size };
-      }
-      if (stat.isDirectory()) {
-        const result = this.findGcode(fullPath);
-        if (result) return result;
-      }
-    }
-    return null;
+    return findGcodeFile(outputDir);
   }
 }
 

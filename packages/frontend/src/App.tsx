@@ -37,6 +37,7 @@ import * as api from './api/client';
 import type { PausePoint } from './api/client';
 import { shelfPack } from './lib/pack';
 import { extractLayerTypes } from './lib/gcode-stats';
+import { RAD_TO_DEG, distSq2 } from './lib/math';
 import type { ModelKind, Scale3D, Mirror3D } from '@snorcal/shared';
 
 // --- Types ---
@@ -1343,7 +1344,7 @@ export default function App() {
         rotation: {
           x: activeModel.rotation.x,
           y: activeModel.rotation.y,
-          z: activeModel.rotation.z + (angle * 180 / Math.PI),
+          z: activeModel.rotation.z + (angle * RAD_TO_DEG),
         },
       });
     }
@@ -1488,21 +1489,45 @@ export default function App() {
     const isPaintMode = paintMode === 'paint' || paintMode === 'fill' || paintMode === 'lay' || paintMode === 'support';
 
     sceneRefs.controls.mouseButtons = {
-      LEFT: paintMode === 'orbit' ? THREE.MOUSE.ROTATE : undefined,
+      // Paint/fill: leave LEFT as ROTATE so background drags still orbit; the
+      // pointerdown handler below disables controls when the gesture starts on
+      // the mesh so paint owns those drags.
+      LEFT: (paintMode === 'orbit' || paintMode === 'paint' || paintMode === 'fill') ? THREE.MOUSE.ROTATE : undefined,
       MIDDLE: THREE.MOUSE.DOLLY,
       RIGHT: isPaintMode ? undefined : THREE.MOUSE.ROTATE,
     };
 
-    // During paint/fill/lay, disable orbit entirely while left mouse is held
+    // During paint/fill/lay, disable orbit only when left-drag STARTS on the
+    // active mesh (so paint owns the gesture). Dragging on the background
+    // leaves controls enabled → user can still rotate the scene.
     if (isPaintMode) {
       const canvas = sceneRefs.renderer.domElement;
-      const onDown = (e: PointerEvent) => { if (e.button === 0) { isPaintingRef.current = true; sceneRefs.controls.enabled = false; } };
-      const onUp = () => { isPaintingRef.current = false; sceneRefs.controls.enabled = true; };
+      const camera = sceneRefs.camera;
+      const raycaster = new THREE.Raycaster();
+      const ndc = new THREE.Vector2();
+      const onDown = (e: PointerEvent) => {
+        if (e.button !== 0) return;
+        const rect = canvas.getBoundingClientRect();
+        ndc.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+        ndc.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+        raycaster.setFromCamera(ndc, camera);
+        const hits = activeMesh ? raycaster.intersectObject(activeMesh) : [];
+        if (hits.length > 0) {
+          isPaintingRef.current = true;
+          sceneRefs.controls.enabled = false;
+        }
+      };
+      const onUp = () => {
+        if (isPaintingRef.current) {
+          isPaintingRef.current = false;
+          sceneRefs.controls.enabled = true;
+        }
+      };
       canvas.addEventListener('pointerdown', onDown);
-      canvas.addEventListener('pointerup', onUp);
+      window.addEventListener('pointerup', onUp);
       return () => {
         canvas.removeEventListener('pointerdown', onDown);
-        canvas.removeEventListener('pointerup', onUp);
+        window.removeEventListener('pointerup', onUp);
         sceneRefs.controls.enabled = true;
         isPaintingRef.current = false;
       };
@@ -1510,7 +1535,7 @@ export default function App() {
       sceneRefs.controls.enabled = true;
       return () => { sceneRefs.controls.enabled = true; };
     }
-  }, [sceneRefs, paintMode]);
+  }, [sceneRefs, paintMode, activeMesh]);
 
   // Click-to-select: in orbit mode, click a mesh to select it as active model
   useEffect(() => {
@@ -1524,7 +1549,7 @@ export default function App() {
     const onPointerUp = (e: PointerEvent) => {
       // Only select on click (not drag)
       const dx = e.clientX - downX, dy = e.clientY - downY;
-      if (dx * dx + dy * dy > 25) return;
+      if (distSq2(dx, dy) > 25) return;
       const rect = sceneRefs.renderer.domElement.getBoundingClientRect();
       mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
       mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
@@ -1784,18 +1809,9 @@ export default function App() {
         <div className="flex-1 relative overflow-hidden">
           <Scene onReady={setSceneRefs} />
 
-          {/* Viewer enable/disable toggle — escape hatch for mobile OOM */}
-          <button
-            type="button"
-            onClick={() => setViewer3DEnabled(v => !v)}
-            className="absolute top-2 right-2 z-20 px-2 py-1 text-xs rounded bg-gray-800/80 text-gray-200 hover:bg-gray-700/80 border border-gray-600/50"
-            title={viewer3DEnabled ? 'Disable 3D viewer (saves memory on mobile)' : 'Enable 3D viewer'}
-          >
-            {viewer3DEnabled ? '3D: On' : '3D: Off'}
-          </button>
           {!viewer3DEnabled && (
             <div className="absolute inset-0 flex items-center justify-center text-gray-400 text-sm bg-gray-900/60 pointer-events-none">
-              3D viewer disabled — tap "3D: Off" (top-right) to re-enable
+              3D viewer disabled — tap "3D: Off" in toolbar to re-enable
             </div>
           )}
 
@@ -1812,10 +1828,15 @@ export default function App() {
                 .filter(pm => pm.printablePartRef)
                 .map(pm => pm.printablePartRef!.parentModelId),
             );
-            const visible = projectModels.filter(m => m.visible && !(
+            const visibleRaw = projectModels.filter(m => m.visible && !(
               m.kind === 'model' && parentsWithParts.has(m.modelId) &&
               projectModels.some(other => other.printablePartRef?.parentModelId === m.modelId)
             ));
+            // Paint mode: isolate to active object so user sees just what they're painting.
+            const isPainting = paintMode === 'paint' || paintMode === 'fill';
+            const visible = isPainting && activeModelIndex != null
+              ? visibleRaw.filter((_, i) => i === activeModelIndex)
+              : visibleRaw;
             // Mobile: only active model (if any). Desktop: all visible.
             const capped = isMobile && activeModelIndex != null
               ? visible.filter((_, i) => i === activeModelIndex)
@@ -1931,6 +1952,8 @@ export default function App() {
                 hollowOn={settings.sparse_infill_density === '0%'
                   && Number(settings.top_shell_layers || 99) === 0
                   && Number(settings.bottom_shell_layers || 99) === 0}
+                viewer3DEnabled={viewer3DEnabled}
+                onToggleViewer3D={() => setViewer3DEnabled(v => !v)}
               />
               {paintMode === 'transform' && (
                 <TransformPanel

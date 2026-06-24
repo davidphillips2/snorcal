@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useMemo } from 'react';
 import { init, type WebGLPreview } from 'gcode-preview';
+import { TYPE_COLORS } from '../../lib/gcode-colors';
 
 export type GcodeColorMode = 'filament' | 'lineType' | 'speed';
 
@@ -23,28 +24,6 @@ const TUBE_SEGMENT_LIMIT = mobileOrSmall ? 8_000 : 100_000;
 // Mobile cap on extrusion moves: above this, refuse to render preview and
 // show a warning instead of OOM-crashing the tab.
 const MOBILE_RENDER_LIMIT = 60_000;
-
-// OrcaSlicer-style line-type colors
-const TYPE_COLORS: Record<string, string> = {
-  'outer wall': '#ff3030',
-  'inner wall': '#ff8c1a',
-  'top surface': '#ffd700',
-  'bottom surface': '#ffea66',
-  'solid skin': '#ffd700',
-  'sparse infill': '#33cc33',
-  'internal solid infill': '#2da32d',
-  'bridge': '#33cccc',
-  'internal bridge': '#33cccc',
-  'support': '#9933cc',
-  'support interface': '#cc66ff',
-  'support transition': '#cc66ff',
-  'skirt': '#888888',
-  'brim': '#888888',
-  'prime tower': '#ff66cc',
-  'wipe tower': '#ff66cc',
-  'gap infill': '#66cc66',
-  'ironing': '#cc99cc',
-};
 
 // Speed color ramp (mm/s): blue → cyan → green → yellow → orange → red
 function speedToColor(mms: number): string {

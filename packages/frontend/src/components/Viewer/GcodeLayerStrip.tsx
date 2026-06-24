@@ -1,4 +1,5 @@
 import { useMemo } from 'react';
+import { typeColorOpt as colorForType } from '../../lib/gcode-colors';
 
 interface GcodeLayerStripProps {
   currentLayer: number;
@@ -6,28 +7,6 @@ interface GcodeLayerStripProps {
   /** Map of layer index → dominant ;TYPE: label (optional, used for color coding). */
   layerTypes?: Map<number, string>;
   onLayerChange: (layer: number) => void;
-}
-
-const TYPE_COLORS: Record<string, string> = {
-  custom: '#888888',
-  'outer wall': '#ff3030',
-  'inner wall': '#ff8c1a',
-  'top surface': '#ffd700',
-  'bottom surface': '#ffea66',
-  'sparse infill': '#33cc33',
-  'internal solid infill': '#2da32d',
-  'bridge': '#33cccc',
-  'support': '#9933cc',
-  'support interface': '#cc66ff',
-  'skirt': '#888888',
-  'brim': '#888888',
-  'gap infill': '#66cc66',
-  'ironing': '#cc99cc',
-};
-
-function colorForType(t?: string): string | undefined {
-  if (!t) return undefined;
-  return TYPE_COLORS[t.toLowerCase()] ?? undefined;
 }
 
 /**

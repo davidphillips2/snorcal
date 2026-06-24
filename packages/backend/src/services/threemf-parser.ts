@@ -2,6 +2,7 @@ import JSZip from 'jszip';
 import { XMLParser } from 'fast-xml-parser';
 import fs from 'node:fs';
 import type { Bounds } from '@snorcal/shared';
+import { parseHexColor, parseCSSColor, decodeExtruder, computeBounds } from '@snorcal/shared';
 
 export interface Parse3MFResult {
   /** Non-indexed positions: 9 floats per face (3 vertices * xyz) */
@@ -356,14 +357,7 @@ export async function parse3MF(buffer: Buffer, plateNumber?: number): Promise<Pa
   }
 
   // Compute bounds
-  let minX = Infinity, minY = Infinity, minZ = Infinity;
-  let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
-  for (let i = 0; i < allPositions.length; i += 3) {
-    const x = allPositions[i], y = allPositions[i + 1], z = allPositions[i + 2];
-    if (x < minX) minX = x; if (x > maxX) maxX = x;
-    if (y < minY) minY = y; if (y > maxY) maxY = y;
-    if (z < minZ) minZ = z; if (z > maxZ) maxZ = z;
-  }
+  const { minX, minY, minZ, maxX, maxY, maxZ } = computeBounds(allPositions);
 
   // Merge negative entries — same X-axis -90° rotation as main mesh (with Z negation).
   const negativeParts: NegativePart[] = [];
@@ -669,29 +663,10 @@ function extractPaintColors(triList: any[], faceCount: number): Uint8Array | nul
     if (!paintColor) continue;
     if (i >= faceCount) break;
 
-    // Decode TriangleSelector bitstream (per OrcaSlicer Model.cpp
-    // set_triangle_from_string + TriangleSelector.cpp next_nibble).
-    // Hex chars are read in REVERSE (rightmost first); each char is a
-    // 4-bit nibble, LSB-first within the nibble.
-    //   bits 0-1 of first nibble = split_sides (00 for unsplit leaf)
-    //   bits 2-3 of first nibble = code:
-    //     00 → state 0 (unpainted)
-    //     01 → state 1 (extruder 1)
-    //     10 → state 2 (extruder 2)
-    //     11 → escape: read next nibble, state = nibble + 3 (extruder ≥3)
-    // For split triangles (multi-nibble bitstreams encoding the sub-tree),
-    // we read the first leaf's state — this loses sub-triangle granularity
-    // but those are <0.1% of faces on typical painted models.
-    const chars = String(paintColor).toUpperCase();
-    const firstNibble = parseInt(chars[chars.length - 1], 16);
-    const code = (firstNibble >> 2) & 0b11;
-    let extruderNum = 0;
-    if (code === 0b11 && chars.length >= 2) {
-      const nextNibble = parseInt(chars[chars.length - 2], 16);
-      extruderNum = nextNibble + 3;
-    } else {
-      extruderNum = code;
-    }
+    // Decode TriangleSelector bitstream via shared codec. See
+    // @snorcal/shared paint-bitstream for format details. Returns 0 for
+    // unpainted / unparseable.
+    const extruderNum = decodeExtruder(String(paintColor));
 
     if (extruderNum > 0) {
       // R = extruder index, G=0, B=0, A=1 → marker that downstream
@@ -762,26 +737,6 @@ function extractColorsFromResources(container: any, triList: any[]): Uint8Array 
   }
 
   return hasColor ? faceColors : null;
-}
-
-function parseHexColor(hex: string): [number, number, number, number] {
-  const clean = hex.replace('#', '');
-  const r = parseInt(clean.substring(0, 2), 16);
-  const g = parseInt(clean.substring(2, 4), 16);
-  const b = parseInt(clean.substring(4, 6), 16);
-  const a = clean.length >= 8 ? parseInt(clean.substring(6, 8), 16) : 255;
-  return [r, g, b, a];
-}
-
-function parseCSSColor(css: string): [number, number, number] | null {
-  if (!css || !css.startsWith('#')) return null;
-  const clean = css.replace('#', '');
-  if (clean.length < 6) return null;
-  return [
-    parseInt(clean.substring(0, 2), 16),
-    parseInt(clean.substring(2, 4), 16),
-    parseInt(clean.substring(4, 6), 16),
-  ];
 }
 
 async function readModelXml(zip: JSZip): Promise<string> {
