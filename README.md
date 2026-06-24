@@ -18,20 +18,27 @@ cd snorcal/docker
 docker compose up --build -d
 ```
 
-Open http://localhost:3000. On first load, the setup wizard runs automatically
-to discover your printer and pick a profile.
+Open http://localhost:3000. Add printers + import slicer profiles via the
+in-app **Settings** panel (no first-run wizard).
 
-Three containers spin up:
+Services in the default `docker-compose.yml`:
 
-| Service  | Image base         | Has                                  | Memory |
-|----------|--------------------|--------------------------------------|--------|
-| `app`    | node:20-slim       | Backend + frontend static            | 512M   |
-| `slicer` | ubuntu:22.04       | OrcaSlicer + BambuStudio + Xvfb + sidecar HTTP | 4G     |
-| `redis`  | redis:7-alpine     | BullMQ job queue                     | 128M   |
+| Service             | Image                              | Has                                  | Memory |
+|---------------------|------------------------------------|--------------------------------------|--------|
+| `app`               | built from `docker/Dockerfile.app` | Backend + frontend static            | 512M   |
+| `orca-slicer-api`   | `ghcr.io/maziggy/orca-slicer-api`  | Bambuddy sidecar — OrcaSlicer HTTP   | 4G     |
+| `bambu-studio-api`  | `ghcr.io/maziggy/bambu-studio-api` | Bambuddy sidecar — BambuStudio HTTP  | 4G     |
+| `redis`             | `redis:7-alpine`                   | BullMQ job queue (commented out)     | 128M   |
 
-All three share the `snorcal-data` volume mounted at `/data`. DB lives at
+Redis is commented out by default — slicing runs in-process via the direct
+async path. Uncomment alongside `REDIS_HOST`/`REDIS_PORT` in `app` to
+re-enable the queue.
+
+The `app` container mounts the `snorcal-data` volume at `/data`. DB lives at
 `/data/snorcal.db`, models at `/data/models/`, jobs at `/data/jobs/`,
-print photos at `/data/print-photos/`.
+imported profile JSON at `/data/settings/`. Print-history photos are written
+to `~/.snorcal/print-photos/` inside the container (currently outside the
+volume — does not survive `docker compose down -v`).
 
 ### Stop / update
 
@@ -44,7 +51,8 @@ docker compose pull && docker compose up -d --build   # update
 
 ```bash
 docker compose logs -f app
-docker compose logs -f slicer
+docker compose logs -f orca-slicer-api
+docker compose logs -f bambu-studio-api
 ```
 
 ---
@@ -60,7 +68,7 @@ pnpm dev
 
 - Backend: http://localhost:3000
 - Frontend: http://localhost:5173 (proxies `/api` → :3000)
-- Data dir: `~/.snorcal/`
+- Data dir: `packages/backend/data/` (override via `DATA_DIR` env var)
 
 You need slicer binaries installed locally. Set env vars pointing to them:
 
@@ -86,38 +94,45 @@ Redis optional. If missing, queue degrades to direct async (no retry/concurrency
                          │ HTTP /api + SSE
 ┌────────────────────────▼─────────────────────────────────────┐
 │  app container (Node + Fastify)                              │
-│    - SQLite (models, jobs, profiles, spools, prints, printers)│
+│    - SQLite (models, jobs, profiles, plates, prints)         │
 │    - 3MF builder (jszip + face colors + project settings)    │
-│    - BullMQ worker → POSTs /slice to sidecar                 │
-│    - Printer adapters (Moonraker MQTT, Bambu MQTT)           │
-└──────┬──────────────────────────┬────────────────────────────┘
+│    - Direct async slicer path (or BullMQ when Redis enabled) │
+│    - Printer adapters (Moonraker, Bambu LAN MQTT)            │
+└──────┬──────────────────────────┬───────────────────────────┘
        │ shared /data volume      │ MQTT/HTTP to printer
+       │ (input.3mf + output gcode share the mount)
 ┌──────▼─────────────┐  ┌────────▼─────────────────────────────┐
-│  slicer container  │  │  printer (Klipper / Bambu)           │
-│  - Xvfb :99        │  │    camera, status, file transfer     │
-│  - OrcaSlicer      │  └──────────────────────────────────────┘
-│  - BambuStudio     │
-│  - HTTP :3001      │  ┌────────────────┐
-│    (SSE progress)  │  │  redis:7-alpine│
-└────────────────────┘  └────────────────┘
+│ orca-slicer-api    │  │  printer (Klipper / Bambu)           │
+│ bambu-studio-api   │  │    camera, status, file transfer     │
+│ (bambuddy sidecars)│  └──────────────────────────────────────┘
+│ multipart upload   │
+│ /slice-async + poll│  ┌────────────────┐
+│ → gcode download   │  │  redis:7-alpine│
+└────────────────────┘  │  (optional)    │
+                        └────────────────┘
 ```
 
 ### Slicing pipeline
 
-1. `POST /api/slice` → BullMQ job
-2. Worker builds 3MF from STL + face colors + project settings (`threemf-builder.ts`)
+1. `POST /api/slice` → direct async job (or BullMQ enqueue when Redis up)
+2. `runSliceJob` builds 3MF from STL + face colors + project settings
+   (`threemf-builder.ts`)
 3. Writes `input.3mf` to `/data/jobs/<jobId>/`
-4. POSTs `{"engine","input3mf","outputDir",...}` to `http://slicer:3001/slice`
-5. Sidecar spawns slicer under Xvfb, streams SSE progress events back
-6. Sidecar writes gcode to `/data/jobs/<jobId>/output/`
-7. Worker reads gcode from same path (shared volume), updates DB, fires SSE
-8. Frontend polls job or listens to SSE for completion
+4. Resolves engine URL via `getSidecarUrl(engine)`:
+   - Sidecar mode (default in Docker): multipart upload to
+     `http://orca-slicer-api:3003/slice-async` (or `bambu-studio-api:3001`),
+     poll status, download gcode
+   - Local mode (dev macOS): spawn slicer binary directly
+5. Sidecar writes gcode into the shared volume; worker reads it back
+6. G-code estimates parsed from output comments, DB updated, SSE fired
+7. Frontend listens to SSE (`/api/events`) or polls `GET /api/jobs/:id`
 
-CLI contract: `<binary> --datadir <dir> --slice 0 --outputdir <dir> --arrange 0 --orient 0 --debug 2 input.3mf`
+CLI contract (local dev): `<binary> --datadir <dir> --slice 0 --outputdir <dir> --arrange 0 --orient 0 --debug 2 input.3mf`
 
-Settings embedded inside the 3MF as `Metadata/project_settings.config`
-(flat JSON, ~520 keys). Do NOT use `--load-settings` / `--load-filaments` —
-they segfault in CLI mode.
+Settings are embedded inside the 3MF as `Metadata/project_settings.config`
+(flat JSON, ~520 keys). Snorcal never passes `--load-settings` /
+`--load-filaments` — embedding is more reliable and survives profile
+mismatches.
 
 ---
 
@@ -161,9 +176,10 @@ In Snorcal: Add Printer → Bambu Lab (LAN) → enter IP, port 8883, serial, acc
 |---------------|------------------------|--------|
 | OrcaSlicer    | Universal (most mods)  | ✓      |
 | BambuStudio   | Bambu Lab native       | ✓      |
-| Snapmaker Orca| Snapmaker machines     | ✓ (shares OrcaSlicer binary, different datadir) |
 | PrusaSlicer   | Prusa + generic Marlin | ✗ Phase 5 |
 | Cura          | UltiMaker              | ✗ Phase 5 |
+
+Engine picker lives in **Settings → App Settings** (global), not per-slice.
 
 ### Profiles
 
@@ -185,7 +201,8 @@ in moonraker.conf. Restart Moonraker.
 **Bambu printer offline** — Confirm LAN access code hasn't rotated (printer
 reboot sometimes regenerates it). Re-enter on printer detail page.
 
-**Slice job hangs at 15%** — Sidecar Xvfb may have died. `docker compose restart slicer`.
+**Slice job hangs at 15%** — Sidecar may be stuck. Restart the matching
+engine: `docker compose restart orca-slicer-api` (or `bambu-studio-api`).
 
 **G-code looks wrong** — Check `use_relative_e_distances: "1"` is in your
 process settings. Some firmwares (RepRapFirmware) need absolute mode — not
@@ -212,8 +229,8 @@ WAL checkpoint on restart usually recovers. Backup the file first.
 | `/data/models/<id>.stl`        | Uploaded source models                |
 | `/data/jobs/<jobId>/input.3mf` | Built 3MF (pre-slice)                 |
 | `/data/jobs/<jobId>/output/`   | G-code output                         |
-| `/data/print-photos/<id>.*`    | Print history photos                  |
 | `/data/settings/`              | Imported slicer profile JSONs         |
+| `~/.snorcal/print-photos/`     | Print history photos (not in volume)  |
 
 Backup: `docker compose stop app && tar czf snorcal-backup.tgz /var/lib/docker/volumes/snorcal_snorcal-data/_data` (path varies by Docker root).
 
