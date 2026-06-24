@@ -69,6 +69,7 @@ export function FacePainter({ mesh, renderer, activeColor, paintMode, zRange, on
     const data = new Float32Array(colorAttr.array);
     undoStackRef.current.push(new Uint8Array(data.buffer.slice(0)));
     if (undoStackRef.current.length > 50) undoStackRef.current.shift();
+    (window as any).__snorcal_paint_undo_count = undoStackRef.current.length;
   }, []);
 
   const paintFace = useCallback((geometry: THREE.BufferGeometry, faceIndex: number, hexColor: string) => {
@@ -272,18 +273,24 @@ export function FacePainter({ mesh, renderer, activeColor, paintMode, zRange, on
   }, [mesh, renderer, paintMode, activeColor, zRange, onPaint, onLayOnFace, pushUndo, floodFill, paintFace]);
 
   // Undo
-  const undo = useCallback(() => {
-    if (!mesh || undoStackRef.current.length === 0) return;
+  const undo = useCallback((): boolean => {
+    if (!mesh || undoStackRef.current.length === 0) return false;
     const prev = undoStackRef.current.pop()!;
     const colorAttr = mesh.geometry.attributes.color as THREE.BufferAttribute;
     const restored = new Float32Array(prev.buffer);
     colorAttr.array.set(restored);
     colorAttr.needsUpdate = true;
+    (window as any).__snorcal_paint_undo_count = undoStackRef.current.length;
+    return true;
   }, [mesh]);
 
   useEffect(() => {
     (window as any).__snorcal_undo = undo;
-    return () => { delete (window as any).__snorcal_undo; };
+    (window as any).__snorcal_paint_undo_count = undoStackRef.current.length;
+    return () => {
+      delete (window as any).__snorcal_undo;
+      delete (window as any).__snorcal_paint_undo_count;
+    };
   }, [undo]);
 
   return null;

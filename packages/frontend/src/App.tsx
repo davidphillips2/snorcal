@@ -418,7 +418,9 @@ export default function App() {
   }, []);
 
   const handleUndo = useCallback(() => {
-    // Project-models undo takes precedence; fall back to face-paint undo
+    // Paint undo takes precedence (most recent action); fall back to project-models
+    const paintUndo = (window as any).__snorcal_undo as (() => boolean) | undefined;
+    if (paintUndo && paintUndo()) return;
     if (undoStackRef.current.length > 0) {
       const present = projectModelsRef.current.map(p => ({ ...p }));
       const past = undoStackRef.current.pop()!;
@@ -428,8 +430,6 @@ export default function App() {
       forceUndoTick(t => t + 1);
       return;
     }
-    const paintUndo = (window as any).__snorcal_undo as (() => void) | undefined;
-    paintUndo?.();
   }, []);
 
   const handleRedo = useCallback(() => {
@@ -442,7 +442,8 @@ export default function App() {
     forceUndoTick(t => t + 1);
   }, []);
 
-  const canUndo = undoStackRef.current.length > 0;
+  const canUndo = undoStackRef.current.length > 0
+    || ((window as any).__snorcal_paint_undo_count ?? 0) > 0;
   const canRedo = redoStackRef.current.length > 0;
 
   // Undo/redo keyboard shortcuts (Ctrl/Cmd+Z, Ctrl+Shift+Z, Ctrl+Y)
@@ -967,6 +968,7 @@ export default function App() {
   const saveAllColors = useCallback(async () => {
     const plateIndex = plates.findIndex(p => p.id === activePlateId) + 1 || 1;
     const savedModelIds = new Set<string>();
+    const updates: Array<{ uid: string; colors: Uint8Array }> = [];
     for (const pm of projectModels) {
       // Skip negative/modifier/support volumes — they share parent's modelId
       // (App.tsx:659) and would overwrite the parent's paint with their own
@@ -986,7 +988,18 @@ export default function App() {
       const colors = extractFaceColors(mesh.geometry);
       if (colors.length > 0) {
         api.saveFaceColors(pm.modelId, colors, pm.plateCount > 1 ? plateIndex : undefined).catch(() => {});
+        // Mirror the saved blob into ProjectModel state so a later STLViewer
+        // remount (e.g. after gcode preview unmounts the 3D view) reapplies
+        // the paint instead of falling back to the pre-paint prop.
+        updates.push({ uid: pm.uid, colors });
       }
+    }
+    if (updates.length > 0) {
+      const byUid = new Map(updates.map(u => [u.uid, u.colors]));
+      setProjectModels(prev => prev.map(pm => {
+        const c = byUid.get(pm.uid);
+        return c ? { ...pm, faceColors: c } : pm;
+      }));
     }
   }, [projectModels, activePlateId, plates]);
 
@@ -1790,17 +1803,10 @@ export default function App() {
           {sceneRefs && !previewJobId && viewer3DEnabled && (() => {
             const isMobile = typeof navigator !== 'undefined'
               && /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
-            // Parents that own printable parts duplicate all part geometry via
-            // their merged plate STL — skip rendering to avoid 2x scene cost.
-            const parentsWithParts = new Set(
-              projectModels
-                .filter(pm => pm.printablePartRef)
-                .map(pm => pm.printablePartRef!.parentModelId),
-            );
-            const visible = projectModels.filter(m => m.visible && !(
-              m.kind === 'model' && parentsWithParts.has(m.modelId) &&
-              projectModels.some(other => other.printablePartRef?.parentModelId === m.modelId)
-            ));
+            // Parent renders alongside its printable parts so user can
+            // select + paint either. (Was filtered for perf, but that
+            // blocked painting the merged main object.)
+            const visible = projectModels.filter(m => m.visible);
             // Mobile: only active model (if any). Desktop: all visible.
             const capped = isMobile && activeModelIndex != null
               ? visible.filter((_, i) => i === activeModelIndex)
