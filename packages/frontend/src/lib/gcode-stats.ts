@@ -146,6 +146,14 @@ export function formatDuration(seconds: number): string {
   return `${s}s`;
 }
 
+/** Compact ETA formatter: "3h 5m" or "12m" — for printer/dashboard chips. */
+export function formatDurationShort(sec: number): string {
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  if (h > 0) return `${h}h ${m}m`;
+  return `${m}m`;
+}
+
 /**
  * Walk gcode, map each `;LAYER_CHANGE` (or `;LAYER:N`) marker to the dominant
  * `;TYPE:` that follows until the next layer marker. Used by the layer

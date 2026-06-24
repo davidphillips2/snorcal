@@ -6,6 +6,7 @@ import type { Db } from '../db/index.js';
 import { discoverDevices } from '../services/ssdp-discovery.js';
 import { printerManager } from '../services/printer-manager.js';
 import { BambuAdapter } from '../services/adapters/bambu-adapter.js';
+import { findGcodeFile } from '../services/gcode-utils.js';
 import type { PrinterCommand, PrinterProtocol } from '@snorcal/shared';
 
 function toPrinterRecord(row: any) {
@@ -474,7 +475,7 @@ export async function printerRoutes(app: FastifyInstance, options: { db: Db }) {
     if (job.status !== 'completed') return reply.status(400).send({ ok: false, error: 'Job not completed' });
 
     try {
-      const gcodePath = findGcode(job.output_dir!);
+      const gcodePath = findGcodeFile(job.output_dir!);
       if (!gcodePath) return reply.status(400).send({ ok: false, error: 'No gcode file' });
 
       const printer = db.getPrinter(req.params.id);
@@ -525,19 +526,4 @@ export async function printerRoutes(app: FastifyInstance, options: { db: Db }) {
   app.post('/api/printers/send', async (req: FastifyRequest, reply: FastifyReply) => {
     return reply.status(410).send({ ok: false, error: 'Use POST /api/printers/:id/send instead' });
   });
-}
-
-function findGcode(outputDir: string): string | null {
-  if (!fs.existsSync(outputDir)) return null;
-  const files = fs.readdirSync(outputDir);
-  for (const file of files) {
-    const fullPath = path.join(outputDir, file);
-    const stat = fs.statSync(fullPath);
-    if (stat.isFile() && file.endsWith('.gcode')) return fullPath;
-    if (stat.isDirectory()) {
-      const result = findGcode(fullPath);
-      if (result) return result;
-    }
-  }
-  return null;
 }

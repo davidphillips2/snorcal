@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { PrinterRecord, PrinterStatus } from '@snorcal/shared';
 import * as api from '../../api/client';
+import { formatDurationShort } from '../../lib/gcode-stats';
 import { CameraView } from '../PrinterMonitor/CameraView';
 import { PrinterDashboard } from '../PrinterMonitor/PrinterDashboard';
 
@@ -244,7 +245,7 @@ function PrinterTile({ printer, status, onReconnect, onOpen }: {
                 <span>L{status.layer}/{status.totalLayers}</span>
               )}
               {status.etaSec !== undefined && status.etaSec > 0 && (
-                <span>ETA {formatDuration(status.etaSec)}</span>
+                <span>ETA {formatDurationShort(status.etaSec)}</span>
               )}
             </div>
           </div>
@@ -252,13 +253,6 @@ function PrinterTile({ printer, status, onReconnect, onOpen }: {
       </div>
     </div>
   );
-}
-
-function formatDuration(sec: number): string {
-  const h = Math.floor(sec / 3600);
-  const m = Math.floor((sec % 3600) / 60);
-  if (h > 0) return `${h}h ${m}m`;
-  return `${m}m`;
 }
 
 function StatCard({ label, value, sub, color }: { label: string; value: number; sub: string; color: string }) {

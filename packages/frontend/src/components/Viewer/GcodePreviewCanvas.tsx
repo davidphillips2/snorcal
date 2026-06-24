@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useMemo } from 'react';
 import { init, type WebGLPreview } from 'gcode-preview';
+import { typeColor } from '../../lib/gcode-stats';
 
 export type GcodeColorMode = 'filament' | 'lineType' | 'speed';
 
@@ -25,27 +26,6 @@ const TUBE_SEGMENT_LIMIT = mobileOrSmall ? 8_000 : 100_000;
 const MOBILE_RENDER_LIMIT = 60_000;
 
 // OrcaSlicer-style line-type colors
-const TYPE_COLORS: Record<string, string> = {
-  'outer wall': '#ff3030',
-  'inner wall': '#ff8c1a',
-  'top surface': '#ffd700',
-  'bottom surface': '#ffea66',
-  'solid skin': '#ffd700',
-  'sparse infill': '#33cc33',
-  'internal solid infill': '#2da32d',
-  'bridge': '#33cccc',
-  'internal bridge': '#33cccc',
-  'support': '#9933cc',
-  'support interface': '#cc66ff',
-  'support transition': '#cc66ff',
-  'skirt': '#888888',
-  'brim': '#888888',
-  'prime tower': '#ff66cc',
-  'wipe tower': '#ff66cc',
-  'gap infill': '#66cc66',
-  'ironing': '#cc99cc',
-};
-
 // Speed color ramp (mm/s): blue → cyan → green → yellow → orange → red
 function speedToColor(mms: number): string {
   // Buckets at 20, 40, 60, 80, 100, 120, 150 mm/s
@@ -101,7 +81,7 @@ function rewriteForColorMode(gcode: string, mode: GcodeColorMode): {
         if (tool === undefined) {
           tool = nextTool++;
           typeToTool.set(currentType, tool);
-          toolColors[tool] = TYPE_COLORS[currentType] ?? '#bbbbbb';
+          toolColors[tool] = typeColor(currentType);
         }
         currentTool = tool;
         lines[i] = `${line}\nT${currentTool}`;

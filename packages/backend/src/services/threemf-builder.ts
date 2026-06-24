@@ -2,6 +2,29 @@ import JSZip from 'jszip';
 import { readSTLPositions, deduplicateVertices } from './model-parser.js';
 import fs from 'node:fs';
 
+// --- Local helpers ---
+
+/** Apply Euler XYZ rotation (degrees, Three.js Y-up) to a flat XYZ positions array, in place. */
+function applyEulerRotationInPlace(positions: Float32Array, rotation: { x: number; y: number; z: number }): void {
+  const deg2rad = Math.PI / 180;
+  const rx = rotation.x * deg2rad;
+  const ry = rotation.y * deg2rad;
+  const rz = rotation.z * deg2rad;
+  const cx = Math.cos(rx), sx = Math.sin(rx);
+  const cy = Math.cos(ry), sy = Math.sin(ry);
+  const cz = Math.cos(rz), sz = Math.sin(rz);
+  const vertexCount = positions.length / 3;
+  for (let i = 0; i < vertexCount; i++) {
+    const x = positions[i * 3], y = positions[i * 3 + 1], z = positions[i * 3 + 2];
+    const y1 = y * cx - z * sx, z1 = y * sx + z * cx;
+    const x2 = x * cy + z1 * sy, z2 = -x * sy + z1 * cy;
+    const x3 = x2 * cz - y1 * sz, y3 = x2 * sz + y1 * cz;
+    positions[i * 3] = x3;
+    positions[i * 3 + 1] = y3;
+    positions[i * 3 + 2] = z2;
+  }
+}
+
 // --- Types ---
 
 export type ThreeMFObjectKind = 'model' | 'part' | 'negative' | 'modifier' | 'support';
@@ -249,23 +272,7 @@ function processModelGeometry(model: ThreeMFModelInput, buildVolume: { x: number
 
   // Apply rotation (Euler XYZ in degrees, Three.js Y-up space)
   if (model.rotation && (model.rotation.x !== 0 || model.rotation.y !== 0 || model.rotation.z !== 0)) {
-    const deg2rad = Math.PI / 180;
-    const rx = model.rotation.x * deg2rad;
-    const ry = model.rotation.y * deg2rad;
-    const rz = model.rotation.z * deg2rad;
-    const cx = Math.cos(rx), sx = Math.sin(rx);
-    const cy = Math.cos(ry), sy = Math.sin(ry);
-    const cz = Math.cos(rz), sz = Math.sin(rz);
-
-    for (let i = 0; i < vertexCount; i++) {
-      const x = vertices[i * 3], y = vertices[i * 3 + 1], z = vertices[i * 3 + 2];
-      const y1 = y * cx - z * sx, z1 = y * sx + z * cx;
-      const x2 = x * cy + z1 * sy, z2 = -x * sy + z1 * cy;
-      const x3 = x2 * cz - y1 * sz, y3 = x2 * sz + y1 * cz;
-      vertices[i * 3] = x3;
-      vertices[i * 3 + 1] = y3;
-      vertices[i * 3 + 2] = z2;
-    }
+    applyEulerRotationInPlace(vertices, model.rotation);
   }
 
   // Apply non-uniform scale + per-axis mirror (signed scale)
@@ -352,23 +359,7 @@ function processChildGeometry(
 
   // Apply rotation (Euler XYZ in degrees, Three.js Y-up space)
   if (rotation && (rotation.x !== 0 || rotation.y !== 0 || rotation.z !== 0)) {
-    const deg2rad = Math.PI / 180;
-    const rx = rotation.x * deg2rad;
-    const ry = rotation.y * deg2rad;
-    const rz = rotation.z * deg2rad;
-    const cx = Math.cos(rx), sx = Math.sin(rx);
-    const cy = Math.cos(ry), sy = Math.sin(ry);
-    const cz = Math.cos(rz), sz = Math.sin(rz);
-
-    for (let i = 0; i < vertexCount; i++) {
-      const x = vertices[i * 3], y = vertices[i * 3 + 1], z = vertices[i * 3 + 2];
-      const y1 = y * cx - z * sx, z1 = y * sx + z * cx;
-      const x2 = x * cy + z1 * sy, z2 = -x * sy + z1 * cy;
-      const x3 = x2 * cz - y1 * sz, y3 = x2 * sz + y1 * cz;
-      vertices[i * 3] = x3;
-      vertices[i * 3 + 1] = y3;
-      vertices[i * 3 + 2] = z2;
-    }
+    applyEulerRotationInPlace(vertices, rotation);
   }
 
   // Apply non-uniform scale + per-axis mirror (signed scale)

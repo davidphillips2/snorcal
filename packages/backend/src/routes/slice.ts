@@ -8,6 +8,7 @@ import { getQueue } from '../jobs/queue.js';
 import { ensureDir, getJobsDir } from '../services/model-parser.js';
 import { build3MF, type ThreeMFModelInput } from '../services/threemf-builder.js';
 import { SlicerExecutor } from '../services/slicer-executor.js';
+import { findGcodeFile } from '../services/gcode-utils.js';
 import { PROJECT_SETTING_OVERRIDES } from '@snorcal/shared';
 import type { SliceRequest, SliceJobData, MultiMaterialConfig, FilamentSlot } from '@snorcal/shared';
 import os from 'node:os';
@@ -318,7 +319,7 @@ export async function sliceRoutes(app: FastifyInstance, options: { db: Db }) {
     const job = db.getJob(req.params.id);
     if (!job) return reply.status(404).send({ ok: false, error: 'Job not found' });
     if (!job.output_dir) return reply.status(400).send({ ok: false, error: 'No output dir' });
-    const gcodePath = findJobGcode(job.output_dir);
+    const gcodePath = findGcodeFile(job.output_dir);
     if (!gcodePath) return reply.status(400).send({ ok: false, error: 'No gcode file' });
     const { parseGcodeFilaments } = await import('../services/gcode-filaments.js');
     const filaments = parseGcodeFilaments(gcodePath);
@@ -373,7 +374,7 @@ export async function sliceRoutes(app: FastifyInstance, options: { db: Db }) {
     const pausesFile = path.join(workDir, 'pauses.json');
     fs.writeFileSync(pausesFile, JSON.stringify(pauses, null, 2));
 
-    const gcodePath = findJobGcode(job.output_dir);
+    const gcodePath = findGcodeFile(job.output_dir);
     if (!gcodePath) return reply.status(400).send({ ok: false, error: 'No gcode file' });
 
     // Remove stale paused sidecar when pauses cleared
@@ -856,16 +857,3 @@ function parseGcodeEstimates(gcodePath: string, modelName: string): {
   return { modelName, estimatedTime, filamentUsedG, filamentCost };
 }
 
-function findJobGcode(dir: string): string | null {
-  if (!fs.existsSync(dir)) return null;
-  for (const f of fs.readdirSync(dir)) {
-    const full = path.join(dir, f);
-    const st = fs.statSync(full);
-    if (st.isFile() && f.endsWith('.gcode')) return full;
-    if (st.isDirectory()) {
-      const sub = findJobGcode(full);
-      if (sub) return sub;
-    }
-  }
-  return null;
-}

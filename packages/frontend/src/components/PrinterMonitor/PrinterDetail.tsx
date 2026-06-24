@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { AmsSlot, PrinterRecord, PrinterStatus } from '@snorcal/shared';
 import * as api from '../../api/client';
+import { formatDurationShort } from '../../lib/gcode-stats';
 import { CameraView } from './CameraView';
 import { AmsEditor } from './AmsEditor';
 import { EditPrinterModal } from './EditPrinterModal';
@@ -120,7 +121,7 @@ export function PrinterDetail({ id, onBack }: Props) {
                 <span>Layer {status.layer}/{status.totalLayers}</span>
               )}
               {status.etaSec !== undefined && status.etaSec > 0 && (
-                <span>ETA {formatDuration(status.etaSec)}</span>
+                <span>ETA {formatDurationShort(status.etaSec)}</span>
               )}
             </div>
           </div>
@@ -314,11 +315,4 @@ function TempCard({ label, current, target, max }: { label: string; current?: nu
       </div>
     </div>
   );
-}
-
-function formatDuration(sec: number): string {
-  const h = Math.floor(sec / 3600);
-  const m = Math.floor((sec % 3600) / 60);
-  if (h > 0) return `${h}h ${m}m`;
-  return `${m}m`;
 }
