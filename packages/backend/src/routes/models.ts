@@ -460,27 +460,6 @@ export async function modelRoutes(app: FastifyInstance, options: { db: Db }) {
     },
   );
 
-  // PUT /api/models/:id/parts/:plate/:part/colors — Save per-part painted colors
-  app.put<{ Params: { id: string; plate: string; part: string } }>(
-    '/api/models/:id/parts/:plate/:part/colors',
-    async (req, reply) => {
-      const plateNum = parseInt(req.params.plate);
-      const partNum = parseInt(req.params.part);
-      const parts = db.listPrintableParts(req.params.id, plateNum);
-      const pp = parts.find(p => p.part_index === partNum);
-      if (!pp) {
-        return reply.status(404).send({ ok: false, error: 'Printable part not found' });
-      }
-      const body = req.body as { faceColors?: string };
-      if (!body?.faceColors) {
-        return reply.status(400).send({ ok: false, error: 'faceColors required' });
-      }
-      const colorsBuffer = Buffer.from(body.faceColors, 'base64');
-      db.updatePrintablePartColors(req.params.id, plateNum, partNum, colorsBuffer);
-      return { ok: true };
-    },
-  );
-
   // DELETE /api/models/:id — Delete model
   app.delete<{ Params: { id: string } }>('/api/models/:id', async (req, reply) => {
     const model = db.getModel(req.params.id);

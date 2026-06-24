@@ -276,6 +276,15 @@ export function ViewerToolbar({
                     style={{ backgroundColor: color }}
                   />
                 ))}
+                <label className="w-5 h-5 rounded-full border border-gray-600 cursor-pointer overflow-hidden relative">
+                  <input
+                    type="color"
+                    value={activeColor}
+                    onChange={(e) => onColorChange(e.target.value)}
+                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                  />
+                  <div className="w-full h-full" style={{ background: `conic-gradient(red, yellow, lime, aqua, blue, magenta, red)` }} />
+                </label>
               </div>
               <div className="w-px h-6 bg-gray-600 mx-1" />
               <label className="flex items-center gap-1.5 text-xs text-gray-400 shrink-0" title="Restrict paint to Z height range">

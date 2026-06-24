@@ -262,12 +262,6 @@ export class Db {
       part.faceColors ?? null);
   }
 
-  updatePrintablePartColors(modelId: string, plateIndex: number, partIndex: number, colors: Buffer) {
-    this.db.prepare(
-      'UPDATE model_printable_parts SET face_colors = ? WHERE model_id = ? AND plate_index = ? AND part_index = ?',
-    ).run(colors, modelId, plateIndex, partIndex);
-  }
-
   listPrintableParts(modelId: string, plateIndex: number): DbPrintablePart[] {
     return this.db.prepare(
       'SELECT * FROM model_printable_parts WHERE model_id = ? AND plate_index = ? ORDER BY part_index',

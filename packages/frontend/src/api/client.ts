@@ -215,20 +215,6 @@ export async function getPrintablePartColors(modelId: string, plate: number, par
   }
 }
 
-export async function savePrintablePartColors(modelId: string, plate: number, part: number, faceColors: Uint8Array) {
-  const chunks: string[] = [];
-  for (let i = 0; i < faceColors.length; i += 8192) {
-    const slice = faceColors.subarray(i, Math.min(i + 8192, faceColors.length));
-    chunks.push(String.fromCharCode(...slice));
-  }
-  const base64 = btoa(chunks.join(''));
-  return apiFetch(`/models/${modelId}/parts/${plate}/${part}/colors`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ faceColors: base64 }),
-  });
-}
-
 export async function getDefaultSettings(engine: string) {
   try {
     return await apiFetch(`/settings/${engine}/defaults`);
