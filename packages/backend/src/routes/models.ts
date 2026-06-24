@@ -7,7 +7,7 @@ import { parseSTL, ensureDir, getModelsDir } from '../services/model-parser.js';
 import { parse3MF, writePositionsToSTL, countPlates } from '../services/threemf-parser.js';
 import { extractProjectSettings } from '../services/makerworld.js';
 
-const MAX_FACES = 3_000_000;
+const MAX_FACES = 1_500_000;
 
 export async function register3MFModel(
   buffer: Buffer,

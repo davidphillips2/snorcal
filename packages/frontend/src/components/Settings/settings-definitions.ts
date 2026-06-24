@@ -132,7 +132,7 @@ export const DEFAULT_VALUES: Record<string, string> = {
   brim_ears_detection_length: '1',
   brim_ears_max_angle: '125',
   skirt_distance: '2',
-  skirt_loops: '0',
+  skirt_loops: '1',
   skirt_height: '1',
   skirt_speed: '50',
   draft_shield: 'disabled',
