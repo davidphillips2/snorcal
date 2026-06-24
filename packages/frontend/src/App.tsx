@@ -967,27 +967,42 @@ export default function App() {
   const saveAllColors = useCallback(async () => {
     const plateIndex = plates.findIndex(p => p.id === activePlateId) + 1 || 1;
     const savedModelIds = new Set<string>();
+    const savedParts = new Set<string>();
+    const puts: Promise<unknown>[] = [];
     for (const pm of projectModels) {
       // Skip negative/modifier/support volumes — they share parent's modelId
       // (App.tsx:659) and would overwrite the parent's paint with their own
       // (smaller, often all-default) colors under the same DB row.
-      if (pm.kind && pm.kind !== 'model') continue;
+      if (pm.kind && pm.kind !== 'model' && pm.kind !== 'part') continue;
       if (pm.negativePartRef) continue;
-      if (pm.printablePartRef) continue;
       if (pm.plateId !== activePlateId || !pm.visible) continue;
+      const mesh = meshRefs.current[pm.uid];
+      if (!mesh) continue;
+      const colors = extractFaceColors(mesh.geometry);
+      if (colors.length === 0) continue;
+
+      // Printable parts: save to per-part blob. Parent's merged blob uses
+      // different face indices, and parent isn't rendered when parts exist.
+      if (pm.printablePartRef) {
+        const ref = pm.printablePartRef;
+        const key = `${ref.parentModelId}:${ref.plate}:${ref.part}`;
+        if (savedParts.has(key)) continue;
+        savedParts.add(key);
+        puts.push(api.savePrintablePartColors(ref.parentModelId, ref.plate, ref.part, colors).catch(() => {}));
+        continue;
+      }
+
       // First instance per modelId wins. Multiple clones in the scene share
       // one DB row (face_colors keyed by modelId+plate). Later clones often
       // carry stale geometry (e.g. 1440-face buffer from a prior upload) that
       // would overwrite the first clone's correct full-size paint.
       if (savedModelIds.has(pm.modelId)) continue;
       savedModelIds.add(pm.modelId);
-      const mesh = meshRefs.current[pm.uid];
-      if (!mesh) continue;
-      const colors = extractFaceColors(mesh.geometry);
-      if (colors.length > 0) {
-        api.saveFaceColors(pm.modelId, colors, pm.plateCount > 1 ? plateIndex : undefined).catch(() => {});
-      }
+      puts.push(api.saveFaceColors(pm.modelId, colors, pm.plateCount > 1 ? plateIndex : undefined).catch(() => {}));
     }
+    // Await before slice fires — otherwise DB still holds the pre-paint blob
+    // and the slicer sees the old colors.
+    await Promise.all(puts);
   }, [projectModels, activePlateId, plates]);
 
   const sliceModels = useCallback(async (models: ProjectModel[]) => {

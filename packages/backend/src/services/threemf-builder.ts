@@ -66,9 +66,13 @@ export async function build3MF(input: ThreeMFBuildInput): Promise<Buffer> {
     positionOffset: input.positionOffset,
   }];
 
-  const filamentColors = input.projectSettings?.filament_colour as string[] | undefined;
-  const defaultColor = filamentColors?.[0]?.toUpperCase() ?? '#FFFFFF';
-  const colorToExtruder = buildColorToExtruderMap(filamentColors);
+  const filamentColors = (input.projectSettings?.filament_colour as string[] | undefined) ?? [];
+  const defaultColor = filamentColors[0]?.toUpperCase() ?? '#FFFFFF';
+  // Auto-extend filament slots to cover unmapped paint colors, then snap
+  // remaining strays to the nearest slot. Without this, any face color that
+  // isn't in filament_colour silently maps to extruder 1 (white) — the user
+  // sees their paint vanish after slicing.
+  const colorToExtruder = buildColorMapWithPaintFallback(models, filamentColors, input.projectSettings);
   const buildVolume = input.buildVolume ?? { x: 270, y: 270, z: 200 };
 
   // Process each model into 3MF objects (may split by extruder for painted models)
@@ -416,6 +420,109 @@ function buildColorToExtruderMap(filamentColors?: string[]): Map<string, number>
     }
   }
   return map;
+}
+
+function hexToRgb(hex: string): { r: number; g: number; b: number } | null {
+  const m = /^#?([0-9a-fA-F]{6})$/.exec(hex.trim());
+  if (!m) return null;
+  const n = parseInt(m[1], 16);
+  return { r: (n >> 16) & 0xff, g: (n >> 8) & 0xff, b: n & 0xff };
+}
+
+function nearestSlotExtruder(hex: string, slotColors: string[]): number {
+  const rgb = hexToRgb(hex);
+  if (!rgb || slotColors.length === 0) return 1;
+  let best = 1;
+  let bestDist = Infinity;
+  for (let i = 0; i < slotColors.length; i++) {
+    const c = hexToRgb(slotColors[i]);
+    if (!c) continue;
+    const d = (rgb.r - c.r) ** 2 + (rgb.g - c.g) ** 2 + (rgb.b - c.b) ** 2;
+    if (d < bestDist) { bestDist = d; best = i + 1; }
+  }
+  return best;
+}
+
+/**
+ * Build a paint→extruder map that covers every face color in `models`.
+ *
+ * 1. Start with the user's filament slot colors (filament_colour).
+ * 2. Scan models for paint colors not in any slot.
+ * 3. Append as many unmapped colors as the machine's extruder count allows,
+ *    mutating projectSettings so the slicer sees consistent N-element arrays.
+ * 4. Any leftover unmapped colors snap to their nearest slot (RGB distance).
+ *
+ * Step 4 is the safety net: a stray paint color that can't get its own
+ * extruder still resolves to the closest printable filament instead of
+ * silently falling back to extruder 1 (white).
+ */
+function buildColorMapWithPaintFallback(
+  models: ThreeMFModelInput[],
+  baseSlotColors: string[],
+  projectSettings: Record<string, unknown> | undefined,
+): Map<string, number> {
+  const baseMap = buildColorToExtruderMap(baseSlotColors);
+  const unmapped = new Set<string>();
+  for (const m of models) {
+    if (!m.faceColors || m.faceColors.length === 0) continue;
+    const faceCount = m.faceColors.length / 4;
+    for (let f = 0; f < faceCount; f++) {
+      const a = m.faceColors[f * 4 + 3];
+      if (a === 0) continue;
+      const hex = `#${toHex(m.faceColors[f * 4])}${toHex(m.faceColors[f * 4 + 1])}${toHex(m.faceColors[f * 4 + 2])}`.toUpperCase();
+      if (!baseMap.has(hex)) unmapped.add(hex);
+    }
+  }
+
+  if (unmapped.size === 0) return baseMap;
+
+  // Determine machine extruder count — same logic as slice.ts expandFilamentSlots.
+  const nozzleArr = projectSettings?.nozzle_diameter as unknown[] | undefined;
+  const pModel = projectSettings?.printer_model;
+  let machineExtCount = Array.isArray(nozzleArr) ? nozzleArr.length : 1;
+  if (typeof pModel === 'string' && pModel.includes('U1')) machineExtCount = Math.max(machineExtCount, 4);
+  // OrcaSlicer supports up to 16 virtual extruders (MMU). Cap there even if
+  // machine profile claims fewer — users add MMU setups that exceed the
+  // base nozzle_diameter array length.
+  const hardCap = 16;
+
+  const slotsRemaining = Math.max(0, hardCap - baseSlotColors.length);
+  const extendBy = Math.min(slotsRemaining, unmapped.size, Math.max(0, machineExtCount - baseSlotColors.length));
+  const unmappedArr = Array.from(unmapped);
+
+  const extendedColors = [...baseSlotColors];
+  for (let i = 0; i < extendBy; i++) {
+    extendedColors.push(unmappedArr[i]);
+  }
+
+  // Pad slicer-facing arrays so they match the new slot count.
+  if (projectSettings && extendedColors.length > baseSlotColors.length) {
+    projectSettings.filament_colour = extendedColors;
+    for (const key of ['extruder_colour', 'default_filament_colour']) {
+      const arr = projectSettings[key];
+      const padded = Array.isArray(arr) ? [...arr as string[]] : [...baseSlotColors];
+      while (padded.length < extendedColors.length) padded.push(extendedColors[padded.length] ?? '#FFFFFF');
+      projectSettings[key] = padded;
+    }
+    const types = projectSettings.filament_type;
+    const paddedTypes = Array.isArray(types) ? [...types as string[]] : ['PLA'];
+    const baseType = paddedTypes[0] ?? 'PLA';
+    while (paddedTypes.length < extendedColors.length) paddedTypes.push(baseType);
+    projectSettings.filament_type = paddedTypes;
+  }
+
+  const finalMap = new Map(baseMap);
+  // Newly-added slots → their extruder index
+  for (let i = 0; i < extendBy; i++) {
+    finalMap.set(unmappedArr[i], baseSlotColors.length + i + 1);
+  }
+  // Remaining unmapped (ran out of slots) → snap to nearest
+  if (extendBy < unmappedArr.length) {
+    for (let i = extendBy; i < unmappedArr.length; i++) {
+      finalMap.set(unmappedArr[i], nearestSlotExtruder(unmappedArr[i], extendedColors));
+    }
+  }
+  return finalMap;
 }
 
 function processPaintColors(
