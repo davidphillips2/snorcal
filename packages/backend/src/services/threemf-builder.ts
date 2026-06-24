@@ -1,6 +1,5 @@
 import JSZip from 'jszip';
 import { readSTLPositions, deduplicateVertices } from './model-parser.js';
-import { hexToRgb, encodeExtruder, getMachineExtruderCount, computeBounds } from '@snorcal/shared';
 import fs from 'node:fs';
 
 // --- Types ---
@@ -253,7 +252,25 @@ function processModelGeometry(model: ThreeMFModelInput, buildVolume: { x: number
   const vertexCount = vertices.length / 3;
 
   // Apply rotation (Euler XYZ in degrees, Three.js Y-up space)
-  if (model.rotation) applyEulerRotationInPlace(vertices, vertexCount, model.rotation);
+  if (model.rotation && (model.rotation.x !== 0 || model.rotation.y !== 0 || model.rotation.z !== 0)) {
+    const deg2rad = Math.PI / 180;
+    const rx = model.rotation.x * deg2rad;
+    const ry = model.rotation.y * deg2rad;
+    const rz = model.rotation.z * deg2rad;
+    const cx = Math.cos(rx), sx = Math.sin(rx);
+    const cy = Math.cos(ry), sy = Math.sin(ry);
+    const cz = Math.cos(rz), sz = Math.sin(rz);
+
+    for (let i = 0; i < vertexCount; i++) {
+      const x = vertices[i * 3], y = vertices[i * 3 + 1], z = vertices[i * 3 + 2];
+      const y1 = y * cx - z * sx, z1 = y * sx + z * cx;
+      const x2 = x * cy + z1 * sy, z2 = -x * sy + z1 * cy;
+      const x3 = x2 * cz - y1 * sz, y3 = x2 * sz + y1 * cz;
+      vertices[i * 3] = x3;
+      vertices[i * 3 + 1] = y3;
+      vertices[i * 3 + 2] = z2;
+    }
+  }
 
   // Apply non-uniform scale + per-axis mirror (signed scale)
   const s = model.scale ?? { x: 1, y: 1, z: 1 };
@@ -270,10 +287,22 @@ function processModelGeometry(model: ThreeMFModelInput, buildVolume: { x: number
   }
 
   // Convert Three.js Y-up to 3MF Z-up: (x, y, z) → (x, -z, y)
-  swapYupToZupInPlace(vertices, vertexCount);
+  for (let i = 0; i < vertexCount; i++) {
+    const y = vertices[i * 3 + 1];
+    const z = vertices[i * 3 + 2];
+    vertices[i * 3 + 1] = -z;
+    vertices[i * 3 + 2] = y;
+  }
 
   // Compute bounding box and center on build plate
-  const { minX, minY, minZ, maxX, maxY, maxZ } = computeBounds(vertices);
+  let minX = Infinity, minY = Infinity, minZ = Infinity;
+  let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+  for (let i = 0; i < vertexCount; i++) {
+    const x = vertices[i * 3], y = vertices[i * 3 + 1], z = vertices[i * 3 + 2];
+    if (x < minX) minX = x; if (x > maxX) maxX = x;
+    if (y < minY) minY = y; if (y > maxY) maxY = y;
+    if (z < minZ) minZ = z; if (z > maxZ) maxZ = z;
+  }
 
   // Position: center XY on plate, bottom at Z=0, apply user offset
   // Three.js offset (ox, oy, oz) → 3MF offset (ox, -oz, oy)
@@ -326,7 +355,25 @@ function processChildGeometry(
   const vertexCount = vertices.length / 3;
 
   // Apply rotation (Euler XYZ in degrees, Three.js Y-up space)
-  if (rotation) applyEulerRotationInPlace(vertices, vertexCount, rotation);
+  if (rotation && (rotation.x !== 0 || rotation.y !== 0 || rotation.z !== 0)) {
+    const deg2rad = Math.PI / 180;
+    const rx = rotation.x * deg2rad;
+    const ry = rotation.y * deg2rad;
+    const rz = rotation.z * deg2rad;
+    const cx = Math.cos(rx), sx = Math.sin(rx);
+    const cy = Math.cos(ry), sy = Math.sin(ry);
+    const cz = Math.cos(rz), sz = Math.sin(rz);
+
+    for (let i = 0; i < vertexCount; i++) {
+      const x = vertices[i * 3], y = vertices[i * 3 + 1], z = vertices[i * 3 + 2];
+      const y1 = y * cx - z * sx, z1 = y * sx + z * cx;
+      const x2 = x * cy + z1 * sy, z2 = -x * sy + z1 * cy;
+      const x3 = x2 * cz - y1 * sz, y3 = x2 * sz + y1 * cz;
+      vertices[i * 3] = x3;
+      vertices[i * 3 + 1] = y3;
+      vertices[i * 3 + 2] = z2;
+    }
+  }
 
   // Apply non-uniform scale + per-axis mirror (signed scale)
   const s = scale ?? { x: 1, y: 1, z: 1 };
@@ -343,7 +390,12 @@ function processChildGeometry(
   }
 
   // Convert Three.js Y-up to 3MF Z-up: (x, y, z) → (x, -z, y)
-  swapYupToZupInPlace(vertices, vertexCount);
+  for (let i = 0; i < vertexCount; i++) {
+    const y = vertices[i * 3 + 1];
+    const z = vertices[i * 3 + 2];
+    vertices[i * 3 + 1] = -z;
+    vertices[i * 3 + 2] = y;
+  }
 
   const offset = parentOffset ?? { x: 0, y: 0, z: 0 };
   if (offset.x !== 0 || offset.y !== 0 || offset.z !== 0) {
@@ -368,6 +420,13 @@ function buildColorToExtruderMap(filamentColors?: string[]): Map<string, number>
     }
   }
   return map;
+}
+
+function hexToRgb(hex: string): { r: number; g: number; b: number } | null {
+  const m = /^#?([0-9a-fA-F]{6})$/.exec(hex.trim());
+  if (!m) return null;
+  const n = parseInt(m[1], 16);
+  return { r: (n >> 16) & 0xff, g: (n >> 8) & 0xff, b: n & 0xff };
 }
 
 function nearestSlotExtruder(hex: string, slotColors: string[]): number {
@@ -417,8 +476,11 @@ function buildColorMapWithPaintFallback(
 
   if (unmapped.size === 0) return baseMap;
 
-  // Determine machine extruder count via shared util (U1 special-case + nozzle_diameter array).
-  const machineExtCount = getMachineExtruderCount(projectSettings);
+  // Determine machine extruder count — same logic as slice.ts expandFilamentSlots.
+  const nozzleArr = projectSettings?.nozzle_diameter as unknown[] | undefined;
+  const pModel = projectSettings?.printer_model;
+  let machineExtCount = Array.isArray(nozzleArr) ? nozzleArr.length : 1;
+  if (typeof pModel === 'string' && pModel.includes('U1')) machineExtCount = Math.max(machineExtCount, 4);
   // OrcaSlicer supports up to 16 virtual extruders (MMU). Cap there even if
   // machine profile claims fewer — users add MMU setups that exceed the
   // base nozzle_diameter array length.
@@ -601,45 +663,6 @@ function relsXML(): string {
 </Relationships>`;
 }
 
-/** Convert Three.js Y-up → 3MF Z-up in-place: (x, y, z) → (x, -z, y). */
-function swapYupToZupInPlace(vertices: Float32Array, vertexCount: number): void {
-  for (let i = 0; i < vertexCount; i++) {
-    const y = vertices[i * 3 + 1];
-    const z = vertices[i * 3 + 2];
-    vertices[i * 3 + 1] = -z;
-    vertices[i * 3 + 2] = y;
-  }
-}
-
-/**
- * Apply Euler XYZ rotation (degrees, Three.js Y-up space) in-place to a
- * flat Float32 vertex array. No-op when rotation is identity.
- */
-function applyEulerRotationInPlace(
-  vertices: Float32Array,
-  vertexCount: number,
-  rotation: { x: number; y: number; z: number },
-): void {
-  if (rotation.x === 0 && rotation.y === 0 && rotation.z === 0) return;
-  const deg2rad = Math.PI / 180;
-  const rx = rotation.x * deg2rad;
-  const ry = rotation.y * deg2rad;
-  const rz = rotation.z * deg2rad;
-  const cx = Math.cos(rx), sx = Math.sin(rx);
-  const cy = Math.cos(ry), sy = Math.sin(ry);
-  const cz = Math.cos(rz), sz = Math.sin(rz);
-
-  for (let i = 0; i < vertexCount; i++) {
-    const x = vertices[i * 3], y = vertices[i * 3 + 1], z = vertices[i * 3 + 2];
-    const y1 = y * cx - z * sx, z1 = y * sx + z * cx;
-    const x2 = x * cy + z1 * sy, z2 = -x * sy + z1 * cy;
-    const x3 = x2 * cz - y1 * sz, y3 = x2 * sz + y1 * cz;
-    vertices[i * 3] = x3;
-    vertices[i * 3 + 1] = y3;
-    vertices[i * 3 + 2] = z2;
-  }
-}
-
 // --- Helpers ---
 
 function toHex(n: number): string {
@@ -648,14 +671,16 @@ function toHex(n: number): string {
 
 /**
  * Encode extruder index (1-based) as OrcaSlicer paint_color value.
- * Implementation lives in @snorcal/shared paint-bitstream codec — kept here
- * as a thin alias so existing call sites read naturally.
+ * Format: TriangleSelector bitstream (TriangleSelector.cpp serialize).
+ *   state 1 → "4", state 2 → "8", state N≥3 → "{N-3}C"
  * Tested: 5C/6C/7C form (Bambu Studio output) is NOT read by local
  * OrcaSlicer 2.4.0 — slices all-white because it parses those as
  * extruders 8/9/10 which aren't configured.
  */
 function extruderToPaintColor(extruderIndex: number): string {
-  return encodeExtruder(extruderIndex);
+  if (extruderIndex === 1) return '4';
+  if (extruderIndex === 2) return '8';
+  return (extruderIndex - 3).toString(16).toUpperCase() + 'C';
 }
 
 export function writeFaceColors(filePath: string, colors: Uint8Array): void {

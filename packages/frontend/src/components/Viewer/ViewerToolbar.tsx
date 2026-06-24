@@ -25,8 +25,6 @@ interface ViewerToolbarProps {
   brimOn: boolean;
   onToggleHollow: () => void;
   hollowOn: boolean;
-  viewer3DEnabled: boolean;
-  onToggleViewer3D: () => void;
 }
 
 const PALETTE = [
@@ -183,7 +181,6 @@ export function ViewerToolbar({
   paintZRange, paintZBounds, onPaintZRangeChange,
   onToggleBrim, brimOn,
   onToggleHollow, hollowOn,
-  viewer3DEnabled, onToggleViewer3D,
 }: ViewerToolbarProps) {
   const palette = filamentColors && filamentColors.length > 0 ? filamentColors : PALETTE;
   const isPainting = paintMode === 'paint' || paintMode === 'fill';
@@ -192,8 +189,8 @@ export function ViewerToolbar({
   return (
     <>
       {/* Toolbar */}
-      <div className="absolute top-2 left-2 right-2 z-20 flex items-center gap-2 flex-wrap" style={{ maxWidth: 'calc(100vw - 1rem)' }}>
-        <div className="flex items-center gap-1 bg-gray-800/90 backdrop-blur rounded-lg px-2 py-1.5 shadow-lg flex-wrap">
+      <div className="absolute top-2 left-2 z-20 flex items-center gap-2">
+        <div className="flex items-center gap-1 bg-gray-800/90 backdrop-blur rounded-lg px-2 py-1.5 shadow-lg">
           {MODES.map(({ key, label, Icon }) => (
             <button
               key={key}
@@ -251,19 +248,6 @@ export function ViewerToolbar({
             }`}
           >
             <IconHollow />
-          </button>
-
-          <div className="w-px h-6 bg-gray-600 mx-1" />
-          <button
-            onClick={onToggleViewer3D}
-            title={viewer3DEnabled ? 'Disable 3D viewer (saves memory on mobile)' : 'Enable 3D viewer'}
-            className={`px-2 h-8 flex items-center justify-center rounded-md text-xs font-medium transition ${
-              viewer3DEnabled
-                ? 'bg-gray-700 text-gray-200 hover:bg-gray-600'
-                : 'bg-yellow-600/80 text-white hover:bg-yellow-500'
-            }`}
-          >
-            3D: {viewer3DEnabled ? 'On' : 'Off'}
           </button>
 
           {isPainting && (

@@ -2,7 +2,6 @@ import { useEffect, useRef, useCallback } from 'react';
 import * as THREE from 'three';
 import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
 import type { Scale3D, Mirror3D, ModelKind } from '@snorcal/shared';
-import { DEG_TO_RAD, RAD_TO_DEG } from '../../lib/math';
 
 export interface Rotation3D {
   x: number;
@@ -121,7 +120,7 @@ export function STLViewer({ modelUrl, faceColors, rotation, positionOffset, scal
   useEffect(() => {
     if (!meshRef.current || !rotation) return;
     const mesh = meshRef.current;
-    const deg2rad = DEG_TO_RAD;
+    const deg2rad = Math.PI / 180;
 
     // Reset position, apply rotation
     mesh.position.set(0, 0, 0);
@@ -295,10 +294,11 @@ export function rotationFromNormalToDown(normal: THREE.Vector3): Rotation3D {
   // else ~identity
 
   const euler = new THREE.Euler().setFromQuaternion(quat);
+  const rad2deg = 180 / Math.PI;
   return {
-    x: Math.round(euler.x * RAD_TO_DEG),
-    y: Math.round(euler.y * RAD_TO_DEG),
-    z: Math.round(euler.z * RAD_TO_DEG),
+    x: Math.round(euler.x * rad2deg),
+    y: Math.round(euler.y * rad2deg),
+    z: Math.round(euler.z * rad2deg),
   };
 }
 

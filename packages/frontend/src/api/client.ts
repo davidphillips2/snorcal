@@ -1,5 +1,3 @@
-import { encodeFaceColors, decodeFaceColors } from '../lib/color-encoding';
-
 const API_BASE = '/api';
 
 // Retries transient backend downtime (dev-mode tsx restart, proxy 502/503/504,
@@ -97,7 +95,12 @@ export async function getModelSourceSettings(id: string): Promise<Record<string,
 }
 
 export async function saveFaceColors(modelId: string, faceColors: Uint8Array, plate?: number) {
-  const base64 = encodeFaceColors(faceColors);
+  const chunks: string[] = [];
+  for (let i = 0; i < faceColors.length; i += 8192) {
+    const slice = faceColors.subarray(i, Math.min(i + 8192, faceColors.length));
+    chunks.push(String.fromCharCode(...slice));
+  }
+  const base64 = btoa(chunks.join(''));
   const params = plate && plate > 1 ? `?plate=${plate}` : '';
   return apiFetch(`/models/${modelId}/colors${params}`, {
     method: 'PUT',
@@ -115,7 +118,10 @@ export async function getModelColors(id: string, plate?: number): Promise<Uint8A
     const params = plate && plate > 1 ? `?plate=${plate}` : '';
     const data = await apiFetch(`/models/${id}/colors${params}`) as { faceColors: string | null };
     if (!data.faceColors) return null;
-    return decodeFaceColors(data.faceColors);
+    const binary = atob(data.faceColors);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    return bytes;
   } catch {
     return null;
   }
@@ -200,14 +206,22 @@ export async function getPrintablePartColors(modelId: string, plate: number, par
   try {
     const data = await apiFetch(`/models/${modelId}/parts/${plate}/${part}/colors`) as { faceColors: string | null };
     if (!data.faceColors) return null;
-    return decodeFaceColors(data.faceColors);
+    const binary = atob(data.faceColors);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    return bytes;
   } catch {
     return null;
   }
 }
 
 export async function savePrintablePartColors(modelId: string, plate: number, part: number, faceColors: Uint8Array) {
-  const base64 = encodeFaceColors(faceColors);
+  const chunks: string[] = [];
+  for (let i = 0; i < faceColors.length; i += 8192) {
+    const slice = faceColors.subarray(i, Math.min(i + 8192, faceColors.length));
+    chunks.push(String.fromCharCode(...slice));
+  }
+  const base64 = btoa(chunks.join(''));
   return apiFetch(`/models/${modelId}/parts/${plate}/${part}/colors`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },

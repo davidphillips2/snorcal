@@ -2,8 +2,6 @@ import { useEffect, useRef, useCallback } from 'react';
 import * as THREE from 'three';
 import type { Rotation3D } from './STLViewer';
 import { rotationFromNormalToDown } from './STLViewer';
-import { dist2 } from '../../lib/math';
-import { outwardNormalFromFace } from '../../lib/geometry';
 
 export type PaintMode = 'orbit' | 'paint' | 'fill' | 'rotate' | 'lay' | 'transform' | 'measure' | 'cut' | 'support';
 
@@ -196,10 +194,19 @@ export function FacePainter({ mesh, renderer, activeColor, paintMode, zRange, on
       if (paintMode === 'lay') {
         const posAttr = geometry.attributes.position as THREE.BufferAttribute;
         const i0 = faceIndex * 3;
+        const v0 = new THREE.Vector3().fromBufferAttribute(posAttr, i0);
+        const v1 = new THREE.Vector3().fromBufferAttribute(posAttr, i0 + 1);
+        const v2 = new THREE.Vector3().fromBufferAttribute(posAttr, i0 + 2);
+        const edge1 = new THREE.Vector3().subVectors(v1, v0);
+        const edge2 = new THREE.Vector3().subVectors(v2, v0);
+        const normal = new THREE.Vector3().crossVectors(edge1, edge2).normalize();
+        // Ensure outward-pointing: compare with face centroid direction from mesh center
+        const centroid = new THREE.Vector3().add(v0).add(v1).add(v2).multiplyScalar(1 / 3);
         const bbox = new THREE.Box3().setFromBufferAttribute(posAttr);
         const meshCenter = new THREE.Vector3();
         bbox.getCenter(meshCenter);
-        const normal = outwardNormalFromFace(posAttr, i0, meshCenter);
+        const outward = centroid.clone().sub(meshCenter).normalize();
+        if (normal.dot(outward) < 0) normal.negate();
 
         const rotation = rotationFromNormalToDown(normal);
         if (onLayOnFace) onLayOnFace(rotation);
@@ -234,7 +241,8 @@ export function FacePainter({ mesh, renderer, activeColor, paintMode, zRange, on
       // Interpolate between last and current position to fill gaps
       const dx = event.clientX - lastClientX;
       const dy = event.clientY - lastClientY;
-      const steps = Math.max(1, Math.ceil(dist2(dx, dy) / 4)); // sample every 4px
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      const steps = Math.max(1, Math.ceil(dist / 4)); // sample every 4px
 
       for (let i = 1; i <= steps; i++) {
         const t = i / steps;
