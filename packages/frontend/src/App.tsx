@@ -1369,6 +1369,20 @@ export default function App() {
     updateModels(prev => prev.map((p, i) => i === activeModelIndex ? { ...p, ...patch } : p));
   }, [activeModelIndex, updateModels]);
 
+  // Apply the same patch to every selected model (Phase 3 multi-aware panel).
+  const handleUpdateAllSelected = useCallback((patch: Partial<ProjectModel>) => {
+    if (selectedIndices.size === 0) return;
+    updateModels(prev => prev.map((p, i) => selectedIndices.has(i) ? { ...p, ...patch } : p));
+  }, [selectedIndices, updateModels]);
+
+  // Reset every selected model's rotation/positionOffset to identity (origin).
+  const handleResetOrigin = useCallback(() => {
+    if (selectedIndices.size === 0) return;
+    updateModels(prev => prev.map((p, i) => selectedIndices.has(i)
+      ? { ...p, rotation: { x: 0, y: 0, z: 0 }, positionOffset: { x: 0, y: 0, z: 0 } }
+      : p));
+  }, [selectedIndices, updateModels]);
+
   const handleToggleVisible = useCallback((idx: number) => {
     updateModels(prev => prev.map((p, i) => i === idx ? { ...p, visible: !p.visible } : p));
   }, [updateModels]);
@@ -2042,9 +2056,10 @@ export default function App() {
               />
               {paintMode === 'transform' && (
                 <TransformPanel
-                  model={activeModel}
+                  selectedModels={selectedModelsForGizmo}
+                  onUpdateAll={handleUpdateAllSelected}
+                  onResetOrigin={handleResetOrigin}
                   boundsMM={activeMesh ? computeMeshBoundsMM(activeMesh) : undefined}
-                  onUpdate={handleUpdateActiveModel}
                   onDuplicate={handleDuplicate}
                   onLinearArray={handleLinearArray}
                   onCircularArray={handleCircularArray}
