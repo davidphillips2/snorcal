@@ -1,8 +1,10 @@
 node_modules/
 dist/
+dev-dist/
 data/
 *.db
 *.sqlite
+*.tsbuildinfo
 .env
 .DS_Store
 *.log
