@@ -293,6 +293,15 @@ export function FacePainter({ mesh, renderer, activeColor, paintMode, zRange, on
     };
   }, [undo]);
 
+  // Clear the undo stack when the painted mesh changes — otherwise undoing
+  // after switching models writes the previous model's color buffer onto the
+  // newly-selected mesh (size + face layout almost never match).
+  useEffect(() => {
+    undoStackRef.current = [];
+    adjacencyRef.current = null;
+    (window as any).__snorcal_paint_undo_count = 0;
+  }, [mesh]);
+
   return null;
 }
 
