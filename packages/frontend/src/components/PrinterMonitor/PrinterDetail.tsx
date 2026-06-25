@@ -5,6 +5,7 @@ import { formatDurationShort } from '../../lib/gcode-stats';
 import { CameraView } from './CameraView';
 import { AmsEditor } from './AmsEditor';
 import { EditPrinterModal } from './EditPrinterModal';
+import { UploadFileSection } from './UploadFileSection';
 
 interface Props {
   id: string;
@@ -250,6 +251,8 @@ export function PrinterDetail({ id, onBack }: Props) {
               className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 rounded text-sm text-white">Send</button>
           </div>
         </Section>
+
+        <UploadFileSection printer={printer} printerStatus={status} />
       </div>
 
       {editingSlot && (

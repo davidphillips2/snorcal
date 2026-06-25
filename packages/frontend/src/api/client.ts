@@ -355,6 +355,48 @@ export async function sendToRegisteredPrinter(printerId: string, jobId: string, 
   }) as Promise<{ printerPath: string }>;
 }
 
+// --- External file upload (no slice job required) ---
+
+export interface StagedFilament {
+  index: number;
+  color: string | null;
+  type: string | null;
+  weightG: number | null;
+  used: boolean;
+}
+
+export interface StageFileResponse {
+  stageId: string;
+  filename: string;
+  isGcode3mf: boolean;
+  plates: number[];
+  filaments: StagedFilament[];
+}
+
+/** Upload a .gcode / .gcode.3mf to backend staging + parse filaments. */
+export async function stageFileToPrinter(printerId: string, file: File): Promise<StageFileResponse> {
+  const formData = new FormData();
+  formData.append('file', file);
+  return apiFetch(`/printers/${printerId}/stage-file`, { method: 'POST', body: formData }) as Promise<StageFileResponse>;
+}
+
+/** Send a staged file to the printer (upload + optional start print). */
+export async function sendStagedFileToPrinter(
+  printerId: string,
+  stageId: string,
+  opts: { startPrint?: boolean; filamentMapping?: number[]; plate?: number } = {},
+): Promise<{ printerPath: string }> {
+  return apiFetch(`/printers/${printerId}/send-file`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      stageId,
+      startPrint: opts.startPrint,
+      filamentMapping: opts.filamentMapping,
+      plate: opts.plate,
+    }),
+  }) as Promise<{ printerPath: string }>;
+}
+
 export interface JobFilament {
   index: number;
   color: string | null;

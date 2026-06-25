@@ -6,7 +6,10 @@ import type { Db } from '../db/index.js';
 import { discoverDevices } from '../services/ssdp-discovery.js';
 import { printerManager } from '../services/printer-manager.js';
 import { BambuAdapter } from '../services/adapters/bambu-adapter.js';
-import { findGcodeFile } from '../services/gcode-utils.js';
+import { findGcodeFile, extractGcodeFrom3mf } from '../services/gcode-utils.js';
+import { parseGcodeFilaments } from '../services/gcode-filaments.js';
+import { rewriteGcodeToolMapping, mappingIsNoop } from '../services/gcode-rewriter.js';
+import { getJobsDir, ensureDir } from '../services/model-parser.js';
 import type { PrinterCommand, PrinterProtocol } from '@snorcal/shared';
 
 function toPrinterRecord(row: any) {
@@ -492,7 +495,6 @@ export async function printerRoutes(app: FastifyInstance, options: { db: Db }) {
       let tempPath: string | null = null;
       const supportsNativeMapping = printer.protocol === 'bambu';
       if (hasMapping && !supportsNativeMapping) {
-        const { rewriteGcodeToolMapping, mappingIsNoop } = await import('../services/gcode-rewriter.js');
         if (!mappingIsNoop(mapping!)) {
           tempPath = await rewriteGcodeToolMapping(gcodePath, mapping!);
           uploadPath = tempPath;
@@ -519,6 +521,134 @@ export async function printerRoutes(app: FastifyInstance, options: { db: Db }) {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       return reply.send({ ok: false, error: message });
+    }
+  });
+
+  // POST /api/printers/:id/stage-file — accept an uploaded .gcode or .gcode.3mf,
+  // stash it under <jobsDir>/uploads/<uuid>/, parse filament metadata so the
+  // caller can show a remap UI before the actual send. Returns a stageId the
+  // client posts back to /send-file. Stage dirs are removed by /send-file in
+  // a finally block; leaked dirs are tolerated if the client never sends.
+  app.post<{ Params: { id: string } }>('/api/printers/:id/stage-file', async (req, reply) => {
+    const printer = db.getPrinter(req.params.id);
+    if (!printer) return reply.code(404).send({ ok: false, error: 'Printer not found' });
+
+    const data = await req.file();
+    if (!data) return reply.code(400).send({ ok: false, error: 'No file uploaded' });
+
+    try {
+      const buffer = await data.toBuffer();
+      const filename = data.filename || 'upload.gcode';
+      const lower = filename.toLowerCase();
+      const isGcode3mf = lower.endsWith('.gcode.3mf') || lower.endsWith('.3mf');
+
+      const stageId = randomUUID();
+      const stageDir = path.join(getJobsDir(), 'uploads', stageId);
+      ensureDir(stageDir);
+      const stagedPath = path.join(stageDir, filename);
+      fs.writeFileSync(stagedPath, buffer);
+
+      let gcodePathForParse = stagedPath;
+      let plates: number[] = [];
+      if (isGcode3mf) {
+        const ex = await extractGcodeFrom3mf(buffer);
+        plates = ex.plates;
+        // Save extracted gcode alongside original so /send-file can reuse it
+        // without re-doing the JSZip work. File name is fixed so we can find it.
+        const extractedPath = path.join(stageDir, '__extracted.gcode');
+        fs.writeFileSync(extractedPath, ex.text);
+        gcodePathForParse = extractedPath;
+      }
+
+      const filaments = parseGcodeFilaments(gcodePathForParse);
+      return reply.send({
+        ok: true,
+        data: { stageId, filename, isGcode3mf, plates, filaments },
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return reply.send({ ok: false, error: message });
+    }
+  });
+
+  // POST /api/printers/:id/send-file — finalize a staged upload: resolve
+  // protocol-specific transform (extract inner gcode for non-Bambu, rewrite
+  // T-codes if filament mapping supplied), push to printer's storage, and
+  // optionally kick off a print. Stage dir is always removed in finally.
+  app.post<{ Params: { id: string } }>('/api/printers/:id/send-file', async (req, reply) => {
+    const body = req.body as { stageId?: string; startPrint?: boolean; filamentMapping?: number[]; plate?: number };
+    if (!body.stageId) return reply.code(400).send({ ok: false, error: 'stageId required' });
+
+    const printer = db.getPrinter(req.params.id);
+    if (!printer) return reply.code(404).send({ ok: false, error: 'Printer not found' });
+
+    const stageDir = path.join(getJobsDir(), 'uploads', body.stageId);
+    if (!fs.existsSync(stageDir)) {
+      return reply.code(400).send({ ok: false, error: 'Staged file expired' });
+    }
+
+    try {
+      const stagedName = fs.readdirSync(stageDir).find(f => !f.startsWith('.') && f !== '__extracted.gcode');
+      if (!stagedName) throw new Error('Empty stage directory');
+      const stagedPath = path.join(stageDir, stagedName);
+      const isGcode3mf = /\.gcode\.3mf$/i.test(stagedName) || /\.3mf$/i.test(stagedName);
+      const plateNum = body.plate ?? 1;
+      const startPrint = body.startPrint !== false;
+      const mapping = Array.isArray(body.filamentMapping) ? body.filamentMapping : null;
+      const supportsNativeMapping = printer.protocol === 'bambu';
+
+      let uploadPath = stagedPath;
+      let uploadFilename = stagedName;
+      let bambuPlateArg: string | undefined;
+
+      if (isGcode3mf) {
+        if (supportsNativeMapping) {
+          // Bambu reads .gcode.3mf natively. Pass plate path for start-print.
+          bambuPlateArg = `Metadata/plate_${plateNum}.gcode`;
+        } else {
+          // Klipper/Moonraker can't read 3MF — pull inner gcode out.
+          // Reuse the extracted file from stage if present, else re-extract.
+          const extractedPath = path.join(stageDir, '__extracted.gcode');
+          if (fs.existsSync(extractedPath)) {
+            uploadPath = extractedPath;
+          } else {
+            const buffer = fs.readFileSync(stagedPath);
+            const ex = await extractGcodeFrom3mf(buffer, plateNum);
+            fs.writeFileSync(extractedPath, ex.text);
+            uploadPath = extractedPath;
+          }
+          uploadFilename = stagedName.replace(/\.gcode\.3mf$/i, '.gcode').replace(/\.3mf$/i, '.gcode');
+        }
+      }
+
+      // T-code rewrite for non-Bambu with user-supplied mapping
+      if (mapping && mapping.length > 0 && !supportsNativeMapping) {
+        if (!mappingIsNoop(mapping)) {
+          uploadPath = await rewriteGcodeToolMapping(uploadPath, mapping);
+        }
+      }
+
+      const printerPath = await printerManager.uploadFile(req.params.id, uploadPath, uploadFilename);
+
+      if (startPrint) {
+        if (mapping && mapping.length > 0 && supportsNativeMapping) {
+          await printerManager.startPrint(req.params.id, printerPath, {
+            amsMapping: mapping,
+            ...(bambuPlateArg ? { plate: bambuPlateArg } : {}),
+          });
+        } else if (bambuPlateArg) {
+          await printerManager.startPrint(req.params.id, printerPath, { plate: bambuPlateArg });
+        } else {
+          await printerManager.startPrint(req.params.id, printerPath);
+        }
+      }
+
+      return reply.send({ ok: true, data: { printerPath } });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return reply.send({ ok: false, error: message });
+    } finally {
+      try { fs.rmSync(stageDir, { recursive: true, force: true }); } catch { /* ignore */ }
     }
   });
 

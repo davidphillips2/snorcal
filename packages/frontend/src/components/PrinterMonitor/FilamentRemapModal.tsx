@@ -1,7 +1,8 @@
 import { useState, useEffect, useMemo } from 'react';
 import * as api from '../../api/client';
 import type { JobFilament } from '../../api/client';
-import type { AmsSlot, PrinterStatus } from '@snorcal/shared';
+import type { PrinterStatus } from '@snorcal/shared';
+import { buildSlots, hexNormalize, type Slot } from '../../lib/printer-slots';
 
 interface Props {
   jobId: string;
@@ -11,28 +12,6 @@ interface Props {
   printerStatus: PrinterStatus | undefined;
   onClose: () => void;
   onSent: (printerPath: string) => void;
-}
-
-interface Slot {
-  /** Value to send in filamentMapping array */
-  value: number;
-  /** Display label */
-  label: string;
-  /** Hex color for swatch, if known */
-  color: string | null;
-  /** Filament type if known */
-  type: string | null;
-  /** Source — live AMS or manual config */
-  source: 'ams' | 'manual';
-}
-
-function hexNormalize(c: string | null | undefined): string | null {
-  if (!c) return null;
-  let s = c.trim().toUpperCase().replace(/^#/, '');
-  // Bambu AMS color sometimes 8-digit RGBA. Strip alpha for compare.
-  if (s.length === 8) s = s.slice(0, 6);
-  if (s.length === 6) return '#' + s;
-  return s;
 }
 
 export function FilamentRemapModal({
@@ -172,30 +151,4 @@ export function FilamentRemapModal({
       </div>
     </div>
   );
-}
-
-function buildSlots(
-  protocol: 'moonraker' | 'bambu',
-  manualSlots: number,
-  ams: AmsSlot[] | undefined,
-): Slot[] {
-  if (protocol === 'bambu' && ams && ams.length > 0) {
-    return ams.map(s => ({
-      value: s.trayId,
-      label: `Tray ${s.trayId}`,
-      color: s.color ? '#' + s.color.replace(/^#/, '').slice(0, 6) : null,
-      type: s.type ?? null,
-      source: 'ams' as const,
-    }));
-  }
-  if (manualSlots > 0) {
-    return Array.from({ length: manualSlots }, (_, i) => ({
-      value: i,
-      label: `Slot ${i + 1}`,
-      color: null,
-      type: null,
-      source: 'manual' as const,
-    }));
-  }
-  return [];
 }
