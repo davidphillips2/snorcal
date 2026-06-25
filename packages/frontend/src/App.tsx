@@ -1409,6 +1409,28 @@ export default function App() {
     setSelectedIndices(new Set([projectModels.length]));
   }, [activeModelIndex, handleDuplicateAt, projectModels.length]);
 
+  // Cross-plate ops (Phase 4). Move = change plateId in place. Duplicate-to
+  // creates a clone on the target plate (offset to plate origin) and selects it.
+  const handleMoveToPlate = useCallback((globalIdx: number, plateId: string) => {
+    updateModels(prev => prev.map((p, i) => i === globalIdx
+      ? { ...p, plateId, positionOffset: { x: 0, y: 0, z: 0 } }
+      : p));
+    selectSingle(globalIdx);
+  }, [updateModels, selectSingle]);
+
+  const handleDuplicateToPlate = useCallback((globalIdx: number, plateId: string) => {
+    const src = projectModels[globalIdx];
+    if (!src) return;
+    const dup: ProjectModel = {
+      ...src,
+      uid: makeUid(),
+      plateId,
+      positionOffset: { x: 0, y: 0, z: 0 },
+    };
+    updateModels(prev => [...prev, dup]);
+    setSelectedIndices(new Set([projectModels.length]));
+  }, [projectModels, updateModels]);
+
   const handleLinearArray = useCallback((count: number, dx: number, dy: number) => {
     if (!activeModel || count < 2) return;
     const copies: ProjectModel[] = [];
@@ -1688,6 +1710,10 @@ export default function App() {
           onOpenMakerworld={() => setShowMwImport(true)}
           onDuplicateAt={handleDuplicateAt}
           onAddNegativeToParent={handleAddNegativeToParent}
+          plates={plates}
+          activePlateId={activePlateId}
+          onMoveToPlate={handleMoveToPlate}
+          onDuplicateToPlate={handleDuplicateToPlate}
         />
 
         {/* Target printer picker */}

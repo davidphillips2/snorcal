@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ModelKind } from '@snorcal/shared';
 import type { ProjectModel } from '../../App';
 import { ModelUploader } from '../ModelUploader';
@@ -17,6 +17,11 @@ interface ObjectListPanelProps {
   onOpenMakerworld?: () => void;
   onDuplicateAt?: (globalIdx: number) => void;
   onAddNegativeToParent?: (parentModelId: string) => void;
+  // Cross-plate ops (Phase 4)
+  plates: Array<{ id: string; name: string }>;
+  activePlateId: string;
+  onMoveToPlate?: (globalIdx: number, plateId: string) => void;
+  onDuplicateToPlate?: (globalIdx: number, plateId: string) => void;
 }
 
 interface HierarchyNode {
@@ -65,6 +70,7 @@ function buildHierarchy(plateModels: ProjectModel[], allModels: ProjectModel[]):
 export function ObjectListPanel({
   models, allModels, selectedIndices, onSelect, onRemove, onToggleVisible, onUpload, onUploadMany, onAutoArrange, isUploading,
   onOpenMakerworld, onDuplicateAt, onAddNegativeToParent,
+  plates, activePlateId, onMoveToPlate, onDuplicateToPlate,
 }: ObjectListPanelProps) {
   const hierarchy = useMemo(() => buildHierarchy(models, allModels), [models, allModels]);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -164,6 +170,10 @@ export function ObjectListPanel({
             onToggleCollapse={toggleCollapse}
             onDuplicate={onDuplicateAt}
             onAddNegative={onAddNegativeToParent}
+            plates={plates}
+            activePlateId={activePlateId}
+            onMoveToPlate={onMoveToPlate}
+            onDuplicateToPlate={onDuplicateToPlate}
           />
         ))}
       </div>
@@ -182,16 +192,22 @@ interface ObjectRowProps {
   onToggleCollapse: (uid: string) => void;
   onDuplicate?: (idx: number) => void;
   onAddNegative?: (parentModelId: string) => void;
+  plates: Array<{ id: string; name: string }>;
+  activePlateId: string;
+  onMoveToPlate?: (globalIdx: number, plateId: string) => void;
+  onDuplicateToPlate?: (globalIdx: number, plateId: string) => void;
 }
 
 function ObjectRow({
   node, depth, selectedIndices, onSelect, onRemove, onToggleVisible,
   collapsed, onToggleCollapse, onDuplicate, onAddNegative,
+  plates, activePlateId, onMoveToPlate, onDuplicateToPlate,
 }: ObjectRowProps) {
   const { model, globalIdx, children, isOrphan } = node;
   const isActive = selectedIndices.has(globalIdx);
   const isCollapsed = collapsed.has(model.uid);
   const hasChildren = children.length > 0;
+  const [menuOpen, setMenuOpen] = useState(false);
 
   return (
     <>
@@ -263,6 +279,26 @@ function ObjectRow({
               {'\u2398'}
             </button>
           )}
+          {onMoveToPlate && onDuplicateToPlate && plates.length > 1 && (
+            <div className="relative">
+              <button
+                onClick={(e) => { e.stopPropagation(); setMenuOpen(v => !v); }}
+                className="shrink-0 w-5 h-5 flex items-center justify-center rounded text-gray-400 hover:text-white hover:bg-gray-600/50 text-xs"
+                title="Move / duplicate to plate"
+              >
+                {'\u22EF'}
+              </button>
+              {menuOpen && (
+                <PlateMenu
+                  plates={plates}
+                  activePlateId={activePlateId}
+                  onClose={() => setMenuOpen(false)}
+                  onMove={(plateId) => { onMoveToPlate(globalIdx, plateId); setMenuOpen(false); }}
+                  onDuplicate={(plateId) => { onDuplicateToPlate(globalIdx, plateId); setMenuOpen(false); }}
+                />
+              )}
+            </div>
+          )}
           <button
             onClick={(e) => { e.stopPropagation(); onToggleVisible(globalIdx); }}
             className="shrink-0 w-5 h-5 flex items-center justify-center rounded text-gray-400 hover:text-white hover:bg-gray-600/50"
@@ -293,9 +329,66 @@ function ObjectRow({
           onToggleCollapse={onToggleCollapse}
           onDuplicate={onDuplicate}
           onAddNegative={onAddNegative}
+          plates={plates}
+          activePlateId={activePlateId}
+          onMoveToPlate={onMoveToPlate}
+          onDuplicateToPlate={onDuplicateToPlate}
         />
       ))}
     </>
+  );
+}
+
+function PlateMenu({
+  plates, activePlateId, onClose, onMove, onDuplicate,
+}: {
+  plates: Array<{ id: string; name: string }>;
+  activePlateId: string;
+  onClose: () => void;
+  onMove: (plateId: string) => void;
+  onDuplicate: (plateId: string) => void;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const onDown = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) onClose();
+    };
+    window.addEventListener('mousedown', onDown);
+    return () => window.removeEventListener('mousedown', onDown);
+  }, [onClose]);
+  const targets = plates.filter(p => p.id !== activePlateId);
+  return (
+    <div
+      ref={ref}
+      className="absolute right-0 top-6 z-30 w-44 bg-gray-800 border border-gray-700 rounded shadow-xl py-1 text-xs"
+      onClick={(e) => e.stopPropagation()}
+    >
+      <div className="px-2 py-0.5 text-[10px] uppercase tracking-wide text-gray-500">Move to</div>
+      {targets.length === 0 ? (
+        <div className="px-2 py-1 text-gray-500">No other plates</div>
+      ) : targets.map(p => (
+        <button
+          key={p.id}
+          onClick={() => onMove(p.id)}
+          className="block w-full text-left px-2 py-1 hover:bg-gray-700 text-gray-200"
+        >
+          {p.name}
+        </button>
+      ))}
+      <div className="border-t border-gray-700 my-1" />
+      <div className="px-2 py-0.5 text-[10px] uppercase tracking-wide text-gray-500">Duplicate to</div>
+      {targets.length === 0 ? (
+        <div className="px-2 py-1 text-gray-500">No other plates</div>
+      ) : targets.map(p => (
+        <button
+          key={p.id}
+          onClick={() => onDuplicate(p.id)}
+          className="block w-full text-left px-2 py-1 hover:bg-gray-700 text-gray-200"
+        >
+          {p.name}
+        </button>
+      ))}
+    </div>
   );
 }
 
