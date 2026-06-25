@@ -8,6 +8,7 @@ export function PrinterSelect({ onSelect }: PrinterSelectProps) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-gray-900">
       <div className="max-w-lg w-full mx-4 text-center">
+        <img src="/icon-512.png" alt="" className="w-20 h-20 mx-auto mb-3" />
         <h1 className="text-3xl font-bold mb-2">Snorcal</h1>
         <p className="text-gray-400 mb-8">Select your printer to get started</p>
 

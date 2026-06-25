@@ -1851,7 +1851,10 @@ export default function App() {
       {/* Top nav */}
       <header className="flex items-center justify-between px-4 py-2 bg-gray-950 border-b border-gray-800 shrink-0 z-20">
         <div className="flex items-center gap-6">
-          <span className="text-base font-semibold tracking-tight">snorcal</span>
+          <div className="flex items-center gap-2">
+            <img src="/icon-192.png" alt="" className="w-6 h-6" />
+            <span className="text-base font-semibold tracking-tight">snorcal</span>
+          </div>
           <nav className="flex gap-1">
             {(['home', 'slice', 'settings'] as const).map(v => (
               <button key={v} onClick={() => setView(v)}

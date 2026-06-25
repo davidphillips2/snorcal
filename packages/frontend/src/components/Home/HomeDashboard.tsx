@@ -71,6 +71,15 @@ export function HomeDashboard({ onSlice, onOpenJob, onOpenPrinter, onImportMaker
     <div className="flex-1 overflow-y-auto bg-gray-900">
       <div className="max-w-6xl mx-auto p-6 space-y-8">
 
+        {/* Brand hero */}
+        <div className="flex items-center gap-3">
+          <img src="/icon-512.png" alt="" className="w-12 h-12" />
+          <div>
+            <h1 className="text-2xl font-bold tracking-tight">snorcal</h1>
+            <p className="text-xs text-gray-400">Self-hosted 3D slicing hub</p>
+          </div>
+        </div>
+
         {/* Stats row */}
         <div className="grid grid-cols-3 gap-4">
           <StatCard label="Printers" value={printers.length} sub={`${printingCount} printing`} color="emerald" />
