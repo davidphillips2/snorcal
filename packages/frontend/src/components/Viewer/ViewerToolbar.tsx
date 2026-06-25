@@ -40,6 +40,8 @@ interface ViewerToolbarProps {
   isCoarsePointer: boolean;
   collisionEnabled: boolean;
   onCollisionToggle: (on: boolean) => void;
+  measureEnabled: boolean;
+  onMeasureToggle: (on: boolean) => void;
 }
 
 const PALETTE = [
@@ -203,6 +205,7 @@ export function ViewerToolbar({
   snapRotateDeg, onSnapRotateDegChange,
   isCoarsePointer,
   collisionEnabled, onCollisionToggle,
+  measureEnabled, onMeasureToggle,
 }: ViewerToolbarProps) {
   const palette = filamentColors && filamentColors.length > 0 ? filamentColors : PALETTE;
   const isPainting = paintMode === 'paint' || paintMode === 'fill';
@@ -489,6 +492,15 @@ export function ViewerToolbar({
                   className="accent-red-500"
                 />
                 <span>Collide</span>
+              </label>
+              <label className="flex items-center gap-1 text-xs text-gray-400 cursor-pointer" title="Distance line between first and last selected">
+                <input
+                  type="checkbox"
+                  checked={measureEnabled}
+                  onChange={(e) => onMeasureToggle(e.target.checked)}
+                  className="accent-cyan-500"
+                />
+                <span>Measure</span>
               </label>
             </>
           )}

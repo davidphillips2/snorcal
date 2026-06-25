@@ -39,6 +39,7 @@ import { shelfPack } from './lib/pack';
 import { extractLayerTypes } from './lib/gcode-stats';
 import { TransformGizmo } from './components/Viewer/TransformGizmo';
 import { CollisionOverlay } from './components/Viewer/CollisionOverlay';
+import { MultiMeasureOverlay } from './components/Viewer/MultiMeasureOverlay';
 import { isCoarsePointer, type TransformMode, type TransformSpace, type SnapSettings } from './lib/transforms';
 import type { ModelKind, Scale3D, Mirror3D } from '@snorcal/shared';
 
@@ -1294,6 +1295,7 @@ export default function App() {
 
   // Active-plate models + parallel meshes (for collision overlay).
   const [collisionEnabled, setCollisionEnabled] = useState(true);
+  const [measureEnabled, setMeasureEnabled] = useState(false);
   const activePlateMeshes = useMemo(
     () => activePlateModels
       .map(pm => meshRefs.current[pm.uid])
@@ -2029,6 +2031,12 @@ export default function App() {
                 meshes={activePlateMeshes}
                 enabled={collisionEnabled}
               />
+              <MultiMeasureOverlay
+                sceneRefs={sceneRefs}
+                models={selectedModelsForGizmo}
+                meshes={selectedMeshesForGizmo}
+                enabled={measureEnabled}
+              />
               <FacePainter
                 mesh={activeMesh}
                 renderer={sceneRefs.renderer}
@@ -2097,6 +2105,8 @@ export default function App() {
                 isCoarsePointer={isCoarsePointer()}
                 collisionEnabled={collisionEnabled}
                 onCollisionToggle={setCollisionEnabled}
+                measureEnabled={measureEnabled}
+                onMeasureToggle={setMeasureEnabled}
               />
               {paintMode === 'transform' && (
                 <TransformPanel
