@@ -81,11 +81,18 @@ export interface PrinterStatus {
   updatedAt: string;          // ISO timestamp
 }
 
+export interface PrintOptions {
+  timelapse?: boolean;
+  bedLeveling?: boolean;
+  flowCali?: boolean;       // bambu only
+  vibrationCali?: boolean;  // bambu only
+}
+
 export type PrinterCommandName =
   | 'pause'
   | 'resume'
   | 'cancel'
-  | 'start'           // args.file = path on printer
+  | 'start'           // args.file = path on printer, args.printOptions?: PrintOptions
   | 'set_temp'        // args.heater ('bed'|'hotend'), args.value
   | 'jog'             // args.axis ('x'|'y'|'z'), args.amount
   | 'home'            // args.axes?: string[]

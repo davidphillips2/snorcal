@@ -3,7 +3,7 @@ import net from 'node:net';
 import tls from 'node:tls';
 import mqtt from 'mqtt';
 import { Client as FtpClient } from 'basic-ftp';
-import type { PrinterCommand, PrinterStatus, PrinterState, PrinterConnectionState, AmsSlot } from '@snorcal/shared';
+import type { PrinterCommand, PrinterStatus, PrinterState, PrinterConnectionState, AmsSlot, PrintOptions } from '@snorcal/shared';
 import type { PrinterAdapter } from './adapter.js';
 
 export interface BambuAdapterOptions {
@@ -276,11 +276,13 @@ export class BambuAdapter implements PrinterAdapter {
         // args.plate = gcode path inside 3mf e.g. "Metadata/plate_1.gcode"
         // args.amsMapping = optional number[] (gcode filament idx → 1-indexed AMS tray, 0=skip)
         //                   When provided, switches on use_ams so printer pulls from physical trays.
+        // args.printOptions = optional PrintOptions for per-print toggles (defaults: all off)
         const file = String(cmd.args?.file ?? '');
         const platePath = String(cmd.args?.plate ?? 'Metadata/plate_1.gcode');
         if (!file) throw new Error('file required for start');
         const amsMapping = Array.isArray(cmd.args?.amsMapping) ? (cmd.args!.amsMapping as number[]) : null;
         const useAms = amsMapping !== null && amsMapping.some(v => v > 0);
+        const po = (cmd.args?.printOptions ?? {}) as PrintOptions;
         this.publish({
           print: {
             sequence_id: '0',
@@ -290,10 +292,10 @@ export class BambuAdapter implements PrinterAdapter {
             file,
             md5: '',
             bed_type: 'auto',
-            timelapse: false,
-            bed_leveling: true,
-            flow_cali: false,
-            vibration_cali: true,
+            timelapse: po.timelapse === true,
+            bed_leveling: po.bedLeveling === true,
+            flow_cali: po.flowCali === true,
+            vibration_cali: po.vibrationCali === true,
             layer_inspect: false,
             use_ams: useAms,
             ...(useAms ? { ams_mapping: amsMapping } : {}),

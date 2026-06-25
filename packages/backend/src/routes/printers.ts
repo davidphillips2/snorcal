@@ -6,11 +6,11 @@ import type { Db } from '../db/index.js';
 import { discoverDevices } from '../services/ssdp-discovery.js';
 import { printerManager } from '../services/printer-manager.js';
 import { BambuAdapter } from '../services/adapters/bambu-adapter.js';
-import { findGcodeFile, extractGcodeFrom3mf } from '../services/gcode-utils.js';
+import { findGcodeFile, extractGcodeFrom3mf, prepareKlipperGcode } from '../services/gcode-utils.js';
 import { parseGcodeFilaments } from '../services/gcode-filaments.js';
 import { rewriteGcodeToolMapping, mappingIsNoop } from '../services/gcode-rewriter.js';
 import { getJobsDir, ensureDir } from '../services/model-parser.js';
-import type { PrinterCommand, PrinterProtocol } from '@snorcal/shared';
+import type { PrinterCommand, PrinterProtocol, PrintOptions } from '@snorcal/shared';
 
 function toPrinterRecord(row: any) {
   return {
@@ -471,7 +471,7 @@ export async function printerRoutes(app: FastifyInstance, options: { db: Db }) {
   //                               // Bambu: 1-indexed AMS tray (0=skip). use_ams auto-enabled when any >0.
   //                               // Moonraker/manualSlots: T-code rewrite (Tx → Ty) before upload
   app.post<{ Params: { id: string } }>('/api/printers/:id/send', async (req, reply) => {
-    const body = req.body as { jobId: string; startPrint?: boolean; filamentMapping?: number[] };
+    const body = req.body as { jobId: string; startPrint?: boolean; filamentMapping?: number[]; printOptions?: PrintOptions };
     if (!body.jobId) return reply.status(400).send({ ok: false, error: 'jobId required' });
     const job = db.getJob(body.jobId);
     if (!job) return reply.status(404).send({ ok: false, error: 'Job not found' });
@@ -486,18 +486,29 @@ export async function printerRoutes(app: FastifyInstance, options: { db: Db }) {
 
       const mapping = Array.isArray(body.filamentMapping) ? body.filamentMapping : null;
       const hasMapping = mapping && mapping.length > 0;
+      const printOptions = body.printOptions;
 
       // Decide if we need to rewrite gcode T-codes.
       // Bambu: ams_mapping sent in start-print MQTT payload — no gcode rewrite.
       // Snapmaker U1 (no AMS, 4 direct spools), Moonraker, generic Klipper with
       // manual_slots: rewrite Tx per mapping before upload.
       let uploadPath = gcodePath;
-      let tempPath: string | null = null;
+      const tempPaths: string[] = [];
       const supportsNativeMapping = printer.protocol === 'bambu';
       if (hasMapping && !supportsNativeMapping) {
         if (!mappingIsNoop(mapping!)) {
-          tempPath = await rewriteGcodeToolMapping(gcodePath, mapping!);
-          uploadPath = tempPath;
+          uploadPath = await rewriteGcodeToolMapping(gcodePath, mapping!);
+          tempPaths.push(uploadPath);
+        }
+      }
+      // Klipper: prepend M1002 judge_flag lines for active toggles. Applied even
+      // when startPrint=false so a file uploaded now and started from the
+      // touchscreen later still surfaces the chosen prompts.
+      if (printOptions && printer.protocol !== 'bambu') {
+        const prepped = prepareKlipperGcode(uploadPath, printOptions);
+        if (prepped !== uploadPath) {
+          tempPaths.push(prepped);
+          uploadPath = prepped;
         }
       }
 
@@ -505,17 +516,19 @@ export async function printerRoutes(app: FastifyInstance, options: { db: Db }) {
         const filename = path.basename(uploadPath);
         const printerPath = await printerManager.uploadFile(req.params.id, uploadPath, filename);
         if (body.startPrint !== false) {
-          if (hasMapping && supportsNativeMapping) {
-            // Pass ams_mapping through to MQTT start command
-            await printerManager.startPrint(req.params.id, printerPath, { amsMapping: mapping });
+          const startArgs: Record<string, unknown> = {};
+          if (hasMapping && supportsNativeMapping) startArgs.amsMapping = mapping;
+          if (printOptions) startArgs.printOptions = printOptions;
+          if (Object.keys(startArgs).length > 0) {
+            await printerManager.startPrint(req.params.id, printerPath, startArgs);
           } else {
             await printerManager.startPrint(req.params.id, printerPath);
           }
         }
         return reply.send({ ok: true, data: { printerPath } });
       } finally {
-        if (tempPath) {
-          try { fs.unlinkSync(tempPath); } catch { /* ignore */ }
+        for (const tp of tempPaths) {
+          try { fs.unlinkSync(tp); } catch { /* ignore */ }
         }
       }
     } catch (err) {
@@ -576,7 +589,7 @@ export async function printerRoutes(app: FastifyInstance, options: { db: Db }) {
   // T-codes if filament mapping supplied), push to printer's storage, and
   // optionally kick off a print. Stage dir is always removed in finally.
   app.post<{ Params: { id: string } }>('/api/printers/:id/send-file', async (req, reply) => {
-    const body = req.body as { stageId?: string; startPrint?: boolean; filamentMapping?: number[]; plate?: number };
+    const body = req.body as { stageId?: string; startPrint?: boolean; filamentMapping?: number[]; plate?: number; printOptions?: PrintOptions };
     if (!body.stageId) return reply.code(400).send({ ok: false, error: 'stageId required' });
 
     const printer = db.getPrinter(req.params.id);
@@ -588,13 +601,14 @@ export async function printerRoutes(app: FastifyInstance, options: { db: Db }) {
     }
 
     try {
-      const stagedName = fs.readdirSync(stageDir).find(f => !f.startsWith('.') && f !== '__extracted.gcode');
+      const stagedName = fs.readdirSync(stageDir).find(f => !f.startsWith('.') && f !== '__extracted.gcode' && !f.endsWith('.snorcal.gcode'));
       if (!stagedName) throw new Error('Empty stage directory');
       const stagedPath = path.join(stageDir, stagedName);
       const isGcode3mf = /\.gcode\.3mf$/i.test(stagedName) || /\.3mf$/i.test(stagedName);
       const plateNum = body.plate ?? 1;
       const startPrint = body.startPrint !== false;
       const mapping = Array.isArray(body.filamentMapping) ? body.filamentMapping : null;
+      const printOptions = body.printOptions;
       const supportsNativeMapping = printer.protocol === 'bambu';
 
       let uploadPath = stagedPath;
@@ -628,16 +642,22 @@ export async function printerRoutes(app: FastifyInstance, options: { db: Db }) {
         }
       }
 
+      // Klipper: prepend M1002 judge_flag lines for active toggles. Applied even
+      // when startPrint=false so a file uploaded now and started from the
+      // touchscreen later still surfaces the chosen prompts.
+      if (printOptions && printer.protocol !== 'bambu') {
+        uploadPath = prepareKlipperGcode(uploadPath, printOptions);
+      }
+
       const printerPath = await printerManager.uploadFile(req.params.id, uploadPath, uploadFilename);
 
       if (startPrint) {
-        if (mapping && mapping.length > 0 && supportsNativeMapping) {
-          await printerManager.startPrint(req.params.id, printerPath, {
-            amsMapping: mapping,
-            ...(bambuPlateArg ? { plate: bambuPlateArg } : {}),
-          });
-        } else if (bambuPlateArg) {
-          await printerManager.startPrint(req.params.id, printerPath, { plate: bambuPlateArg });
+        const startArgs: Record<string, unknown> = {};
+        if (mapping && mapping.length > 0 && supportsNativeMapping) startArgs.amsMapping = mapping;
+        if (bambuPlateArg) startArgs.plate = bambuPlateArg;
+        if (printOptions) startArgs.printOptions = printOptions;
+        if (Object.keys(startArgs).length > 0) {
+          await printerManager.startPrint(req.params.id, printerPath, startArgs);
         } else {
           await printerManager.startPrint(req.params.id, printerPath);
         }

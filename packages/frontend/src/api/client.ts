@@ -1,3 +1,5 @@
+import type { PrintOptions } from '@snorcal/shared';
+
 const API_BASE = '/api';
 
 // Retries transient backend downtime (dev-mode tsx restart, proxy 502/503/504,
@@ -348,10 +350,16 @@ export async function setAmsFilament(
   return sendPrinterCommand(printerId, 'set_ams_filament', { amsId, trayId, ...data });
 }
 
-export async function sendToRegisteredPrinter(printerId: string, jobId: string, startPrint = true, filamentMapping?: number[]) {
+export async function sendToRegisteredPrinter(
+  printerId: string,
+  jobId: string,
+  startPrint = true,
+  filamentMapping?: number[],
+  printOptions?: PrintOptions,
+) {
   return apiFetch(`/printers/${printerId}/send`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ jobId, startPrint, filamentMapping }),
+    body: JSON.stringify({ jobId, startPrint, filamentMapping, printOptions }),
   }) as Promise<{ printerPath: string }>;
 }
 
@@ -384,7 +392,7 @@ export async function stageFileToPrinter(printerId: string, file: File): Promise
 export async function sendStagedFileToPrinter(
   printerId: string,
   stageId: string,
-  opts: { startPrint?: boolean; filamentMapping?: number[]; plate?: number } = {},
+  opts: { startPrint?: boolean; filamentMapping?: number[]; plate?: number; printOptions?: PrintOptions } = {},
 ): Promise<{ printerPath: string }> {
   return apiFetch(`/printers/${printerId}/send-file`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -393,6 +401,7 @@ export async function sendStagedFileToPrinter(
       startPrint: opts.startPrint,
       filamentMapping: opts.filamentMapping,
       plate: opts.plate,
+      printOptions: opts.printOptions,
     }),
   }) as Promise<{ printerPath: string }>;
 }

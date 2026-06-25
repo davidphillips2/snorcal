@@ -1,8 +1,9 @@
 import { useState, useEffect, useMemo } from 'react';
 import * as api from '../../api/client';
 import type { JobFilament } from '../../api/client';
-import type { PrinterStatus } from '@snorcal/shared';
+import type { PrinterStatus, PrintOptions } from '@snorcal/shared';
 import { buildSlots, hexNormalize, type Slot } from '../../lib/printer-slots';
+import { PrintOptions as PrintOptionsUI } from './PrintOptions';
 
 interface Props {
   jobId: string;
@@ -21,6 +22,7 @@ export function FilamentRemapModal({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [mapping, setMapping] = useState<number[]>([]);
+  const [printOptions, setPrintOptions] = useState<PrintOptions>({});
   const [sending, setSending] = useState(false);
 
   useEffect(() => {
@@ -59,7 +61,7 @@ export function FilamentRemapModal({
     setSending(true);
     setError(null);
     try {
-      const result = await api.sendToRegisteredPrinter(printerId, jobId, true, mapping);
+      const result = await api.sendToRegisteredPrinter(printerId, jobId, true, mapping, printOptions);
       onSent(result.printerPath);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -139,6 +141,13 @@ export function FilamentRemapModal({
               </div>
             </div>
           )}
+
+          <PrintOptionsUI
+            protocol={printerProtocol}
+            options={printOptions}
+            onChange={setPrintOptions}
+            disabled={sending}
+          />
         </div>
 
         <div className="px-5 py-3 border-t border-gray-800 flex gap-2">

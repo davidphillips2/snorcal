@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import JSZip from 'jszip';
+import type { PrintOptions } from '@snorcal/shared';
 
 /**
  * Recursively find the first `.gcode` file under `dir`.
@@ -52,4 +53,28 @@ export async function extractGcodeFrom3mf(
   if (!entry) throw new Error(`Plate entry ${target.name} missing in zip`);
   const text = await entry.async('string');
   return { text, entryName: target.name, plates };
+}
+
+/**
+ * Klipper/Snapmaker: prepend `M1002 judge_flag <name>` lines so the printer's
+ * touchscreen shows the matching prompt at print start. Snapmaker firmware
+ * dedupes prompts when the same flag appears twice (e.g. user's slicer
+ * already wrote one), so naive prepend is safe.
+ *
+ * Writes a sibling file `<base>.snorcal.gcode` when injection is needed;
+ * returns the input path unchanged when no flags are active so callers can
+ * always use the returned path for upload.
+ */
+export function prepareKlipperGcode(localPath: string, opts?: PrintOptions): string {
+  if (!opts) return localPath;
+  const lines: string[] = [];
+  if (opts.bedLeveling) lines.push('M1002 judge_flag g29_before_print_flag');
+  if (opts.timelapse) lines.push('M1002 judge_flag timelapse_record_flag');
+  if (lines.length === 0) return localPath;
+
+  const prefix = Buffer.from(lines.join('\n') + '\n', 'utf8');
+  const orig = fs.readFileSync(localPath);
+  const modifiedPath = localPath.replace(/\.gcode$/i, '.snorcal.gcode');
+  fs.writeFileSync(modifiedPath, Buffer.concat([prefix, orig]));
+  return modifiedPath;
 }

@@ -1,7 +1,8 @@
 import { useState, useMemo, useRef } from 'react';
-import type { PrinterRecord, PrinterStatus } from '@snorcal/shared';
+import type { PrinterRecord, PrinterStatus, PrintOptions } from '@snorcal/shared';
 import * as api from '../../api/client';
 import { buildSlots, hexNormalize } from '../../lib/printer-slots';
+import { PrintOptions as PrintOptionsUI } from './PrintOptions';
 
 interface Props {
   printer: PrinterRecord;
@@ -17,6 +18,7 @@ export function UploadFileSection({ printer, printerStatus }: Props) {
   const [startPrint, setStartPrint] = useState(true);
   const [plate, setPlate] = useState(1);
   const [mapping, setMapping] = useState<number[]>([]);
+  const [printOptions, setPrintOptions] = useState<PrintOptions>({});
   const [resultPath, setResultPath] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -34,6 +36,7 @@ export function UploadFileSection({ printer, printerStatus }: Props) {
     setStartPrint(true);
     setPlate(1);
     setMapping([]);
+    setPrintOptions({});
     setResultPath(null);
     setError(null);
     if (fileInputRef.current) fileInputRef.current.value = '';
@@ -75,6 +78,7 @@ export function UploadFileSection({ printer, printerStatus }: Props) {
         startPrint,
         filamentMapping: mapping.length > 0 ? mapping : undefined,
         plate: stage.isGcode3mf ? plate : undefined,
+        printOptions: startPrint ? printOptions : undefined,
       });
       setResultPath(result.printerPath);
       setPhase('done');
@@ -165,6 +169,15 @@ export function UploadFileSection({ printer, printerStatus }: Props) {
               />
               Start print after upload
             </label>
+
+            {startPrint && (
+              <PrintOptionsUI
+                protocol={protocol}
+                options={printOptions}
+                onChange={setPrintOptions}
+                disabled={phase !== 'remap' && phase !== 'done'}
+              />
+            )}
 
             {phase === 'remap' && (
               <button
