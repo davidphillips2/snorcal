@@ -969,6 +969,7 @@ export default function App() {
     const plateIndex = plates.findIndex(p => p.id === activePlateId) + 1 || 1;
     const savedModelIds = new Set<string>();
     const updates: Array<{ uid: string; colors: Uint8Array }> = [];
+    const saves: Promise<unknown>[] = [];
     for (const pm of projectModels) {
       // Skip negative/modifier/support volumes — they share parent's modelId
       // (App.tsx:659) and would overwrite the parent's paint with their own
@@ -987,7 +988,12 @@ export default function App() {
       if (!mesh) continue;
       const colors = extractFaceColors(mesh.geometry);
       if (colors.length > 0) {
-        api.saveFaceColors(pm.modelId, colors, pm.plateCount > 1 ? plateIndex : undefined).catch(() => {});
+        // MUST await before slice — fire-and-forget lets sliceModels beat the
+        // save to the server, producing a stale-color 3MF.
+        saves.push(
+          api.saveFaceColors(pm.modelId, colors, pm.plateCount > 1 ? plateIndex : undefined)
+            .catch(err => console.error('saveFaceColors failed', pm.modelId, err)),
+        );
         // Mirror the saved blob into ProjectModel state so a later STLViewer
         // remount (e.g. after gcode preview unmounts the 3D view) reapplies
         // the paint instead of falling back to the pre-paint prop.
@@ -1001,6 +1007,9 @@ export default function App() {
         return c ? { ...pm, faceColors: c } : pm;
       }));
     }
+    // Await all saves so callers (sliceModels, handleSaveColors) know the
+    // server has the new blobs before they read them back.
+    await Promise.all(saves);
   }, [projectModels, activePlateId, plates]);
 
   const sliceModels = useCallback(async (models: ProjectModel[]) => {
