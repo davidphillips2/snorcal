@@ -227,7 +227,9 @@ interface PersistedState {
   plates: Array<{ id: string; name: string }>;
   activePlateId: string;
   models: PersistedModel[];
-  activeModelIndex: number | null;
+  /** @deprecated use selectedIndices — kept for restore migration */
+  activeModelIndex?: number | null;
+  selectedIndices?: number[];
   engine: string;
   settings: Record<string, string>;
   selectedProfiles: { machine?: string; filament?: string; filament2?: string; process?: string };
@@ -316,7 +318,21 @@ export default function App() {
   const [plates, setPlates] = useState<Array<{ id: string; name: string }>>(() => persisted.current?.plates ?? [{ id: defaultPlateId, name: 'Plate 1' }]);
   const [activePlateId, setActivePlateId] = useState(() => persisted.current?.activePlateId ?? defaultPlateId);
   const [projectModels, setProjectModels] = useState<ProjectModel[]>([]);
-  const [activeModelIndex, setActiveModelIndex] = useState<number | null>(null);
+  const [selectedIndices, setSelectedIndices] = useState<Set<number>>(new Set());
+  // Derived single-active index (first of set or null) — kept for back-compat
+  // with handlers that were written for single-select. Multi-select aware
+  // components read selectedIndices directly.
+  const activeModelIndex = selectedIndices.size > 0 ? Math.min(...selectedIndices) : null;
+  const selectSingle = useCallback((idx: number | null) => {
+    setSelectedIndices(idx == null ? new Set() : new Set([idx]));
+  }, []);
+  const toggleMulti = useCallback((idx: number) => {
+    setSelectedIndices(prev => {
+      const next = new Set(prev);
+      if (next.has(idx)) next.delete(idx); else next.add(idx);
+      return next;
+    });
+  }, []);
 
   // --- Undo/redo history (50-step stack of projectModels snapshots) ---
   const undoStackRef = useRef<ProjectModel[][]>([]);
@@ -365,7 +381,7 @@ export default function App() {
     ]);
     updateModels(pm => [...pm, ...clones]);
     setActivePlateId(newId);
-    setActiveModelIndex(null);
+    selectSingle(null);
   }, [plates, projectModels, updateModels]);
   const handleDeletePlate = useCallback((id: string) => {
     if (plates.length <= 1) return;
@@ -379,7 +395,7 @@ export default function App() {
         const next = plates.filter(p => p.id !== id);
         return next[Math.min(fallbackIdx, next.length - 1)]?.id ?? prev;
       });
-      setActiveModelIndex(null);
+      selectSingle(null);
     }
   }, [plates, activePlateId, updateModels]);
   const handleReorderPlates = useCallback((fromIdx: number, toIdx: number) => {
@@ -426,7 +442,7 @@ export default function App() {
       const past = undoStackRef.current.pop()!;
       redoStackRef.current.push(present);
       setProjectModels(past);
-      setActiveModelIndex(null);
+      selectSingle(null);
       forceUndoTick(t => t + 1);
       return;
     }
@@ -438,7 +454,7 @@ export default function App() {
     const future = redoStackRef.current.pop()!;
     undoStackRef.current.push(present);
     setProjectModels(future);
-    setActiveModelIndex(null);
+    selectSingle(null);
     forceUndoTick(t => t + 1);
   }, []);
 
@@ -628,7 +644,12 @@ export default function App() {
         printablePartRef: m.printablePartRef,
       }));
       setProjectModels(restored);
-      setActiveModelIndex(saved.activeModelIndex);
+      // Migrate from old activeModelIndex single-select to selectedIndices
+      if (Array.isArray(saved.selectedIndices)) {
+        setSelectedIndices(new Set(saved.selectedIndices));
+      } else if (typeof saved.activeModelIndex === 'number') {
+        setSelectedIndices(new Set([saved.activeModelIndex]));
+      }
     }
     persisted.current = null; // only use once
   }, []);
@@ -697,7 +718,8 @@ export default function App() {
           negativePartRef: m.negativePartRef,
           printablePartRef: m.printablePartRef,
         })),
-        activeModelIndex,
+        activeModelIndex,    // legacy — kept for back-compat restore
+        selectedIndices: Array.from(selectedIndices),
         engine,
         settings,
         selectedProfiles,
@@ -811,7 +833,7 @@ export default function App() {
       const partPms = buildPrintableChildPms(model, activePlateId);
 
       updateModels(prev => [...prev, newPm, ...partPms, ...negativePms]);
-      setActiveModelIndex(projectModels.length); // select new model
+      selectSingle(projectModels.length); // select new model
 
       // 3MF uploads may carry filament_colour/type arrays in their embedded
       // project_settings.config — populate slots the same way MW imports do.
@@ -848,7 +870,7 @@ export default function App() {
             kind: 'model',
           };
           updateModels(prev => [...prev, newPm]);
-          setActiveModelIndex(projectModels.length);
+          selectSingle(projectModels.length);
         } catch (err) {
           console.error(`Upload failed for ${file.name}:`, err);
         }
@@ -897,7 +919,7 @@ export default function App() {
         activePlateId,
       );
       updateModels(prev => [...prev, newPm, ...partPms, ...negativePms]);
-      setActiveModelIndex(projectModels.length);
+      selectSingle(projectModels.length);
 
       // MakerWorld imports explicitly overwrite project settings (user opted
       // into the bundle's full slicer config). Plain uploads use the same
@@ -957,10 +979,14 @@ export default function App() {
       for (const uid of removedUids) delete meshRefs.current[uid];
       return removed;
     });
-    setActiveModelIndex(prev => {
-      if (prev === null) return null;
-      if (prev === idx) return prev > 0 ? prev - 1 : (prev < projectModels.length - 2 ? prev : null);
-      return prev > idx ? prev - 1 : prev;
+    setSelectedIndices(prev => {
+      const next = new Set<number>();
+      for (const i of prev) {
+        if (i === idx) continue;          // drop deleted
+        if (i > idx) next.add(i - 1);     // shift down
+        else next.add(i);
+      }
+      return next;
     });
   }, [projectModels.length]);
 
@@ -1312,8 +1338,9 @@ export default function App() {
   const handleDuplicate = useCallback(() => {
     if (activeModelIndex == null) return;
     handleDuplicateAt(activeModelIndex);
-    setActiveModelIndex(prev => prev == null ? prev : prev + 1);
-  }, [activeModelIndex, handleDuplicateAt]);
+    // After dup, the clone is appended at the end — switch selection to it.
+    setSelectedIndices(new Set([projectModels.length]));
+  }, [activeModelIndex, handleDuplicateAt, projectModels.length]);
 
   const handleLinearArray = useCallback((count: number, dx: number, dy: number) => {
     if (!activeModel || count < 2) return;
@@ -1383,11 +1410,9 @@ export default function App() {
         const without = activeModelIndex == null ? prev : prev.filter((_, i) => i !== activeModelIndex);
         return [...without, ...newModels];
       });
-      setActiveModelIndex(prev => {
-        if (prev == null) return prev;
-        const base = activeModelIndex ?? 0;
-        return base + newModels.length - 1;  // select first half
-      });
+      // After cut: original removed, halves appended at end of array.
+      // Closure captures pre-update projectModels.length, so first new index = N-1.
+      setSelectedIndices(new Set([projectModels.length - 1]));
       setPaintMode('orbit');
     } catch (err) {
       alert(`Cut upload failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -1550,10 +1575,17 @@ export default function App() {
         }
       }
       if (closestIdx >= 0 && closestIdx !== activeModelIndex) {
-        setActiveModelIndex(closestIdx);
+        if (e.shiftKey) {
+          toggleMulti(closestIdx);
+        } else {
+          selectSingle(closestIdx);
+        }
         // Switch active plate to the picked model's plate so sidebar reflects it
         const pickedPlate = projectModels[closestIdx]?.plateId;
         if (pickedPlate && pickedPlate !== activePlateId) setActivePlateId(pickedPlate);
+      } else if (!e.shiftKey && closestIdx < 0) {
+        // Click empty space clears selection (unless shift held)
+        selectSingle(null);
       }
     };
     const canvas = sceneRefs.renderer.domElement;
@@ -1578,8 +1610,8 @@ export default function App() {
         <ObjectListPanel
           models={activePlateModels}
           allModels={projectModels}
-          activeIndex={activeModelIndex}
-          onSelect={setActiveModelIndex}
+          selectedIndices={selectedIndices}
+          onSelect={(idx, additive) => additive ? toggleMulti(idx) : selectSingle(idx)}
           onRemove={handleRemoveModel}
           onToggleVisible={handleToggleVisible}
           onUpload={handleUpload}
@@ -1675,7 +1707,7 @@ export default function App() {
       <PlateTabs
         plates={plates.map(p => ({ id: p.id, name: p.name, modelCount: projectModels.filter(m => m.plateId === p.id).length }))}
         activePlateId={activePlateId}
-        onSelect={(id) => { setActivePlateId(id); setActiveModelIndex(null); }}
+        onSelect={(id) => { setActivePlateId(id); selectSingle(null); }}
         onRename={handleRenamePlate}
         onDuplicate={handleDuplicatePlate}
         onDelete={handleDeletePlate}
@@ -1685,7 +1717,7 @@ export default function App() {
           const id = `plate-${Date.now()}`;
           setPlates(prev => [...prev, { id, name: `Plate ${n}` }]);
           setActivePlateId(id);
-          setActiveModelIndex(null);
+          selectSingle(null);
         }}
       />
 

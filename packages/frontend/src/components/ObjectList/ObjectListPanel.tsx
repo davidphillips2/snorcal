@@ -6,8 +6,8 @@ import { ModelUploader } from '../ModelUploader';
 interface ObjectListPanelProps {
   models: ProjectModel[];        // plate-filtered
   allModels: ProjectModel[];     // full projectModels for cross-plate linkedTo lookup
-  activeIndex: number | null;
-  onSelect: (globalIdx: number) => void;
+  selectedIndices: Set<number>;
+  onSelect: (globalIdx: number, additive: boolean) => void;
   onRemove: (globalIdx: number) => void;
   onToggleVisible: (globalIdx: number) => void;
   onUpload: (file: File) => void;
@@ -63,7 +63,7 @@ function buildHierarchy(plateModels: ProjectModel[], allModels: ProjectModel[]):
 }
 
 export function ObjectListPanel({
-  models, allModels, activeIndex, onSelect, onRemove, onToggleVisible, onUpload, onUploadMany, onAutoArrange, isUploading,
+  models, allModels, selectedIndices, onSelect, onRemove, onToggleVisible, onUpload, onUploadMany, onAutoArrange, isUploading,
   onOpenMakerworld, onDuplicateAt, onAddNegativeToParent,
 }: ObjectListPanelProps) {
   const hierarchy = useMemo(() => buildHierarchy(models, allModels), [models, allModels]);
@@ -156,7 +156,7 @@ export function ObjectListPanel({
             key={node.model.uid}
             node={node}
             depth={0}
-            activeIndex={activeIndex}
+            selectedIndices={selectedIndices}
             onSelect={onSelect}
             onRemove={onRemove}
             onToggleVisible={onToggleVisible}
@@ -174,8 +174,8 @@ export function ObjectListPanel({
 interface ObjectRowProps {
   node: HierarchyNode;
   depth: number;
-  activeIndex: number | null;
-  onSelect: (idx: number) => void;
+  selectedIndices: Set<number>;
+  onSelect: (idx: number, additive: boolean) => void;
   onRemove: (idx: number) => void;
   onToggleVisible: (idx: number) => void;
   collapsed: Set<string>;
@@ -185,18 +185,18 @@ interface ObjectRowProps {
 }
 
 function ObjectRow({
-  node, depth, activeIndex, onSelect, onRemove, onToggleVisible,
+  node, depth, selectedIndices, onSelect, onRemove, onToggleVisible,
   collapsed, onToggleCollapse, onDuplicate, onAddNegative,
 }: ObjectRowProps) {
   const { model, globalIdx, children, isOrphan } = node;
-  const isActive = activeIndex === globalIdx;
+  const isActive = selectedIndices.has(globalIdx);
   const isCollapsed = collapsed.has(model.uid);
   const hasChildren = children.length > 0;
 
   return (
     <>
       <div
-        onClick={() => onSelect(globalIdx)}
+        onClick={(e) => onSelect(globalIdx, e.shiftKey)}
         className={`group relative flex items-center h-7 pr-1 rounded cursor-pointer transition text-sm ${
           isActive
             ? 'bg-blue-600/20 text-blue-200'
@@ -285,7 +285,7 @@ function ObjectRow({
           key={child.model.uid}
           node={child}
           depth={depth + 1}
-          activeIndex={activeIndex}
+          selectedIndices={selectedIndices}
           onSelect={onSelect}
           onRemove={onRemove}
           onToggleVisible={onToggleVisible}
