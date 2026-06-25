@@ -38,6 +38,7 @@ import type { PausePoint } from './api/client';
 import { shelfPack } from './lib/pack';
 import { extractLayerTypes } from './lib/gcode-stats';
 import { TransformGizmo } from './components/Viewer/TransformGizmo';
+import { CollisionOverlay } from './components/Viewer/CollisionOverlay';
 import { isCoarsePointer, type TransformMode, type TransformSpace, type SnapSettings } from './lib/transforms';
 import type { ModelKind, Scale3D, Mirror3D } from '@snorcal/shared';
 
@@ -1291,6 +1292,15 @@ export default function App() {
     [snapEnabled, snapTranslateMM, snapRotateDeg],
   );
 
+  // Active-plate models + parallel meshes (for collision overlay).
+  const [collisionEnabled, setCollisionEnabled] = useState(true);
+  const activePlateMeshes = useMemo(
+    () => activePlateModels
+      .map(pm => meshRefs.current[pm.uid])
+      .filter((m): m is THREE.Mesh => !!m),
+    [activePlateModels, meshRefs],
+  );
+
   // Gizmo drag-end: apply patches to each touched ProjectModel via tracked
   // updateModels so a single undo entry is pushed per drag (not per frame).
   const handleGizmoTransform = useCallback((patches: Array<{ idx: number; patch: Partial<ProjectModel> }>) => {
@@ -2013,6 +2023,12 @@ export default function App() {
                   onTransformApplied={handleGizmoTransform}
                 />
               )}
+              <CollisionOverlay
+                sceneRefs={sceneRefs}
+                models={activePlateModels}
+                meshes={activePlateMeshes}
+                enabled={collisionEnabled}
+              />
               <FacePainter
                 mesh={activeMesh}
                 renderer={sceneRefs.renderer}
@@ -2079,6 +2095,8 @@ export default function App() {
                 snapRotateDeg={snapRotateDeg}
                 onSnapRotateDegChange={setSnapRotateDeg}
                 isCoarsePointer={isCoarsePointer()}
+                collisionEnabled={collisionEnabled}
+                onCollisionToggle={setCollisionEnabled}
               />
               {paintMode === 'transform' && (
                 <TransformPanel

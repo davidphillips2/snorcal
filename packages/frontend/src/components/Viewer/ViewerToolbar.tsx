@@ -38,6 +38,8 @@ interface ViewerToolbarProps {
   snapRotateDeg: number;
   onSnapRotateDegChange: (n: number) => void;
   isCoarsePointer: boolean;
+  collisionEnabled: boolean;
+  onCollisionToggle: (on: boolean) => void;
 }
 
 const PALETTE = [
@@ -200,6 +202,7 @@ export function ViewerToolbar({
   snapTranslateMM, onSnapTranslateMMChange,
   snapRotateDeg, onSnapRotateDegChange,
   isCoarsePointer,
+  collisionEnabled, onCollisionToggle,
 }: ViewerToolbarProps) {
   const palette = filamentColors && filamentColors.length > 0 ? filamentColors : PALETTE;
   const isPainting = paintMode === 'paint' || paintMode === 'fill';
@@ -477,6 +480,16 @@ export function ViewerToolbar({
                   </label>
                 </>
               )}
+              <div className="w-px h-5 bg-gray-600" />
+              <label className="flex items-center gap-1 text-xs text-gray-400 cursor-pointer" title="Show red wireframe on overlapping models">
+                <input
+                  type="checkbox"
+                  checked={collisionEnabled}
+                  onChange={(e) => onCollisionToggle(e.target.checked)}
+                  className="accent-red-500"
+                />
+                <span>Collide</span>
+              </label>
             </>
           )}
         </div>
