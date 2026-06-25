@@ -37,6 +37,8 @@ import * as api from './api/client';
 import type { PausePoint } from './api/client';
 import { shelfPack } from './lib/pack';
 import { extractLayerTypes } from './lib/gcode-stats';
+import { TransformGizmo } from './components/Viewer/TransformGizmo';
+import { isCoarsePointer, type TransformMode, type TransformSpace, type SnapSettings } from './lib/transforms';
 import type { ModelKind, Scale3D, Mirror3D } from '@snorcal/shared';
 
 // --- Types ---
@@ -251,6 +253,12 @@ interface PersistedState {
   gcodeColorMode?: 'filament' | 'lineType' | 'speed';
   showAllLayers?: boolean;
   currentPreviewLayer?: number;
+  // Transform gizmo (Phase 2)
+  transformMode?: TransformMode;
+  transformSpace?: TransformSpace;
+  snapEnabled?: boolean;
+  snapTranslateMM?: number;
+  snapRotateDeg?: number;
 }
 
 // Migrate legacy slorca_* localStorage keys → snorcal_* (one-shot per key)
@@ -333,6 +341,13 @@ export default function App() {
       return next;
     });
   }, []);
+
+  // Transform gizmo state (Phase 2)
+  const [transformMode, setTransformMode] = useState<TransformMode>(() => (persisted.current?.transformMode as TransformMode) || 'translate');
+  const [transformSpace, setTransformSpace] = useState<TransformSpace>(() => (persisted.current?.transformSpace as TransformSpace) || 'world');
+  const [snapEnabled, setSnapEnabled] = useState<boolean>(() => persisted.current?.snapEnabled ?? false);
+  const [snapTranslateMM, setSnapTranslateMM] = useState<number>(() => persisted.current?.snapTranslateMM ?? 1);
+  const [snapRotateDeg, setSnapRotateDeg] = useState<number>(() => persisted.current?.snapRotateDeg ?? 15);
 
   // --- Undo/redo history (50-step stack of projectModels snapshots) ---
   const undoStackRef = useRef<ProjectModel[][]>([]);
@@ -739,10 +754,15 @@ export default function App() {
         gcodeColorMode,
         showAllLayers,
         currentPreviewLayer,
+        transformMode,
+        transformSpace,
+        snapEnabled,
+        snapTranslateMM,
+        snapRotateDeg,
       });
     }, 500);
     return () => clearTimeout(timer);
-  }, [projectModels, plates, activePlateId, activeModelIndex, engine, settings, selectedProfiles, filamentSlots, multiMaterial, printerIp, view, showSidebar, showSettings, showJobs, showInventory, paintMode, activeColor, selectedPrinterId, targetPrinterId, viewer3DEnabled, gcodeColorMode, showAllLayers, currentPreviewLayer]);
+  }, [projectModels, plates, activePlateId, activeModelIndex, engine, settings, selectedProfiles, filamentSlots, multiMaterial, printerIp, view, showSidebar, showSettings, showJobs, showInventory, paintMode, activeColor, selectedPrinterId, targetPrinterId, viewer3DEnabled, gcodeColorMode, showAllLayers, currentPreviewLayer, transformMode, transformSpace, snapEnabled, snapTranslateMM, snapRotateDeg]);
 
   // SSE updates
   useEffect(() => {
@@ -1247,6 +1267,39 @@ export default function App() {
   const activeModel = activeModelIndex != null && projectModels[activeModelIndex]?.plateId === activePlateId
     ? projectModels[activeModelIndex] : null;
   const activeMesh = activeModel != null ? meshRefs.current[activeModel.uid] : null;
+
+  // Selected models on the active plate, with parallel mesh + global-index arrays
+  // for TransformGizmo (Phase 2).
+  const selectedGlobalIndicesArr = useMemo(
+    () => Array.from(selectedIndices).sort((a, b) => a - b),
+    [selectedIndices],
+  );
+  const selectedModelsForGizmo = useMemo(
+    () => selectedGlobalIndicesArr
+      .map(i => projectModels[i])
+      .filter((pm): pm is ProjectModel => !!pm && pm.plateId === activePlateId),
+    [selectedGlobalIndicesArr, projectModels, activePlateId],
+  );
+  const selectedMeshesForGizmo = useMemo(
+    () => selectedModelsForGizmo
+      .map(pm => meshRefs.current[pm.uid])
+      .filter((m): m is THREE.Mesh => !!m),
+    [selectedModelsForGizmo, meshRefs],
+  );
+  const snapSettings: SnapSettings = useMemo(
+    () => ({ enabled: snapEnabled, translateMM: snapTranslateMM, rotateDeg: snapRotateDeg }),
+    [snapEnabled, snapTranslateMM, snapRotateDeg],
+  );
+
+  // Gizmo drag-end: apply patches to each touched ProjectModel via tracked
+  // updateModels so a single undo entry is pushed per drag (not per frame).
+  const handleGizmoTransform = useCallback((patches: Array<{ idx: number; patch: Partial<ProjectModel> }>) => {
+    if (patches.length === 0) return;
+    updateModels(prev => prev.map((pm, i) => {
+      const p = patches.find(x => x.idx === i);
+      return p ? { ...pm, ...p.patch } : pm;
+    }));
+  }, [updateModels]);
 
   // Active plate world bounds for ModelMover clamp (plate X offset + bed half-size)
   const activePlateBounds = useMemo(() => {
@@ -1908,6 +1961,18 @@ export default function App() {
                 onPositionChange={handlePositionChange}
                 onDragEnd={handlePositionChange}
               />
+              {paintMode === 'transform' && !isCoarsePointer() && selectedMeshesForGizmo.length > 0 && (
+                <TransformGizmo
+                  sceneRefs={sceneRefs}
+                  selectedMeshes={selectedMeshesForGizmo}
+                  selectedModels={selectedModelsForGizmo}
+                  selectedGlobalIndices={selectedGlobalIndicesArr}
+                  mode={transformMode}
+                  space={transformSpace}
+                  snap={snapSettings}
+                  onTransformApplied={handleGizmoTransform}
+                />
+              )}
               <FacePainter
                 mesh={activeMesh}
                 renderer={sceneRefs.renderer}
@@ -1963,6 +2028,17 @@ export default function App() {
                 hollowOn={settings.sparse_infill_density === '0%'
                   && Number(settings.top_shell_layers || 99) === 0
                   && Number(settings.bottom_shell_layers || 99) === 0}
+                transformMode={transformMode}
+                onTransformModeChange={setTransformMode}
+                transformSpace={transformSpace}
+                onTransformSpaceChange={setTransformSpace}
+                snapEnabled={snapEnabled}
+                onSnapToggle={setSnapEnabled}
+                snapTranslateMM={snapTranslateMM}
+                onSnapTranslateMMChange={setSnapTranslateMM}
+                snapRotateDeg={snapRotateDeg}
+                onSnapRotateDegChange={setSnapRotateDeg}
+                isCoarsePointer={isCoarsePointer()}
               />
               {paintMode === 'transform' && (
                 <TransformPanel

@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 import type { PaintMode } from './FacePainter';
 import type { Rotation3D } from './STLViewer';
+import type { TransformMode, TransformSpace } from '../../lib/transforms';
 
 interface ViewerToolbarProps {
   paintMode: PaintMode;
@@ -25,6 +26,18 @@ interface ViewerToolbarProps {
   brimOn: boolean;
   onToggleHollow: () => void;
   hollowOn: boolean;
+  // Transform gizmo (Phase 2)
+  transformMode: TransformMode;
+  onTransformModeChange: (m: TransformMode) => void;
+  transformSpace: TransformSpace;
+  onTransformSpaceChange: (s: TransformSpace) => void;
+  snapEnabled: boolean;
+  onSnapToggle: (on: boolean) => void;
+  snapTranslateMM: number;
+  onSnapTranslateMMChange: (n: number) => void;
+  snapRotateDeg: number;
+  onSnapRotateDegChange: (n: number) => void;
+  isCoarsePointer: boolean;
 }
 
 const PALETTE = [
@@ -181,6 +194,12 @@ export function ViewerToolbar({
   paintZRange, paintZBounds, onPaintZRangeChange,
   onToggleBrim, brimOn,
   onToggleHollow, hollowOn,
+  transformMode, onTransformModeChange,
+  transformSpace, onTransformSpaceChange,
+  snapEnabled, onSnapToggle,
+  snapTranslateMM, onSnapTranslateMMChange,
+  snapRotateDeg, onSnapRotateDegChange,
+  isCoarsePointer,
 }: ViewerToolbarProps) {
   const palette = filamentColors && filamentColors.length > 0 ? filamentColors : PALETTE;
   const isPainting = paintMode === 'paint' || paintMode === 'fill';
@@ -389,6 +408,77 @@ export function ViewerToolbar({
       {paintMode === 'lay' && (
         <div className="absolute top-14 left-2 bg-gray-800/90 backdrop-blur rounded-lg px-4 py-2 shadow-lg z-20">
           <p className="text-xs text-gray-300 whitespace-nowrap">Click a face to lay it on the build plate</p>
+        </div>
+      )}
+
+      {/* Transform gizmo sub-bar */}
+      {paintMode === 'transform' && (
+        <div className="absolute top-14 left-2 bg-gray-800/90 backdrop-blur rounded-lg px-3 py-2 shadow-lg z-20 flex items-center gap-2">
+          {isCoarsePointer ? (
+            <span className="text-xs text-gray-400">Gizmo disabled on touch — use panel + drag</span>
+          ) : (
+            <>
+              <div className="flex gap-0.5">
+                {(['translate', 'rotate', 'scale'] as const).map(m => (
+                  <button
+                    key={m}
+                    onClick={() => onTransformModeChange(m)}
+                    className={`px-2 py-0.5 rounded text-xs transition ${
+                      transformMode === m ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                    }`}
+                  >
+                    {m === 'translate' ? 'Move' : m === 'rotate' ? 'Rotate' : 'Scale'}
+                  </button>
+                ))}
+              </div>
+              <div className="w-px h-5 bg-gray-600" />
+              <div className="flex gap-0.5">
+                {(['world', 'local'] as const).map(s => (
+                  <button
+                    key={s}
+                    onClick={() => onTransformSpaceChange(s)}
+                    className={`px-2 py-0.5 rounded text-xs transition ${
+                      transformSpace === s ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                    }`}
+                  >
+                    {s === 'world' ? 'World' : 'Local'}
+                  </button>
+                ))}
+              </div>
+              <div className="w-px h-5 bg-gray-600" />
+              <label className="flex items-center gap-1 text-xs text-gray-400 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={snapEnabled}
+                  onChange={(e) => onSnapToggle(e.target.checked)}
+                  className="accent-blue-500"
+                />
+                <span>Snap</span>
+              </label>
+              {snapEnabled && (
+                <>
+                  <label className="flex items-center gap-1 text-xs text-gray-400">
+                    <input
+                      type="number"
+                      value={snapTranslateMM}
+                      onChange={(e) => onSnapTranslateMMChange(Number(e.target.value) || 1)}
+                      className="w-12 bg-gray-700 border border-gray-600 rounded px-1 py-0.5 text-xs text-white text-center"
+                    />
+                    <span className="text-gray-500">mm</span>
+                  </label>
+                  <label className="flex items-center gap-1 text-xs text-gray-400">
+                    <input
+                      type="number"
+                      value={snapRotateDeg}
+                      onChange={(e) => onSnapRotateDegChange(Number(e.target.value) || 15)}
+                      className="w-12 bg-gray-700 border border-gray-600 rounded px-1 py-0.5 text-xs text-white text-center"
+                    />
+                    <span className="text-gray-500">°</span>
+                  </label>
+                </>
+              )}
+            </>
+          )}
         </div>
       )}
     </>
