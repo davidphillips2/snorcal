@@ -1,6 +1,5 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import FormData from 'form-data';
 import WebSocket from 'ws';
 import type { PrinterCommand, PrinterStatus, PrinterState, PrinterConnectionState } from '@snorcal/shared';
 import type { PrinterAdapter } from './adapter.js';
@@ -303,21 +302,25 @@ export class MoonrakerAdapter implements PrinterAdapter {
   }
 
   async uploadFile(localPath: string, filename: string): Promise<string> {
-    const stats = fs.statSync(localPath);
-    const stream = fs.createReadStream(localPath);
+    // Use the global (undici) FormData + Buffer — the third-party `form-data`
+    // package produces a Node stream that the WHATWG global fetch can't
+    // serialize, and Moonraker rejects the resulting body with
+    // "File Upload Parsing Failed".
+    const buffer = fs.readFileSync(localPath);
     const form = new FormData();
-    form.append('file', stream as any, { filename, knownLength: stats.size });
+    form.append('file', new Blob([buffer], { type: 'application/octet-stream' }), filename);
     form.append('root', 'gcodes');
     form.append('path', '/');
 
     const url = `http://${this.ip}:${this.port}/server/files/upload`;
-    const headers: Record<string, string> = { ...(form.getHeaders() as Record<string, string>) };
+    const headers: Record<string, string> = {};
     if (this.apiKey) headers['X-Api-Key'] = this.apiKey;
+    // Let fetch set the multipart boundary — don't copy form.getHeaders().
 
     const res = await fetch(url, {
       method: 'POST',
       headers,
-      body: form as any,
+      body: form,
       signal: AbortSignal.timeout(180000),
     });
     if (!res.ok) {
