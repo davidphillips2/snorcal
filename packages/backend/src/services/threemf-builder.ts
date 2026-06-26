@@ -237,7 +237,11 @@ export async function build3MF(input: ThreeMFBuildInput): Promise<Buffer> {
   </build>
 </model>`;
 
-  // Build model_settings.config with per-object extruder assignments
+  // Build model_settings.config with per-object extruder assignments.
+  // Note: emit ONLY for multi-object or per-extruder split cases. Single
+  // painted model relies on per-triangle paint_color alone — adding
+  // model_settings.config with extruder=N there causes OrcaSlicer to pin
+  // the whole object and ignore paint_color (regression observed 2026-06-25).
   let modelSettingsXML = '';
   if (allObjects.some(o => o.extruder > 1) || allObjects.length > 1) {
     modelSettingsXML = buildModelSettings(allObjects, topId);
@@ -392,7 +396,40 @@ function processChildGeometry(
   return { vertices, indices, faceCount, offset };
 }
 
+/** Decode a paint_color string to its 1-based extruder index (0 = unpainted). */
+function paintColorToExtruder(pc: string | null): number {
+  if (!pc) return 0;
+  if (pc === '4') return 1;
+  if (pc === '8') return 2;
+  // "{N-3}C" → state N ≥ 3 → extruder N
+  const m = /^([0-9A-F])C$/i.exec(pc);
+  if (m) return parseInt(m[1], 16) + 3;
+  return 0;
+}
+
+/** True if paintData assigns faces to >1 distinct extruder (i.e. multi-colour). */
+function isMultiColorPaint(paintData: (string | null)[] | undefined): boolean {
+  if (!paintData || paintData.length === 0) return false;
+  const seen = new Set<number>();
+  for (const pc of paintData) {
+    if (!pc) continue;
+    seen.add(paintColorToExtruder(pc));
+    if (seen.size > 1) return true;
+  }
+  return false;
+}
+
 // --- Paint color processing ---
+
+/** Normalize hex (#RRGGBB / #RRGGBBAA / RRGGBB / RRGGBBAA) → uppercase #RRGGBB.
+ *  Painted face RGB (6 hex) must match filament_colour RGBA (8 hex) for the
+ *  color→extruder lookup; without normalization every lookup misses and all
+ *  faces fall back to extruder 1, producing single-color output. */
+function normalizeHex(c: string): string {
+  let s = c.trim().toUpperCase().replace(/^#/, '');
+  if (s.length === 8) s = s.slice(0, 6);
+  return s.length === 6 ? '#' + s : '#' + s;
+}
 
 function buildColorToExtruderMap(filamentColors?: string[]): Map<string, number> {
   const map = new Map<string, number>();
@@ -402,7 +439,7 @@ function buildColorToExtruderMap(filamentColors?: string[]): Map<string, number>
       // extruder count by repeating the last entry, which would otherwise
       // overwrite the real slot index (e.g. [#FF0000,#0000FF,#0000FF,#0000FF]
       // would map blue → 4 instead of 2).
-      const key = filamentColors[i].toUpperCase();
+      const key = normalizeHex(filamentColors[i]);
       if (!map.has(key)) map.set(key, i + 1);
     }
   }
@@ -434,7 +471,7 @@ function processPaintColors(
       continue;
     }
     const r = faceColors[f * 4], g = faceColors[f * 4 + 1], b = faceColors[f * 4 + 2];
-    const hex = `#${toHex(r)}${toHex(g)}${toHex(b)}`.toUpperCase();
+    const hex = `#${toHex(r)}${toHex(g)}${toHex(b)}`;
     const extIdx = colorToExtruder.get(hex) ?? 1;
     paintColors.push(extruderToPaintColor(extIdx));
   }

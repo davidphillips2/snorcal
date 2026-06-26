@@ -87,8 +87,15 @@ function expandFilamentSlots(
   for (const key of filamentKeys) {
     if (key === 'filament_colour' || key === 'filament_type') continue; // already set
     const existing = projectSettings[key] as any[] | undefined;
+    // If a key is present in some profiles but not others, borrow from the
+    // first profile that has it. Failing that, use the existing project
+    // setting. Empty string as last resort — but a trailing-empty array
+    // entry makes OrcaSlicer's load_from_json reject the whole config
+    // (e.g. "filament_adaptive_volumetric_speed: 0,0,,," → exit 206).
+    const profileFallback = profileSettings.find(p => p && p[key] !== undefined && p[key] !== '');
     const expanded = profileSettings.map((p, i) => {
-      if (p && p[key] !== undefined) return String(p[key]);
+      if (p && p[key] !== undefined && p[key] !== '') return String(p[key]);
+      if (profileFallback) return String(profileFallback[key]);
       return existing?.[i] ?? existing?.[0] ?? '';
     });
     // Pad to targetCount
@@ -125,6 +132,12 @@ function expandFilamentSlots(
     // Critical: extruder_colour must match machine extruder count
     projectSettings['extruder_colour'] = colors;
     projectSettings['default_filament_colour'] = colors;
+    // extruder_offset: pad to targetCount. OrcaSlicer derives logical
+    // extruder count from this array's length (separate from physical
+    // nozzle_diameter, which stays at machine profile length — 1 for AMS).
+    // Without padding, slicer sees single-extruder and never invokes
+    // multi-material segmentation — paint_color on triangles is silently
+    // ignored even though filament_diameter has N entries.
     projectSettings['extruder_offset'] = Array.from({ length: targetCount }, () => '0x0');
     // Wiping volumes targetCount x targetCount (flat row-major, 70ml default)
     const wv: string[] = [];
@@ -134,11 +147,36 @@ function expandFilamentSlots(
       }
     }
     projectSettings['wiping_volumes_extruders'] = wv;
-    // Pad nozzle_diameter to targetCount
-    const nd = projectSettings['nozzle_diameter'] as any[] | undefined;
-    if (nd && nd.length < targetCount) {
-      while (nd.length < targetCount) nd.push(nd[0] || '0.4');
-      projectSettings['nozzle_diameter'] = nd;
+    // nozzle_diameter MUST be padded to targetCount. Verified empirically by
+    // comparing working multi-color jobs (T0/T1 tool changes, distinct color
+    // segments) vs broken jobs (all merged to extruder 1, M624-only gcode):
+    // padded nozzle_diameter is what triggers OrcaSlicer to emit per-filament
+    // T<n> tool changes and honor paint_color segmentation. Leaving it at
+    // machine-profile length (1 for AMS-style single toolhead) causes the
+    // slicer to pick "Auto For Flush" mode + single master extruder, which
+    // drops all paint_color data on the floor.
+    const existingNozzleArr = projectSettings['nozzle_diameter'];
+    const nozzleSrc = Array.isArray(existingNozzleArr) && existingNozzleArr.length > 0
+      ? existingNozzleArr.map(String)
+      : (typeof existingNozzleArr === 'string' && existingNozzleArr ? [existingNozzleArr] : ['0.4']);
+    projectSettings['nozzle_diameter'] = Array.from({ length: targetCount }, (_, i) => nozzleSrc[i] ?? nozzleSrc[0]);
+    // Per-extruder (non-filament-prefixed) scalars the slicer must see as
+    // N-element arrays for multi-extruder configs. Missing/null → slicer's
+    // update_values_to_printer_extruders_for_multiple_filaments can't match
+    // filament_extruder_variant pairs → gcode_check_result error_code=2 → exit 154.
+    // Defaults from OrcaSlicer C++ (PrintConfig): Direct Drive / Standard.
+    const perExtruderDefaults: Record<string, string> = {
+      extruder_type: 'Direct Drive',
+      nozzle_volume_type: 'Standard',
+    };
+    for (const [key, defaultVal] of Object.entries(perExtruderDefaults)) {
+      const fromProject = projectSettings[key];
+      const srcArr = Array.isArray(fromProject) && fromProject.length > 0
+        ? fromProject.map(String)
+        : fromProject && typeof fromProject === 'string' && fromProject
+          ? [fromProject]
+          : [defaultVal];
+      projectSettings[key] = Array.from({ length: targetCount }, (_, i) => srcArr[i] ?? srcArr[0]);
     }
   }
 }
@@ -535,12 +573,28 @@ export async function runSliceJob(
         while (extColors.length < tc) extColors.push(extColors[extColors.length - 1] || '#FFFFFF');
         projectSettings['extruder_colour'] = extColors;
         projectSettings['default_filament_colour'] = extColors;
+        // Pad extruder_offset to slot count (logical extruder count signal).
         projectSettings['extruder_offset'] = Array.from({ length: tc }, () => '0x0');
-        // Pad nozzle_diameter to match machine extruder count
-        const nd = projectSettings['nozzle_diameter'] as any[] | undefined;
-        if (nd && nd.length < tc) {
-          while (nd.length < tc) nd.push(nd[0] || '0.4');
-          projectSettings['nozzle_diameter'] = nd;
+        // Pad nozzle_diameter to slot count too — this is what makes the slicer
+        // actually emit per-filament T<n> tool changes (see expandFilamentSlots
+        // comment for details). Single-element nozzle_diameter → "Auto For
+        // Flush" AMS mode → all paint_color dropped → single-color output.
+        const ndSrc = Array.isArray(nozzleArr) && nozzleArr.length > 0
+          ? nozzleArr.map(String)
+          : ['0.4'];
+        projectSettings['nozzle_diameter'] = Array.from({ length: tc }, (_, i) => ndSrc[i] ?? ndSrc[0]);
+        // Override Bambu printer_model to bypass slicer's is_bbl_vendor_preset
+        // dispatch. When slicer sees "Bambu Lab X" vendor, it forces AMS-mode
+        // output (M624/M625 markers + "Auto For Flush" filament map) which
+        // IGNORES per-triangle paint_color and emits identical payload in every
+        // M624 → effectively single-color. Renaming to a generic multi-extruder
+        // model makes the slicer use its standard multi-extruder pipeline that
+        // honors paint_color and emits per-filament T<n> tool changes that the
+        // in-browser gcode-preview library can render. The gcode still works
+        // on real Bambu AMS hardware (firmware translates T<n> to AMS swaps).
+        const currentModel = projectSettings['printer_model'];
+        if (typeof currentModel === 'string' && currentModel.toLowerCase().startsWith('bambu lab')) {
+          projectSettings['printer_model'] = 'Generic Multi-Extruder';
         }
       }
 

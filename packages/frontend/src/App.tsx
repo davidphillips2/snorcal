@@ -625,7 +625,12 @@ export default function App() {
   const layerTypes = useMemo(() => gcodeText ? extractLayerTypes(gcodeText) : new Map<number, string>(), [gcodeText]);
   // Stable colors array — inline .map() would create a new ref every render
   // and re-trigger GcodePreviewCanvas's init effect, disposing the preview.
-  const previewExtrusionColors = useMemo(() => filamentSlots.map(s => s.color), [filamentSlots]);
+  const previewExtrusionColors = useMemo(() => filamentSlots.map(s => {
+    // Filament slots store RGBA (Bambu format, 8 hex). Three.Color rejects
+    // anything ≠ 6 hex → invalid color warning → defaults white. Strip alpha.
+    const c = s.color.replace(/^#/, '');
+    return c.length === 8 ? `#${c.slice(0, 6)}` : s.color;
+  }), [filamentSlots]);
 
   const handleLayerCountReady = useCallback((count: number) => {
     setLayerCount(count);
@@ -1931,18 +1936,9 @@ export default function App() {
         <div className="flex-1 relative overflow-hidden">
           <Scene onReady={setSceneRefs} />
 
-          {/* Viewer enable/disable toggle — escape hatch for mobile OOM */}
-          <button
-            type="button"
-            onClick={() => setViewer3DEnabled(v => !v)}
-            className="absolute top-2 right-2 z-20 px-2 py-1 text-xs rounded bg-gray-800/80 text-gray-200 hover:bg-gray-700/80 border border-gray-600/50"
-            title={viewer3DEnabled ? 'Disable 3D viewer (saves memory on mobile)' : 'Enable 3D viewer'}
-          >
-            {viewer3DEnabled ? '3D: On' : '3D: Off'}
-          </button>
           {!viewer3DEnabled && (
             <div className="absolute inset-0 flex items-center justify-center text-gray-400 text-sm bg-gray-900/60 pointer-events-none">
-              3D viewer disabled — tap "3D: Off" (top-right) to re-enable
+              3D viewer disabled — tap "3D" (toolbar) to re-enable
             </div>
           )}
 
@@ -2110,6 +2106,8 @@ export default function App() {
                 onCollisionToggle={setCollisionEnabled}
                 measureEnabled={measureEnabled}
                 onMeasureToggle={setMeasureEnabled}
+                viewer3DEnabled={viewer3DEnabled}
+                onToggleViewer3D={() => setViewer3DEnabled(v => !v)}
               />
               {paintMode === 'transform' && (
                 <TransformPanel
