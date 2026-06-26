@@ -477,6 +477,270 @@ export async function sliceRoutes(app: FastifyInstance, options: { db: Db }) {
  * Core slice worker. Same code path for direct (no Redis) and BullMQ paths.
  * Throws on failure — caller is responsible for marking job failed.
  */
+/**
+ * Build the input 3MF buffer that snorcal dispatches to the slicer.
+ * Pure (no job state, no workDir writes) — shared by `runSliceJob` (which
+ * then invokes the slicer) and `POST /api/files/preview-3mf` (which
+ * returns the buffer straight to the caller without slicing, for testing
+ * in OrcaSlicer / bambuddy UI / BambuStudio directly).
+ */
+export async function buildSliceInput3MF(
+  body: SliceRequest,
+  db: Db,
+  modelFilePath: string,
+): Promise<Buffer> {
+  // Build project settings — full template + U1/SnapSpeed overrides + profile overlays + user customizations
+  const projectSettings: Record<string, unknown> = {
+    ...(defaultProjectSettingsRaw as Record<string, unknown>),
+    ...PROJECT_SETTING_OVERRIDES,
+  };
+
+  // Merge selected profiles (machine → filament → process)
+  if (body.profiles) {
+    const engine = body.engine;
+    for (const type of ['machine', 'filament', 'process'] as const) {
+      const profileName = body.profiles[type];
+      if (!profileName) continue;
+      const profile = db.getProfile(engine, type, profileName);
+      if (!profile) continue;
+      try {
+        const profileSettings = JSON.parse(profile.settings) as Record<string, unknown>;
+        for (const [key, val] of Object.entries(profileSettings)) {
+          if (['type', 'name', 'inherits', 'from', 'version'].includes(key)) continue;
+          if (val === null) continue;
+          projectSettings[key] = val;
+        }
+      } catch {
+        // Skip unparseable profile
+      }
+    }
+  }
+
+  // Multi-material: load second filament profile and expand arrays
+  if (body.multiMaterial?.enabled) {
+    const profile0Name = body.profiles?.filament;
+    const profile1Name = body.profiles?.filament2;
+    let profile0Settings: Record<string, unknown> | null = null;
+    let profile1Settings: Record<string, unknown> | null = null;
+
+    if (profile0Name) {
+      const p = db.getProfile(body.engine, 'filament', profile0Name);
+      if (p) try { profile0Settings = JSON.parse(p.settings); } catch {}
+    }
+    if (profile1Name) {
+      const p = db.getProfile(body.engine, 'filament', profile1Name);
+      if (p) try { profile1Settings = JSON.parse(p.settings); } catch {}
+    }
+
+    mergeFilamentProfiles(projectSettings, profile0Settings, profile1Settings, body.multiMaterial);
+  }
+
+  // Multi-color filament slots: expand all filament_* arrays to N elements
+  if (body.filamentSlots && body.filamentSlots.length > 1) {
+    const profileSettings: (Record<string, unknown> | null)[] = body.filamentSlots.map((slot) => {
+      if (!slot.profile) return null;
+      const p = db.getProfile(body.engine, 'filament', slot.profile);
+      if (!p) return null;
+      try { return JSON.parse(p.settings) as Record<string, unknown>; } catch { return null; }
+    });
+    expandFilamentSlots(projectSettings, body.filamentSlots, profileSettings);
+  }
+
+  if (body.settings?.process) {
+    for (const [key, val] of Object.entries(body.settings.process)) {
+      projectSettings[key] = String(val);
+    }
+  }
+
+  // Re-apply multi-material overrides AFTER user settings (user may send enable_prime_tower=0)
+  if (body.filamentSlots && body.filamentSlots.length > 1) {
+    // Detect machine extruder count for padding. Bundled Snapmaker U1
+    // resolves through fdm_U1 → fdm_toolchanger_common which carries
+    // 5-element arrays; padding to 4 (the variant's own extruder_colour
+    // length) under-sizes against the merged machine and the slicer
+    // segfaults in update_values_to_printer_extruders trying to look
+    // up extruder_index 5 (1-based) on a 4-element override.
+    const nozzleArr = projectSettings['nozzle_diameter'] as any[] | undefined;
+    const pModel = projectSettings['printer_model'] as string | undefined;
+    let mExtCount = nozzleArr?.length ?? 1;
+    if (pModel?.includes('U1')) mExtCount = 5;
+    const tc = Math.max(body.filamentSlots.length, mExtCount);
+
+    projectSettings['single_extruder_multi_material'] = '1';
+    projectSettings['enable_prime_tower'] = '1';
+    const extColors = body.filamentSlots.map(s => s.color);
+    while (extColors.length < tc) extColors.push(extColors[extColors.length - 1] || '#FFFFFF');
+    projectSettings['extruder_colour'] = extColors;
+    projectSettings['default_filament_colour'] = extColors;
+    projectSettings['extruder_offset'] = Array.from({ length: tc }, () => '0x0');
+    const ndSrc = Array.isArray(nozzleArr) && nozzleArr.length > 0
+      ? nozzleArr.map(String)
+      : ['0.4'];
+    projectSettings['nozzle_diameter'] = Array.from({ length: tc }, (_, i) => ndSrc[i] ?? ndSrc[0]);
+    // Override Bambu printer_model to bypass slicer's is_bbl_vendor_preset
+    // dispatch. When slicer sees "Bambu Lab X" vendor, it forces AMS-mode
+    // output (M624/M625 markers + "Auto For Flush" filament map) which
+    // IGNORES per-triangle paint_color and emits identical payload in every
+    // M624 → effectively single-color. Renaming to a generic multi-extruder
+    // model makes the slicer use its standard multi-extruder pipeline that
+    // honors paint_color and emits per-filament T<n> tool changes that the
+    // in-browser gcode-preview library can render. The gcode still works
+    // on real Bambu AMS hardware (firmware translates T<n> to AMS swaps).
+    const currentModel = projectSettings['printer_model'];
+    if (typeof currentModel === 'string' && currentModel.toLowerCase().startsWith('bambu lab')) {
+      projectSettings['printer_model'] = 'Generic Multi-Extruder';
+    }
+  }
+
+  // Resolve models — support multi-model or single-model requests
+  let buildModels: ThreeMFModelInput[];
+
+  const modelIdToIndex = new Map<string, number>();
+  const parentModelIds: (string | undefined)[] = [];
+
+  if (body.models && body.models.length > 0) {
+    const visibleEntries = body.models.filter((entry: any) => entry.visible !== false);
+    const modelEntries = visibleEntries.filter((e: any) => !e.kind || e.kind === 'model');
+    const inlineChildEntries = visibleEntries.filter((e: any) => e.kind && e.kind !== 'model');
+
+    const rawEntries = modelEntries
+      .map((entry: any, mi: number) => {
+      const rec = db.getModel(entry.modelId);
+      const plateIndex = (body.plateIndex && body.plateIndex > 0) ? body.plateIndex : 1;
+      let stlPath = rec?.file_path ?? '';
+      let faceColors: Uint8Array | undefined;
+      const plate = db.getPlate(entry.modelId, plateIndex);
+      if (plate) {
+        stlPath = plate.file_path;
+        faceColors = plate.face_colors ? new Uint8Array(plate.face_colors) : undefined;
+      } else if (rec) {
+        faceColors = rec.face_colors ? new Uint8Array(rec.face_colors) : undefined;
+      }
+      if (entry.modelId) modelIdToIndex.set(entry.modelId, mi);
+      parentModelIds[mi] = entry.modelId;
+      const { linkedTo: linkedToIds, ...rest } = entry;
+      return {
+        ...rest,
+        stlPath,
+        faceColors,
+        name: entry.name ?? rec?.name ?? `model_${mi}`,
+        _linkedToIds: linkedToIds,
+      } as ThreeMFModelInput & { _linkedToIds?: string[] };
+    });
+    buildModels = rawEntries.map(({ _linkedToIds, ...rest }) => {
+      if (_linkedToIds && _linkedToIds.length > 0) {
+        for (const id of _linkedToIds) {
+          const idx = modelIdToIndex.get(id);
+          if (idx != null) { rest.linkedTo = idx; break; }
+        }
+      }
+      return rest;
+    });
+
+    const plateIndexForInline = (body.plateIndex && body.plateIndex > 0) ? body.plateIndex : 1;
+    const inlineResolved: (ThreeMFModelInput & { _linkedToIds?: string[] })[] = [];
+    const parentsWithInlineChildren = new Set<string>();
+    for (const child of inlineChildEntries) {
+      let stlPath = '';
+      let faceColors: Uint8Array | undefined;
+      if (child.printablePartRef) {
+        const ref = child.printablePartRef;
+        const printableParts = db.listPrintableParts(ref.parentModelId, ref.plate);
+        const pp = printableParts.find(p => p.part_index === ref.part);
+        if (pp) {
+          stlPath = pp.file_path;
+          if (pp.face_colors) faceColors = new Uint8Array(pp.face_colors);
+        }
+      } else if (child.negativePartRef) {
+        const ref = child.negativePartRef;
+        const negParts = db.listNegativeParts(ref.parentModelId, ref.plate);
+        const np = negParts.find(p => p.part_index === ref.part);
+        if (np) stlPath = np.file_path;
+      } else if (child.modelId) {
+        const rec = db.getModel(child.modelId);
+        const plate = db.getPlate(child.modelId, plateIndexForInline);
+        stlPath = plate?.file_path ?? rec?.file_path ?? '';
+      }
+      if (child.linkedTo) {
+        for (const pid of child.linkedTo) parentsWithInlineChildren.add(pid);
+      }
+      const { linkedTo: linkedToIds, ...rest } = child;
+      inlineResolved.push({
+        ...rest,
+        stlPath,
+        faceColors,
+        _linkedToIds: linkedToIds,
+      } as ThreeMFModelInput & { _linkedToIds?: string[] });
+    }
+    const inlineWithIndices = inlineResolved.map(({ _linkedToIds, ...rest }) => {
+      if (_linkedToIds && _linkedToIds.length > 0) {
+        for (const id of _linkedToIds) {
+          const idx = modelIdToIndex.get(id);
+          if (idx != null) { rest.linkedTo = idx; break; }
+        }
+      }
+      return rest;
+    });
+    if (inlineWithIndices.length > 0) {
+      buildModels = [...buildModels, ...inlineWithIndices];
+    }
+
+    const plateIndexForNegatives = (body.plateIndex && body.plateIndex > 0) ? body.plateIndex : 1;
+    const negativeChildren: ThreeMFModelInput[] = [];
+    const seenParentIds = new Set<string>();
+    for (let pi = 0; pi < parentModelIds.length; pi++) {
+      const parentModelId = parentModelIds[pi];
+      if (!parentModelId) continue;
+      if (seenParentIds.has(parentModelId)) continue;
+      seenParentIds.add(parentModelId);
+      if (parentsWithInlineChildren.has(parentModelId)) continue;
+      const negParts = db.listNegativeParts(parentModelId, plateIndexForNegatives);
+      negParts.forEach((np, ni) => {
+        negativeChildren.push({
+          stlPath: np.file_path,
+          kind: 'negative',
+          linkedTo: pi,
+          name: `negative_${pi + 1}_${ni + 1}`,
+        });
+      });
+    }
+    if (negativeChildren.length > 0) {
+      buildModels = [...buildModels, ...negativeChildren];
+    }
+  } else {
+    const modelRecord = db.getModel(body.modelId!);
+    const plateIndex = (body.plateIndex && body.plateIndex > 0) ? body.plateIndex : 1;
+    let stlPath = modelFilePath;
+    let faceColors: Uint8Array | undefined;
+    const plate = db.getPlate(body.modelId!, plateIndex);
+    if (plate) {
+      stlPath = plate.file_path;
+      faceColors = plate.face_colors ? new Uint8Array(plate.face_colors) : undefined;
+    } else if (modelRecord) {
+      faceColors = modelRecord.face_colors ? new Uint8Array(modelRecord.face_colors) : undefined;
+    }
+    buildModels = [{ stlPath, faceColors, rotation: body.rotation, positionOffset: body.positionOffset }];
+    parentModelIds[0] = body.modelId;
+
+    const plateIndexForNegatives = (body.plateIndex && body.plateIndex > 0) ? body.plateIndex : 1;
+    const negParts = db.listNegativeParts(body.modelId!, plateIndexForNegatives);
+    negParts.forEach((np, ni) => {
+      buildModels.push({
+        stlPath: np.file_path,
+        kind: 'negative',
+        linkedTo: 0,
+        name: `negative_1_${ni + 1}`,
+      });
+    });
+  }
+
+  return build3MF({
+    models: buildModels,
+    projectSettings,
+    buildVolume: body.buildVolume,
+  });
+}
+
 export async function runSliceJob(
   jobId: string,
   body: SliceRequest,
@@ -491,310 +755,16 @@ export async function runSliceJob(
   db.updateJobProgress(jobId, 5, 'Building 3MF...');
   onProgress?.(5, 'Building 3MF...');
 
-  // Build project settings — full template + U1/SnapSpeed overrides + profile overlays + user customizations
-  const projectSettings: Record<string, unknown> = {
-    ...(defaultProjectSettingsRaw as Record<string, unknown>),
-        ...PROJECT_SETTING_OVERRIDES,
-      };
+  const threemfBuffer = await buildSliceInput3MF(body, db, modelFilePath);
 
-      // Merge selected profiles (machine → filament → process)
-      if (body.profiles) {
-        const engine = body.engine;
-        for (const type of ['machine', 'filament', 'process'] as const) {
-          const profileName = body.profiles[type];
-          if (!profileName) continue;
-          const profile = db.getProfile(engine, type, profileName);
-          if (!profile) continue;
-          try {
-            const profileSettings = JSON.parse(profile.settings) as Record<string, unknown>;
-            for (const [key, val] of Object.entries(profileSettings)) {
-              // Skip metadata fields that aren't actual slicer settings
-              if (['type', 'name', 'inherits', 'from', 'version'].includes(key)) continue;
-              // Skip null values — many exported profiles contain "key": null for
-              // inherited-from-parent markers. Overwriting defaults with null breaks
-              // the slicer (e.g. extruder_clearance_radius must be string, not null).
-              if (val === null) continue;
-              projectSettings[key] = val;
-            }
-          } catch {
-            // Skip unparseable profile
-          }
-        }
-      }
+  const input3mfPath = path.join(workDir, 'input.3mf');
+  fs.writeFileSync(input3mfPath, threemfBuffer);
 
-      // Multi-material: load second filament profile and expand arrays
-      if (body.multiMaterial?.enabled) {
-        const profile0Name = body.profiles?.filament;
-        const profile1Name = body.profiles?.filament2;
-        let profile0Settings: Record<string, unknown> | null = null;
-        let profile1Settings: Record<string, unknown> | null = null;
+  const outputDir = path.join(workDir, 'output');
+  fs.mkdirSync(outputDir, { recursive: true });
 
-        if (profile0Name) {
-          const p = db.getProfile(body.engine, 'filament', profile0Name);
-          if (p) try { profile0Settings = JSON.parse(p.settings); } catch {}
-        }
-        if (profile1Name) {
-          const p = db.getProfile(body.engine, 'filament', profile1Name);
-          if (p) try { profile1Settings = JSON.parse(p.settings); } catch {}
-        }
-
-        mergeFilamentProfiles(projectSettings, profile0Settings, profile1Settings, body.multiMaterial);
-      }
-
-      // Multi-color filament slots: expand all filament_* arrays to N elements
-      if (body.filamentSlots && body.filamentSlots.length > 1) {
-        const profileSettings: (Record<string, unknown> | null)[] = body.filamentSlots.map((slot) => {
-          if (!slot.profile) return null;
-          const p = db.getProfile(body.engine, 'filament', slot.profile);
-          if (!p) return null;
-          try { return JSON.parse(p.settings) as Record<string, unknown>; } catch { return null; }
-        });
-        expandFilamentSlots(projectSettings, body.filamentSlots, profileSettings);
-      }
-
-      if (body.settings?.process) {
-        for (const [key, val] of Object.entries(body.settings.process)) {
-          projectSettings[key] = String(val);
-        }
-      }
-
-      // Re-apply multi-material overrides AFTER user settings (user may send enable_prime_tower=0)
-      if (body.filamentSlots && body.filamentSlots.length > 1) {
-        // Detect machine extruder count for padding. Bundled Snapmaker U1
-        // resolves through fdm_U1 → fdm_toolchanger_common which carries
-        // 5-element arrays; padding to 4 (the variant's own extruder_colour
-        // length) under-sizes against the merged machine and the slicer
-        // segfaults in update_values_to_printer_extruders trying to look
-        // up extruder_index 5 (1-based) on a 4-element override.
-        const nozzleArr = projectSettings['nozzle_diameter'] as any[] | undefined;
-        const pModel = projectSettings['printer_model'] as string | undefined;
-        let mExtCount = nozzleArr?.length ?? 1;
-        if (pModel?.includes('U1')) mExtCount = 5;
-        const tc = Math.max(body.filamentSlots.length, mExtCount);
-
-        projectSettings['single_extruder_multi_material'] = '1';
-        projectSettings['enable_prime_tower'] = '1';
-        const extColors = body.filamentSlots.map(s => s.color);
-        while (extColors.length < tc) extColors.push(extColors[extColors.length - 1] || '#FFFFFF');
-        projectSettings['extruder_colour'] = extColors;
-        projectSettings['default_filament_colour'] = extColors;
-        // Pad extruder_offset to slot count (logical extruder count signal).
-        projectSettings['extruder_offset'] = Array.from({ length: tc }, () => '0x0');
-        // Pad nozzle_diameter to slot count too — this is what makes the slicer
-        // actually emit per-filament T<n> tool changes (see expandFilamentSlots
-        // comment for details). Single-element nozzle_diameter → "Auto For
-        // Flush" AMS mode → all paint_color dropped → single-color output.
-        const ndSrc = Array.isArray(nozzleArr) && nozzleArr.length > 0
-          ? nozzleArr.map(String)
-          : ['0.4'];
-        projectSettings['nozzle_diameter'] = Array.from({ length: tc }, (_, i) => ndSrc[i] ?? ndSrc[0]);
-        // Override Bambu printer_model to bypass slicer's is_bbl_vendor_preset
-        // dispatch. When slicer sees "Bambu Lab X" vendor, it forces AMS-mode
-        // output (M624/M625 markers + "Auto For Flush" filament map) which
-        // IGNORES per-triangle paint_color and emits identical payload in every
-        // M624 → effectively single-color. Renaming to a generic multi-extruder
-        // model makes the slicer use its standard multi-extruder pipeline that
-        // honors paint_color and emits per-filament T<n> tool changes that the
-        // in-browser gcode-preview library can render. The gcode still works
-        // on real Bambu AMS hardware (firmware translates T<n> to AMS swaps).
-        const currentModel = projectSettings['printer_model'];
-        if (typeof currentModel === 'string' && currentModel.toLowerCase().startsWith('bambu lab')) {
-          projectSettings['printer_model'] = 'Generic Multi-Extruder';
-        }
-      }
-
-      // Resolve models — support multi-model or single-model requests
-      let buildModels: ThreeMFModelInput[];
-
-      // Build index of model entry → its position in the array, so children can reference parents
-      const modelIdToIndex = new Map<string, number>();
-      // Track parent model IDs by their index in buildModels so negative parts
-      // can be appended after their parent without upsetting the index mapping.
-      const parentModelIds: (string | undefined)[] = [];
-
-      if (body.models && body.models.length > 0) {
-        // Filter out invisible entries — frontend pre-filters too, but this
-        // is the authoritative gate so hidden parts never reach the 3MF.
-        const visibleEntries = body.models.filter((entry: any) => entry.visible !== false);
-
-        // Split into regular models (kind=model/undefined) and inline child
-        // entries (kind=negative/modifier/support). Inline children are the
-        // source of truth — user-added cutters + MakerWorld embedded
-        // negatives both arrive this way. DB pull below is fallback only.
-        const modelEntries = visibleEntries.filter((e: any) => !e.kind || e.kind === 'model');
-        const inlineChildEntries = visibleEntries.filter((e: any) => e.kind && e.kind !== 'model');
-
-        // Resolve parent models + populate modelIdToIndex for child linking.
-        const rawEntries = modelEntries
-          .map((entry: any, mi: number) => {
-          const rec = db.getModel(entry.modelId);
-          // Frontend sends 1-based for multi-plate, undefined for single-plate.
-          // Queue encodes undefined as 0. Normalize to 1 (DB stores 1-based).
-          const plateIndex = (body.plateIndex && body.plateIndex > 0) ? body.plateIndex : 1;
-          let stlPath = rec?.file_path ?? '';
-          let faceColors: Uint8Array | undefined;
-          // Mirror PUT/GET preference: plate row wins if it exists. Single-plate
-          // 3MFs have a plate row too, so paint saved via the PUT route (which
-          // also prefers plate) lands here. Without this, plate_count==1 falls
-          // through to rec.face_colors and the paint is silently lost.
-          const plate = db.getPlate(entry.modelId, plateIndex);
-          if (plate) {
-            stlPath = plate.file_path;
-            faceColors = plate.face_colors ? new Uint8Array(plate.face_colors) : undefined;
-          } else if (rec) {
-            faceColors = rec.face_colors ? new Uint8Array(rec.face_colors) : undefined;
-          }
-          if (entry.modelId) modelIdToIndex.set(entry.modelId, mi);
-          parentModelIds[mi] = entry.modelId;
-          const { linkedTo: linkedToIds, ...rest } = entry;
-          return {
-            ...rest,
-            stlPath,
-            faceColors,
-            name: entry.name ?? rec?.name ?? `model_${mi}`,
-            _linkedToIds: linkedToIds,
-          } as ThreeMFModelInput & { _linkedToIds?: string[] };
-        });
-        // Resolve linkedTo (modelId[] → index of first match) for parent models.
-        buildModels = rawEntries.map(({ _linkedToIds, ...rest }) => {
-          if (_linkedToIds && _linkedToIds.length > 0) {
-            for (const id of _linkedToIds) {
-              const idx = modelIdToIndex.get(id);
-              if (idx != null) { rest.linkedTo = idx; break; }
-            }
-          }
-          return rest;
-        });
-
-        // Resolve inline child entries (part/negative/modifier/support).
-        // STL lookup priority:
-        //   1. printablePartRef → db.listPrintableParts(parentModelId, plate)[part_index]
-        //      (per-`<object>` sub-parts of a 3MF assembly, captured at upload)
-        //   2. negativePartRef → db.listNegativeParts(parentModelId, plate)[part_index]
-        //      (MakerWorld embedded negatives pulled from the original 3MF)
-        //   3. db.getModel(entry.modelId)?.file_path (user-uploaded cutter STL
-        //      registered via POST /api/models, then linked via kind=negative)
-        const plateIndexForInline = (body.plateIndex && body.plateIndex > 0) ? body.plateIndex : 1;
-        const inlineResolved: (ThreeMFModelInput & { _linkedToIds?: string[] })[] = [];
-        const parentsWithInlineChildren = new Set<string>();
-        for (const child of inlineChildEntries) {
-          let stlPath = '';
-          let faceColors: Uint8Array | undefined;
-          if (child.printablePartRef) {
-            const ref = child.printablePartRef;
-            const printableParts = db.listPrintableParts(ref.parentModelId, ref.plate);
-            const pp = printableParts.find(p => p.part_index === ref.part);
-            if (pp) {
-              stlPath = pp.file_path;
-              if (pp.face_colors) faceColors = new Uint8Array(pp.face_colors);
-            }
-          } else if (child.negativePartRef) {
-            const ref = child.negativePartRef;
-            const negParts = db.listNegativeParts(ref.parentModelId, ref.plate);
-            const np = negParts.find(p => p.part_index === ref.part);
-            if (np) stlPath = np.file_path;
-          } else if (child.modelId) {
-            const rec = db.getModel(child.modelId);
-            const plate = db.getPlate(child.modelId, plateIndexForInline);
-            stlPath = plate?.file_path ?? rec?.file_path ?? '';
-          }
-          // Track which parents already have inline children so DB fallback skips them.
-          if (child.linkedTo) {
-            for (const pid of child.linkedTo) parentsWithInlineChildren.add(pid);
-          }
-          const { linkedTo: linkedToIds, ...rest } = child;
-          inlineResolved.push({
-            ...rest,
-            stlPath,
-            faceColors,
-            _linkedToIds: linkedToIds,
-          } as ThreeMFModelInput & { _linkedToIds?: string[] });
-        }
-        // Resolve linkedTo for inline children (same pattern as parent resolution).
-        const inlineWithIndices = inlineResolved.map(({ _linkedToIds, ...rest }) => {
-          if (_linkedToIds && _linkedToIds.length > 0) {
-            for (const id of _linkedToIds) {
-              const idx = modelIdToIndex.get(id);
-              if (idx != null) { rest.linkedTo = idx; break; }
-            }
-          }
-          return rest;
-        });
-        if (inlineWithIndices.length > 0) {
-          buildModels = [...buildModels, ...inlineWithIndices];
-        }
-
-        // Fallback: pull negatives from DB for parents that didn't receive
-        // any inline children. Old clients without inline entries still
-        // get their embedded negatives this way. Also runs when user has
-        // explicitly hidden/toggled off all inline children.
-        const plateIndexForNegatives = (body.plateIndex && body.plateIndex > 0) ? body.plateIndex : 1;
-        const negativeChildren: ThreeMFModelInput[] = [];
-        const seenParentIds = new Set<string>();
-        for (let pi = 0; pi < parentModelIds.length; pi++) {
-          const parentModelId = parentModelIds[pi];
-          if (!parentModelId) continue;
-          if (seenParentIds.has(parentModelId)) continue;
-          seenParentIds.add(parentModelId);
-          // Skip DB pull if frontend already sent inline children for this parent.
-          if (parentsWithInlineChildren.has(parentModelId)) continue;
-          const negParts = db.listNegativeParts(parentModelId, plateIndexForNegatives);
-          negParts.forEach((np, ni) => {
-            negativeChildren.push({
-              stlPath: np.file_path,
-              kind: 'negative',
-              linkedTo: pi,
-              name: `negative_${pi + 1}_${ni + 1}`,
-            });
-          });
-        }
-        if (negativeChildren.length > 0) {
-          buildModels = [...buildModels, ...negativeChildren];
-        }
-      } else {
-        // Single model (backwards compat)
-        const modelRecord = db.getModel(body.modelId!);
-        const plateIndex = (body.plateIndex && body.plateIndex > 0) ? body.plateIndex : 1;
-        let stlPath = modelFilePath;
-        let faceColors: Uint8Array | undefined;
-        // Same plate-first preference as the multi-model branch above.
-        const plate = db.getPlate(body.modelId!, plateIndex);
-        if (plate) {
-          stlPath = plate.file_path;
-          faceColors = plate.face_colors ? new Uint8Array(plate.face_colors) : undefined;
-        } else if (modelRecord) {
-          faceColors = modelRecord.face_colors ? new Uint8Array(modelRecord.face_colors) : undefined;
-        }
-        buildModels = [{ stlPath, faceColors, rotation: body.rotation, positionOffset: body.positionOffset }];
-        parentModelIds[0] = body.modelId;
-
-        // Single-model DB fallback for negatives — same as multi-model.
-        const plateIndexForNegatives = (body.plateIndex && body.plateIndex > 0) ? body.plateIndex : 1;
-        const negParts = db.listNegativeParts(body.modelId!, plateIndexForNegatives);
-        negParts.forEach((np, ni) => {
-          buildModels.push({
-            stlPath: np.file_path,
-            kind: 'negative',
-            linkedTo: 0,
-            name: `negative_1_${ni + 1}`,
-          });
-        });
-      }
-
-      const threemfBuffer = await build3MF({
-        models: buildModels,
-        projectSettings,
-        buildVolume: body.buildVolume,
-      });
-
-      const input3mfPath = path.join(workDir, 'input.3mf');
-      fs.writeFileSync(input3mfPath, threemfBuffer);
-
-      const outputDir = path.join(workDir, 'output');
-      fs.mkdirSync(outputDir, { recursive: true });
-
-      db.updateJobProgress(jobId, 15, 'Spawning slicer...');
-      onProgress?.(15, 'Spawning slicer...');
+  db.updateJobProgress(jobId, 15, 'Spawning slicer...');
+  onProgress?.(15, 'Spawning slicer...');
       // Embedded 3MF project_settings.config has everything (padded
       // nozzle_diameter, extruder_colour, extruder_offset, printer_model
       // override). Bambuddy sidecar runs slicer with no --load-settings;

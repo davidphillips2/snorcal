@@ -1067,13 +1067,19 @@ export default function App() {
 
   const sliceModels = useCallback(async (models: ProjectModel[]) => {
     if (models.length === 0) return;
+    return api.submitSliceJob(buildSliceBody(models));
+  }, [engine, settings, selectedProfiles, multiMaterial, filamentSlots, bedVolume, plates]);
+
+  // Build a SliceRequest body for the given models. Shared by `sliceModels`
+  // (POST /api/slice) and `handleSaveThreemf` (POST /api/files/preview-3mf)
+  // so the pre-slice download is byte-identical to what would have been sent.
+  const buildSliceBody = useCallback((models: ProjectModel[]) => {
+    if (models.length === 0) throw new Error('No models');
     const processSettings: Record<string, string> = {};
     Object.assign(processSettings, settings);
-    // Derive 1-based plate index from the first model's plateId so multi-plate
-    // 3MFs read the correct plate's colors + STL during slice.
     const firstPlateIdx = plates.findIndex(p => p.id === models[0].plateId) + 1 || 1;
     const anyMultiPlate = models.some(m => m.plateCount > 1);
-    return api.submitSliceJob({
+    return {
       models: models.map(pm => ({
         modelId: pm.modelId,
         rotation: pm.rotation,
@@ -1095,8 +1101,30 @@ export default function App() {
       multiMaterial: multiMaterial.enabled ? multiMaterial : undefined,
       filamentSlots: filamentSlots.length > 1 ? filamentSlots : undefined,
       buildVolume: bedVolume ?? undefined,
-    });
+    } as const;
   }, [engine, settings, selectedProfiles, multiMaterial, filamentSlots, bedVolume, plates]);
+
+  // Save the input 3MF without slicing — useful when slice fails and you want
+  // to inspect the exact bytes snorcal would have sent, or to slice in
+  // OrcaSlicer / bambuddy UI directly.
+  const handleSaveThreemf = useCallback(async () => {
+    const visible = activePlateModels.filter(m => m.visible);
+    if (visible.length === 0) return;
+    try {
+      await saveAllColors();
+      const { url, filename } = await api.buildPreview3mf(buildSliceBody(visible));
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    } catch (err) {
+      console.error('Save 3MF failed:', err);
+      alert(`Save 3MF failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }, [activePlateModels, saveAllColors, buildSliceBody]);
 
   const handleSlicePlate = useCallback(async () => {
     const visible = activePlateModels.filter(m => m.visible);
@@ -1847,6 +1875,12 @@ export default function App() {
             Slice All Plates
           </button>
         )}
+        <button onClick={handleSaveThreemf} disabled={isSlicing || !hasVisibleModels}
+          className={`w-full py-2 rounded-lg text-sm transition ${
+            isSlicing || !hasVisibleModels ? 'bg-gray-700 text-gray-500 cursor-not-allowed' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+          }`}>
+          Save 3MF
+        </button>
       </div>
     </div>
   );
@@ -2046,6 +2080,12 @@ export default function App() {
                       Slice All Plates
                     </button>
                   )}
+                  <button onClick={handleSaveThreemf} disabled={isSlicing || !hasVisibleModels}
+                    className={`w-full py-2 rounded-lg text-sm transition ${
+                      isSlicing || !hasVisibleModels ? 'bg-gray-700 text-gray-500 cursor-not-allowed' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                    }`}>
+                    Save 3MF
+                  </button>
                 </div>
 
                 {/* Jobs list */}

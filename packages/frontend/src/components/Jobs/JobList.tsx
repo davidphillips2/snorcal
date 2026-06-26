@@ -99,7 +99,7 @@ export function JobCard({ job, onCancel, onDownload, onDownloadThreemf, onPrevie
             G-code
           </button>
         )}
-        {job.status === 'completed' && onDownloadThreemf && (
+        {['completed', 'failed'].includes(job.status) && onDownloadThreemf && (
           <button
             onClick={() => onDownloadThreemf(job.id)}
             className="px-2 py-0.5 text-[10px] rounded bg-blue-600/20 text-blue-400 hover:bg-blue-600/30 transition"

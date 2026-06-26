@@ -191,6 +191,28 @@ export function getThreemfUrl(jobId: string) {
   return `${API_BASE}/files/threemf/${jobId}`;
 }
 
+/**
+ * Build the input 3MF (same body as submitSliceJob) without slicing.
+ * Returns an object URL suitable for `<a href>` download. Caller must
+ * `URL.revokeObjectURL` after the click fires.
+ */
+export async function buildPreview3mf(data: Parameters<typeof submitSliceJob>[0]): Promise<{ url: string; filename: string }> {
+  const res = await fetch(`${API_BASE}/files/preview-3mf`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) {
+    const txt = await res.text().catch(() => '');
+    throw new Error(`HTTP ${res.status} ${txt}`);
+  }
+  const cd = res.headers.get('content-disposition') ?? '';
+  const m = cd.match(/filename="([^"]+)"/);
+  const filename = m?.[1] ?? 'preview.3mf';
+  const blob = await res.blob();
+  return { url: URL.createObjectURL(blob), filename };
+}
+
 export function getModelUrl(modelId: string, plate?: number) {
   const params = plate && plate > 1 ? `?plate=${plate}` : '';
   return `${API_BASE}/files/model/${modelId}${params}`;

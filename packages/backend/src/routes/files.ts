@@ -2,6 +2,8 @@ import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { Db } from '../db/index.js';
+import type { SliceRequest } from '@snorcal/shared';
+import { buildSliceInput3MF } from './slice.js';
 
 export async function fileRoutes(app: FastifyInstance, options: { db: Db }) {
   const { db } = options;
@@ -130,6 +132,43 @@ export async function fileRoutes(app: FastifyInstance, options: { db: Db }) {
     reply.header('Content-Length', stat.size);
     reply.header('Content-Disposition', `attachment; filename="${modelName}.3mf"`);
     return reply.send(fs.createReadStream(threemfPath));
+  });
+
+  // POST /api/files/preview-3mf — Build the input 3MF without slicing.
+  // Body: same shape as POST /api/slice (SliceRequest). Returns the 3MF as a
+  // download. Use for testing in OrcaSlicer / bambuddy UI / BambuStudio
+  // directly when a slice fails and you want to inspect what snorcal would
+  // have sent, or to bypass the slice step entirely.
+  app.post('/api/files/preview-3mf', async (req: FastifyRequest, reply: FastifyReply) => {
+    const body = req.body as SliceRequest;
+    if ((!body.modelId && !body.models) || !body.engine) {
+      return reply.status(400).send({ ok: false, error: 'modelId (or models) and engine are required' });
+    }
+    // Validate model(s) exist so the helper doesn't crash on a missing record
+    const ids: string[] = body.models
+      ? body.models.map((m: any) => m.modelId).filter(Boolean) as string[]
+      : (body.modelId ? [body.modelId] : []);
+    for (const id of ids) {
+      if (!db.getModel(id)) {
+        return reply.status(404).send({ ok: false, error: `Model ${id} not found` });
+      }
+    }
+    try {
+      const buf = await buildSliceInput3MF(body, db, '');
+      reply.header('Content-Type', 'application/octet-stream');
+      reply.header('Content-Length', buf.length);
+      // Filename: prefer first model's name, fallback to "preview"
+      const firstModelId = ids[0];
+      const firstModel = firstModelId ? db.getModel(firstModelId) : null;
+      const fname = (firstModel?.name || 'preview').replace(/[^a-zA-Z0-9._-]/g, '_');
+      reply.header('Content-Disposition', `attachment; filename="${fname}.3mf"`);
+      return reply.send(buf);
+    } catch (err) {
+      return reply.status(500).send({
+        ok: false,
+        error: `Failed to build 3MF: ${err instanceof Error ? err.message : String(err)}`,
+      });
+    }
   });
 }
 
