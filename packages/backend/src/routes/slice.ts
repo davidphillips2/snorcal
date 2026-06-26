@@ -796,13 +796,41 @@ export async function runSliceJob(
       // 3MF's project_settings.config, but bambuddy needs the standalone profile
       // files to construct the multi-extruder printer/preset/filament baseline
       // before applying 3MF overrides.
+      //
+      // The machine profile in DB may be single-extruder even when the user
+      // is slicing multi-color (imported profile out of sync with OrcaSlicer's
+      // bundled 4-extruder variant). Pad the printer profile's per-extruder
+      // arrays to filamentSlots.length before upload — otherwise OrcaSlicer
+      // segfaults in update_values_to_printer_extruders trying to match
+      // filaments to extruder slots that don't exist in the loaded machine.
       const profileFiles: { printer?: Buffer; preset?: Buffer; filaments?: Buffer[] } = {};
       if (body.profiles) {
+        const slotCount = body.filamentSlots?.length ?? 0;
         const machineName = body.profiles.machine;
         const processName = body.profiles.process;
         if (machineName) {
           const p = db.getProfile(body.engine, 'machine', machineName);
-          if (p) profileFiles.printer = Buffer.from(p.settings, 'utf-8');
+          if (p) {
+            let json = p.settings;
+            if (slotCount > 1) {
+              try {
+                const obj = JSON.parse(json) as Record<string, unknown>;
+                for (const key of ['nozzle_diameter', 'extruder_type', 'nozzle_volume_type']) {
+                  const cur = obj[key];
+                  let arr: string[];
+                  if (Array.isArray(cur)) arr = cur.map(String);
+                  else if (typeof cur === 'string' && cur) arr = [cur];
+                  else if (key === 'extruder_type') arr = ['Direct Drive'];
+                  else if (key === 'nozzle_volume_type') arr = ['Standard'];
+                  else arr = ['0.4'];
+                  while (arr.length < slotCount) arr.push(arr[arr.length - 1]);
+                  obj[key] = arr;
+                }
+                json = JSON.stringify(obj);
+              } catch { /* keep original */ }
+            }
+            profileFiles.printer = Buffer.from(json, 'utf-8');
+          }
         }
         if (processName) {
           const p = db.getProfile(body.engine, 'process', processName);
