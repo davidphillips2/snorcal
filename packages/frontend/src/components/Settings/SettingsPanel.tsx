@@ -42,6 +42,8 @@ interface SettingsPanelProps {
   filamentSlots: FilamentSlotConfig[];
   onFilamentSlotsChange: (slots: FilamentSlotConfig[]) => void;
   targetPrinterModel?: string | null;
+  /** Open the "Advanced" settings section on mount (mobile full-screen mode). */
+  defaultAdvancedOpen?: boolean;
 }
 
 const MATERIAL_TYPES = ['PLA', 'PETG', 'ABS', 'ASA', 'TPU', 'PA (Nylon)', 'PC', 'PVA', 'HIPS', 'CF (Carbon Fiber)'];
@@ -108,6 +110,7 @@ export function SettingsPanel({
   selectedProfiles, onProfilesChange, multiMaterial, onMultiMaterialChange,
   filamentSlots, onFilamentSlotsChange,
   targetPrinterModel,
+  defaultAdvancedOpen = false,
 }: SettingsPanelProps) {
   // Initialize collapsed state from group defaults
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>(() => {
@@ -119,7 +122,7 @@ export function SettingsPanel({
   const [profiles, setProfiles] = useState<ProfileInfo[]>([]);
   const [printers, setPrinters] = useState<Array<{ name: string; model?: string | null }>>([]);
   const [importing, setImporting] = useState(false);
-  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(defaultAdvancedOpen);
   const [diffMode, setDiffMode] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 

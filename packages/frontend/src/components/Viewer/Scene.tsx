@@ -11,12 +11,17 @@ export interface SceneRefs {
 
 interface SceneProps {
   onReady: (refs: SceneRefs) => void;
+  /** Fired when the WebGL context is lost (GPU OOM, tab memory pressure).
+   *  Parent should disable the 3D viewer + persist the choice. */
+  onContextLost?: () => void;
 }
 
-export function Scene({ onReady }: SceneProps) {
+export function Scene({ onReady, onContextLost }: SceneProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const onReadyRef = useRef(onReady);
   onReadyRef.current = onReady;
+  const onContextLostRef = useRef(onContextLost);
+  onContextLostRef.current = onContextLost;
 
   useEffect(() => {
     const container = containerRef.current;
@@ -87,10 +92,32 @@ export function Scene({ onReady }: SceneProps) {
     const observer = new ResizeObserver(onResize);
     observer.observe(container);
 
+    // WebGL context loss = GPU memory exhausted. Bubble to parent so it can
+    // disable the viewer + persist (otherwise reload just OOMs again).
+    const onContextLostInternal = (e: Event) => {
+      e.preventDefault();
+      onContextLostRef.current?.();
+    };
+    renderer.domElement.addEventListener('webglcontextlost', onContextLostInternal);
+
+    // Safari fires memory pressure events before tab OOM-kill. Listen too.
+    const onMemoryPressure = () => onContextLostRef.current?.();
+    document.addEventListener('memorypressure', onMemoryPressure);
+    const perfAny = performance as any;
+    const memPoll = setInterval(() => {
+      const m = perfAny.memory;
+      if (m && m.jsHeapSizeLimit > 0 && m.usedJSHeapSize / m.jsHeapSizeLimit > 0.9) {
+        onContextLostRef.current?.();
+      }
+    }, 2000);
+
     return () => {
       cancelAnimationFrame(animId);
       observer.disconnect();
       controls.dispose();
+      renderer.domElement.removeEventListener('webglcontextlost', onContextLostInternal);
+      document.removeEventListener('memorypressure', onMemoryPressure);
+      clearInterval(memPoll);
       renderer.dispose();
       if (container.contains(renderer.domElement)) {
         container.removeChild(renderer.domElement);

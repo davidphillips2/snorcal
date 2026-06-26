@@ -1925,20 +1925,138 @@ export default function App() {
       </aside>
 
       <main className="flex-1 flex flex-col overflow-hidden relative">
-        {/* Mobile header */}
+        {/* Mobile header — hidden when 3D viewer off (full-screen settings takes over) */}
+        {(!isMobileUA || viewer3DEnabled) && (
         <div className="md:hidden flex items-center gap-3 px-3 py-2 bg-gray-800 border-b border-gray-700 shrink-0">
           <button onClick={() => setShowSidebar(!showSidebar)} className="p-1.5 rounded-lg bg-gray-700 text-gray-300 hover:bg-gray-600 transition">
             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" /></svg>
           </button>
         </div>
+        )}
 
         {/* 3D Viewer */}
         <div className="flex-1 relative overflow-hidden">
-          <Scene onReady={setSceneRefs} />
+          <Scene onReady={setSceneRefs} onContextLost={() => {
+            console.warn('[3D] WebGL context lost — auto-disabling viewer');
+            setViewer3DEnabled(false);
+          }} />
 
-          {!viewer3DEnabled && (
-            <div className="absolute inset-0 flex items-center justify-center text-gray-400 text-sm bg-gray-900/60 pointer-events-none">
-              3D viewer disabled — tap "3D" (toolbar) to re-enable
+          {!viewer3DEnabled && !previewJobId && (
+            <div className="absolute inset-0 overflow-auto bg-gray-900/95">
+              <div className="max-w-md mx-auto p-3 space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-gray-300 text-sm font-semibold">Slice settings</span>
+                  <button
+                    onClick={() => setViewer3DEnabled(true)}
+                    className="px-2 py-1 rounded bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-medium"
+                  >
+                    Show 3D viewer
+                  </button>
+                </div>
+
+                {/* Objects */}
+                <ObjectListPanel
+                  models={activePlateModels}
+                  allModels={projectModels}
+                  selectedIndices={selectedIndices}
+                  onSelect={(idx, additive) => additive ? toggleMulti(idx) : selectSingle(idx)}
+                  onRemove={handleRemoveModel}
+                  onToggleVisible={handleToggleVisible}
+                  onUpload={handleUpload}
+                  onUploadMany={handleUploadMany}
+                  onAutoArrange={handleAutoArrange}
+                  isUploading={isUploading}
+                  onOpenMakerworld={() => setShowMwImport(true)}
+                  onDuplicateAt={handleDuplicateAt}
+                  onAddNegativeToParent={handleAddNegativeToParent}
+                  plates={plates}
+                  activePlateId={activePlateId}
+                  onMoveToPlate={handleMoveToPlate}
+                  onDuplicateToPlate={handleDuplicateToPlate}
+                />
+
+                {/* Target printer picker */}
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs font-medium text-gray-400 uppercase tracking-wider">Target</label>
+                    <div className="flex gap-2">
+                      <button onClick={() => setShowInventory(true)}
+                        className="text-[10px] text-gray-500 hover:text-gray-300">inventory</button>
+                      <button onClick={() => setShowPrinters(true)}
+                        className="text-[10px] text-gray-500 hover:text-gray-300">manage</button>
+                    </div>
+                  </div>
+                  {printers.length === 0 ? (
+                    <button onClick={() => setShowPrinters(true)}
+                      className="w-full px-3 py-1.5 bg-emerald-700 hover:bg-emerald-600 rounded text-xs font-medium text-white">
+                      + Add Printer
+                    </button>
+                  ) : (
+                    <>
+                      <select
+                        value={targetPrinterId ?? ''}
+                        onChange={(e) => {
+                          const v = e.target.value || null;
+                          setTargetPrinterId(v);
+                          if (v) localStorage.setItem('snorcal_target_printer', v);
+                        }}
+                        className="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-xs text-white">
+                        {printers.map(p => (
+                          <option key={p.id} value={p.id}>
+                            {p.name}{p.model ? ` · ${p.model}` : ''}
+                          </option>
+                        ))}
+                      </select>
+                      {activePlateModelBounds && (
+                        <div className="mt-1.5">
+                          <MultiPrinterFit
+                            printers={printers}
+                            plateBounds={activePlateModelBounds}
+                            activePrinterId={targetPrinterId}
+                            onSelect={(id) => { setTargetPrinterId(id); localStorage.setItem('snorcal_target_printer', id); }}
+                          />
+                        </div>
+                      )}
+                    </>
+                  )}
+                </div>
+
+                <SettingsPanel
+                  engine={engine} onEngineChange={setEngine} settings={settings} onSettingsChange={setSettings}
+                  selectedProfiles={selectedProfiles} onProfilesChange={setSelectedProfiles}
+                  multiMaterial={multiMaterial} onMultiMaterialChange={(mm) => { setMultiMaterial(mm); localStorage.setItem('snorcal_multi_material', JSON.stringify(mm)); }}
+                  filamentSlots={filamentSlots} onFilamentSlotsChange={(slots) => { setFilamentSlots(slots); localStorage.setItem('snorcal_filament_slots', JSON.stringify(slots)); }}
+                  targetPrinterModel={printers.find(p => p.id === targetPrinterId)?.model ?? null}
+                  defaultAdvancedOpen
+                />
+
+                {/* Slice buttons (mirror sidebar footer) */}
+                <div className="space-y-2">
+                  <button onClick={handleSlicePlate} disabled={isSlicing || !hasVisibleModels}
+                    className={`w-full py-2.5 rounded-lg font-semibold text-sm transition ${
+                      isSlicing || !hasVisibleModels ? 'bg-gray-600 text-gray-400 cursor-not-allowed' : 'bg-blue-600 text-white hover:bg-blue-500'
+                    }`}>
+                    {isSlicing ? 'Slicing...' : 'Slice Plate'}
+                  </button>
+                  {plateCount > 1 && (
+                    <button onClick={handleSliceAll} disabled={isSlicing || !hasVisibleOnAnyPlate}
+                      className={`w-full py-2 rounded-lg text-sm transition ${
+                        isSlicing || !hasVisibleOnAnyPlate ? 'bg-gray-700 text-gray-500 cursor-not-allowed' : 'bg-gray-700 text-gray-200 hover:bg-gray-600'
+                      }`}>
+                      Slice All Plates
+                    </button>
+                  )}
+                </div>
+
+                {/* Jobs list */}
+                {jobs.length > 0 && (
+                  <div>
+                    <div className="text-xs font-medium text-gray-400 uppercase tracking-wider py-1">Jobs ({jobs.length})</div>
+                    <JobList jobs={jobs} onCancel={handleCancelJob} onDownload={handleDownloadGcode}
+                      onDownloadThreemf={handleDownloadThreemf} onPreview={handlePreviewJob} onSendToPrinter={handleSendToPrinter} />
+                  </div>
+                )}
+              </div>
             </div>
           )}
 
@@ -2003,7 +2121,7 @@ export default function App() {
           {/* Active model interaction */}
           {sceneRefs && hasVisibleModels && !previewJobId && (
             <>
-              <AxisIndicator sceneRefs={sceneRefs} />
+              {viewer3DEnabled && <AxisIndicator sceneRefs={sceneRefs} />}
               <ModelMover
                 mesh={activeMesh}
                 sceneRefs={sceneRefs}
@@ -2066,6 +2184,7 @@ export default function App() {
                 onCutComplete={handleCutComplete}
                 onCancel={() => setPaintMode('orbit')}
               />
+              {(viewer3DEnabled || !isMobileUA) && (
               <ViewerToolbar
                 paintMode={paintMode}
                 onModeChange={setPaintMode}
@@ -2109,6 +2228,7 @@ export default function App() {
                 viewer3DEnabled={viewer3DEnabled}
                 onToggleViewer3D={() => setViewer3DEnabled(v => !v)}
               />
+              )}
               {paintMode === 'transform' && (
                 <TransformPanel
                   selectedModels={selectedModelsForGizmo}
