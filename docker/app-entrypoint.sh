@@ -3,18 +3,22 @@ set -e
 
 echo "[Snorcal App] Starting..."
 
-# Wait for Redis
-echo "[Snorcal App] Waiting for Redis at ${REDIS_HOST:-localhost}:${REDIS_PORT:-6379}..."
-for i in $(seq 1 30); do
-  if redis-cli -h "${REDIS_HOST:-localhost}" -p "${REDIS_PORT:-6379}" ping > /dev/null 2>&1; then
-    echo "[Snorcal App] Redis ready."
-    break
-  fi
-  if [ $i -eq 30 ]; then
-    echo "[Snorcal App] WARNING: Redis not available after 30s."
-  fi
-  sleep 1
-done
+# Wait for Redis (skip if REDIS_HOST is blank — Redis is optional)
+if [ -n "$REDIS_HOST" ]; then
+  echo "[Snorcal App] Waiting for Redis at ${REDIS_HOST:-localhost}:${REDIS_PORT:-6379}..."
+  for i in $(seq 1 30); do
+    if redis-cli -h "${REDIS_HOST:-localhost}" -p "${REDIS_PORT:-6379}" ping > /dev/null 2>&1; then
+      echo "[Snorcal App] Redis ready."
+      break
+    fi
+    if [ $i -eq 30 ]; then
+      echo "[Snorcal App] WARNING: Redis not available after 30s."
+    fi
+    sleep 1
+  done
+else
+  echo "[Snorcal App] REDIS_HOST unset — skipping Redis (direct slice mode)."
+fi
 
 # Wait for slicer sidecar
 if [ -n "$SLICER_URL" ]; then
