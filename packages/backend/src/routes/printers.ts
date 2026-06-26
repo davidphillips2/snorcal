@@ -26,11 +26,23 @@ function toPrinterRecord(row: any) {
     cameraSnapshotUrl: row.camera_snapshot_url,
     model: row.model,
     manualSlots: row.manual_slots ?? 0,
+    manualFilaments: parseManualFilaments(row.manual_filaments),
     bedVolume: resolveBedVolume(dbForResolver, row.model),
     lastStatus: row.last_status,
     lastSeen: row.last_seen,
     createdAt: row.created_at,
   };
+}
+
+/** Parse manual_filaments JSON. Returns [] on null/invalid. */
+function parseManualFilaments(raw: string | null | undefined): Array<{ color: string; type: string; brand?: string; remain?: number }> {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
 }
 
 // Resolved lazily — set by printerRoutes() init. Avoids passing db through every call.
@@ -252,6 +264,8 @@ export async function printerRoutes(app: FastifyInstance, options: { db: Db }) {
       camera_stream_url?: string | null;
       camera_snapshot_url?: string | null;
       model?: string | null;
+      manual_slots?: number;
+      manual_filaments?: string | null;
     };
     const row = db.getPrinter(req.params.id);
     if (!row) return reply.status(404).send({ ok: false, error: 'Printer not found' });

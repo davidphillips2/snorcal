@@ -6,6 +6,7 @@ import { CameraView } from './CameraView';
 import { AmsEditor } from './AmsEditor';
 import { EditPrinterModal } from './EditPrinterModal';
 import { UploadFileSection } from './UploadFileSection';
+import { ManualFilamentsEditor } from './ManualFilamentsEditor';
 
 interface Props {
   id: string;
@@ -144,8 +145,8 @@ export function PrinterDetail({ id, onBack }: Props) {
               ? `${status.layer}/${status.totalLayers}` : '—'} />
         </div>
 
-        {/* AMS */}
-        {status?.ams && status.ams.length > 0 && (
+        {/* Filaments — live AMS for bambu, editable manual slots otherwise */}
+        {printer.protocol === 'bambu' && status?.ams && status.ams.length > 0 ? (
           <Section title="AMS">
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
               {status.ams.map((slot, i) => (
@@ -166,6 +167,13 @@ export function PrinterDetail({ id, onBack }: Props) {
                 </button>
               ))}
             </div>
+          </Section>
+        ) : null}
+
+        {/* Manual filaments (Moonraker / Klipper / Erproust CFS etc.) */}
+        {printer.protocol !== 'bambu' && (
+          <Section title="Filament slots">
+            <ManualFilamentsEditor printer={printer} onSaved={loadPrinter} />
           </Section>
         )}
 

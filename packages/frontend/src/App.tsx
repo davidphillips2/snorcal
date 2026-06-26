@@ -540,13 +540,13 @@ export default function App() {
   const [showAddPrinter, setShowAddPrinter] = useState(false);
 
   // Registered printers (for target picker + Send)
-  const [printers, setPrinters] = useState<Array<{ id: string; name: string; model?: string | null; protocol: string; bedVolume?: { x: number; y: number; z: number } | null; cameraSnapshotUrl?: string | null; protocolCamId?: string; manualSlots?: number }>>([]);
+  const [printers, setPrinters] = useState<Array<{ id: string; name: string; model?: string | null; protocol: string; bedVolume?: { x: number; y: number; z: number } | null; cameraSnapshotUrl?: string | null; protocolCamId?: string; manualSlots?: number; manualFilaments?: Array<{ color: string; type: string; brand?: string; remain?: number }> }>>([]);
   const [printerStatuses, setPrinterStatuses] = useState<Record<string, PrinterStatus>>({});
   const [targetPrinterId, setTargetPrinterId] = useState<string | null>(() => localStorage.getItem('snorcal_target_printer'));
   const [bedVolume, setBedVolume] = useState<{ x: number; y: number; z: number } | null>(null);
   useEffect(() => {
     api.listPrinters().then(list => {
-      setPrinters(list.map(p => ({ id: p.id, name: p.name, model: p.model, protocol: p.protocol, bedVolume: p.bedVolume ?? null, cameraSnapshotUrl: p.cameraSnapshotUrl ?? null, manualSlots: p.manualSlots ?? 0 })));
+      setPrinters(list.map(p => ({ id: p.id, name: p.name, model: p.model, protocol: p.protocol, bedVolume: p.bedVolume ?? null, cameraSnapshotUrl: p.cameraSnapshotUrl ?? null, manualSlots: p.manualSlots ?? 0, manualFilaments: p.manualFilaments })));
       // Auto-pick first if none selected
       if (list.length > 0) {
         setTargetPrinterId(cur => {
@@ -797,7 +797,7 @@ export default function App() {
     }
     if (printerListDirty) {
       api.listPrinters().then(list => {
-        setPrinters(list.map(p => ({ id: p.id, name: p.name, model: p.model, protocol: p.protocol, bedVolume: p.bedVolume ?? null, cameraSnapshotUrl: p.cameraSnapshotUrl ?? null, manualSlots: p.manualSlots ?? 0 })));
+        setPrinters(list.map(p => ({ id: p.id, name: p.name, model: p.model, protocol: p.protocol, bedVolume: p.bedVolume ?? null, cameraSnapshotUrl: p.cameraSnapshotUrl ?? null, manualSlots: p.manualSlots ?? 0, manualFilaments: p.manualFilaments })));
       }).catch(() => {});
     }
   }, [sseMsgs]);
@@ -2347,6 +2347,7 @@ export default function App() {
             printerId={targetPrinterId}
             printerProtocol={p.protocol as 'moonraker' | 'bambu'}
             printerManualSlots={p.manualSlots ?? 0}
+            printerManualFilaments={p.manualFilaments}
             printerStatus={printerStatuses[targetPrinterId]}
             onClose={() => setRemapJobId(null)}
             onSent={(printerPath) => {
@@ -2362,7 +2363,7 @@ export default function App() {
           onAdded={() => {
             setShowAddPrinter(false);
             api.listPrinters().then(list => {
-              setPrinters(list.map(p => ({ id: p.id, name: p.name, model: p.model, protocol: p.protocol, bedVolume: p.bedVolume ?? null, cameraSnapshotUrl: p.cameraSnapshotUrl ?? null, manualSlots: p.manualSlots ?? 0 })));
+              setPrinters(list.map(p => ({ id: p.id, name: p.name, model: p.model, protocol: p.protocol, bedVolume: p.bedVolume ?? null, cameraSnapshotUrl: p.cameraSnapshotUrl ?? null, manualSlots: p.manualSlots ?? 0, manualFilaments: p.manualFilaments })));
             }).catch(() => {});
           }}
         />

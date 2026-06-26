@@ -1,5 +1,12 @@
 import type { AmsSlot } from '@snorcal/shared';
 
+export interface ManualFilamentEntry {
+  color: string;
+  type: string;
+  brand?: string;
+  remain?: number;
+}
+
 export interface Slot {
   /** Value to send in filamentMapping array */
   value: number;
@@ -9,6 +16,10 @@ export interface Slot {
   color: string | null;
   /** Filament type if known */
   type: string | null;
+  /** Brand if known */
+  brand: string | null;
+  /** Remaining percent if known */
+  remain: number | null;
   /** Source — live AMS or manual config */
   source: 'ams' | 'manual';
 }
@@ -22,6 +33,7 @@ export function buildSlots(
   protocol: 'moonraker' | 'bambu',
   manualSlots: number,
   ams: AmsSlot[] | undefined,
+  manualFilaments: ManualFilamentEntry[] | undefined = [],
 ): Slot[] {
   if (protocol === 'bambu' && ams && ams.length > 0) {
     return ams.map(s => ({
@@ -29,17 +41,24 @@ export function buildSlots(
       label: `Tray ${s.trayId}`,
       color: s.color ? '#' + s.color.replace(/^#/, '').slice(0, 6) : null,
       type: s.type ?? null,
+      brand: s.brand ?? null,
+      remain: s.remain ?? null,
       source: 'ams' as const,
     }));
   }
   if (manualSlots > 0) {
-    return Array.from({ length: manualSlots }, (_, i) => ({
-      value: i,
-      label: `Slot ${i + 1}`,
-      color: null,
-      type: null,
-      source: 'manual' as const,
-    }));
+    return Array.from({ length: manualSlots }, (_, i) => {
+      const entry = manualFilaments?.[i];
+      return {
+        value: i,
+        label: `Slot ${i + 1}`,
+        color: entry?.color ?? null,
+        type: entry?.type ?? null,
+        brand: entry?.brand ?? null,
+        remain: entry?.remain ?? null,
+        source: 'manual' as const,
+      };
+    });
   }
   return [];
 }

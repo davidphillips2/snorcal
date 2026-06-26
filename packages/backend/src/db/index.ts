@@ -166,6 +166,8 @@ export class Db {
     camera_stream_url?: string | null;
     camera_snapshot_url?: string | null;
     model?: string | null;
+    manual_slots?: number;
+    manual_filaments?: string | null;
   }) {
     const sets: string[] = [];
     const vals: (string | number | null)[] = [];
@@ -177,6 +179,8 @@ export class Db {
     if (fields.camera_stream_url !== undefined) { sets.push('camera_stream_url = ?'); vals.push(fields.camera_stream_url); }
     if (fields.camera_snapshot_url !== undefined) { sets.push('camera_snapshot_url = ?'); vals.push(fields.camera_snapshot_url); }
     if (fields.model !== undefined) { sets.push('model = ?'); vals.push(fields.model); }
+    if (fields.manual_slots !== undefined) { sets.push('manual_slots = ?'); vals.push(fields.manual_slots); }
+    if (fields.manual_filaments !== undefined) { sets.push('manual_filaments = ?'); vals.push(fields.manual_filaments); }
     if (sets.length === 0) return;
     vals.push(id);
     this.db.prepare(`UPDATE printers SET ${sets.join(', ')} WHERE id = ?`).run(...vals);

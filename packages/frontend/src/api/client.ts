@@ -273,6 +273,7 @@ export async function listPrinters() {
     bedVolume?: { x: number; y: number; z: number } | null;
     cameraStreamUrl?: string | null; cameraSnapshotUrl?: string | null;
     manualSlots?: number;
+    manualFilaments?: Array<{ color: string; type: string; brand?: string; remain?: number }>;
   }>>;
 }
 
@@ -291,6 +292,8 @@ export async function updatePrinter(id: string, patch: {
   cameraStreamUrl?: string | null;
   cameraSnapshotUrl?: string | null;
   model?: string | null;
+  manualSlots?: number;
+  manualFilaments?: Array<{ color: string; type: string; brand?: string; remain?: number }>;
 }) {
   // Snake-case keys for backend PATCH body
   const body: Record<string, unknown> = {};
@@ -302,6 +305,8 @@ export async function updatePrinter(id: string, patch: {
   if (patch.cameraStreamUrl !== undefined) body.camera_stream_url = patch.cameraStreamUrl;
   if (patch.cameraSnapshotUrl !== undefined) body.camera_snapshot_url = patch.cameraSnapshotUrl;
   if (patch.model !== undefined) body.model = patch.model;
+  if (patch.manualSlots !== undefined) body.manual_slots = patch.manualSlots;
+  if (patch.manualFilaments !== undefined) body.manual_filaments = JSON.stringify(patch.manualFilaments);
   return apiFetch(`/printers/${id}`, {
     method: 'PATCH', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),

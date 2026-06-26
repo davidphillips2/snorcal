@@ -22,6 +22,7 @@ export interface PrinterRecord {
   cameraSnapshotUrl?: string | null;
   model?: string | null;
   manualSlots?: number;
+  manualFilaments?: Array<{ color: string; type: string; brand?: string; remain?: number }>;
   bedVolume?: { x: number; y: number; z: number } | null;
   status?: PrinterStatus | null;
   lastStatus?: string | null;

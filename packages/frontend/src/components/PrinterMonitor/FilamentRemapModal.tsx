@@ -10,13 +10,14 @@ interface Props {
   printerId: string;
   printerProtocol: 'moonraker' | 'bambu';
   printerManualSlots: number;
+  printerManualFilaments?: Array<{ color: string; type: string; brand?: string; remain?: number }>;
   printerStatus: PrinterStatus | undefined;
   onClose: () => void;
   onSent: (printerPath: string) => void;
 }
 
 export function FilamentRemapModal({
-  jobId, printerId, printerProtocol, printerManualSlots, printerStatus, onClose, onSent,
+  jobId, printerId, printerProtocol, printerManualSlots, printerManualFilaments, printerStatus, onClose, onSent,
 }: Props) {
   const [filaments, setFilaments] = useState<JobFilament[]>([]);
   const [loading, setLoading] = useState(true);
@@ -38,7 +39,7 @@ export function FilamentRemapModal({
         setFilaments(shown);
 
         // Initial pre-pick by color match against slot list
-        const slots = buildSlots(printerProtocol, printerManualSlots, printerStatus?.ams);
+        const slots = buildSlots(printerProtocol, printerManualSlots, printerStatus?.ams, printerManualFilaments);
         const initial = shown.map(gcodeFil => {
           const gcodeColor = hexNormalize(gcodeFil.color);
           if (!gcodeColor) return 0;
@@ -50,11 +51,11 @@ export function FilamentRemapModal({
       .catch(e => !cancelled && setError(e instanceof Error ? e.message : String(e)))
       .finally(() => !cancelled && setLoading(false));
     return () => { cancelled = true; };
-  }, [jobId, printerProtocol, printerManualSlots, printerStatus]);
+  }, [jobId, printerProtocol, printerManualSlots, printerManualFilaments, printerStatus]);
 
   const slots = useMemo(
-    () => buildSlots(printerProtocol, printerManualSlots, printerStatus?.ams),
-    [printerProtocol, printerManualSlots, printerStatus],
+    () => buildSlots(printerProtocol, printerManualSlots, printerStatus?.ams, printerManualFilaments),
+    [printerProtocol, printerManualSlots, printerManualFilaments, printerStatus],
   );
 
   const submit = async () => {

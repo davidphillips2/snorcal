@@ -1,6 +1,6 @@
 import type Database from 'better-sqlite3';
 import fs from 'fs';
-import { parseSTL } from '../services/model-parser';
+import { parseSTL } from '../services/model-parser.js';
 
 export const MIGRATIONS = [
   `CREATE TABLE IF NOT EXISTS models (
@@ -179,6 +179,11 @@ export function runSchemaMigrations(db: Database.Database) {
     const cols = db.prepare("PRAGMA table_info(printers)").all() as { name: string }[];
     if (!cols.some(c => c.name === 'manual_slots')) {
       db.exec("ALTER TABLE printers ADD COLUMN manual_slots INTEGER DEFAULT 0");
+    }
+    // Per-slot filament metadata for non-AMS printers (color/type/brand/remain).
+    // JSON array of { color, type, brand, remain } entries, indexed by slot.
+    if (!cols.some(c => c.name === 'manual_filaments')) {
+      db.exec("ALTER TABLE printers ADD COLUMN manual_filaments TEXT DEFAULT NULL");
     }
   } catch {
     // Migration not needed or already applied

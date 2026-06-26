@@ -25,8 +25,8 @@ export function UploadFileSection({ printer, printerStatus }: Props) {
 
   const protocol = (printer.protocol === 'bambu' ? 'bambu' : 'moonraker') as 'bambu' | 'moonraker';
   const slots = useMemo(
-    () => buildSlots(protocol, printer.manualSlots ?? 0, printerStatus?.ams),
-    [protocol, printer.manualSlots, printerStatus],
+    () => buildSlots(protocol, printer.manualSlots ?? 0, printerStatus?.ams, printer.manualFilaments),
+    [protocol, printer.manualSlots, printer.manualFilaments, printerStatus],
   );
 
   const reset = () => {
