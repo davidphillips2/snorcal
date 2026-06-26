@@ -16,6 +16,16 @@ export interface SliceCommand {
   plateIndex?: number;
   workDir: string;
   dataDir?: string;
+  /**
+   * Optional profile files for bambuddy sidecar sync `/slice` endpoint.
+   * When provided, sync route is used (supports multi-filament). When
+   * absent, async `/slice-async` is used (single-filament only).
+   */
+  profileFiles?: {
+    printer?: Buffer;
+    preset?: Buffer;
+    filaments?: Buffer[];
+  };
 }
 
 export interface SliceResult {
@@ -84,7 +94,6 @@ export class SlicerExecutor {
 
     const fileBytes = await fs.promises.readFile(cmd.input3mf);
     const filename = path.basename(cmd.input3mf);
-    console.log(`[SlicerExecutor] sidecar POST ${baseUrl}/slice-async file=${filename} (${fileBytes.length} bytes) plate=${cmd.plateIndex}`);
     // Sidecar validates MIME type against an allowlist (model/3mf, model/stl,
     // model/step). Default Blob has empty type → rejected with HTTP 400.
     const ext = path.extname(filename).toLowerCase();
@@ -94,24 +103,62 @@ export class SlicerExecutor {
       ext === '.step' || ext === '.stp' ? 'model/step' :
       'application/octet-stream';
 
+    const plate = cmd.plateIndex !== undefined
+      ? (cmd.plateIndex > 0 ? cmd.plateIndex : 1)
+      : 1;
+
+    // Sync /slice supports up to 16 filamentProfile files — required for
+    // multi-filament (async /slice-async caps at 1). When profiles are
+    // attached, switch to sync; otherwise stay on async.
+    const profiles = cmd.profileFiles;
+    const useSync = !!(profiles && (profiles.printer || profiles.preset || (profiles.filaments && profiles.filaments.length > 0)));
+    console.log(`[SlicerExecutor] sidecar POST ${baseUrl}${useSync ? '/slice' : '/slice-async'} file=${filename} (${fileBytes.length} bytes) plate=${plate} profiles=${useSync ? 'sync' : 'none'} filaments=${profiles?.filaments?.length ?? 0}`);
+
     const form = new FormData();
     form.append('file', new Blob([fileBytes], { type: mime }), filename);
     form.append('arrange', '0');
     form.append('orient', '0');
     form.append('exportType', 'gcode');
-    if (cmd.plateIndex !== undefined) {
-      // Snorcal rebuilds a single-plate 3MF where the actual plate is index 1.
-      // Bambuddy sidecar passes `plate` straight to `--slice <N>`. OrcaSlicer
-      // treats `--slice 0` as "all plates" but the sidecar's slice loop expects
-      // a specific plate index, so 0 fails with generic "Failed to slice the
-      // model". Force 1.
-      const plate = cmd.plateIndex > 0 ? cmd.plateIndex : 1;
-      form.append('plate', String(plate));
+    form.append('plate', String(plate));
+    if (profiles?.printer) {
+      form.append('printerProfile', new Blob([profiles.printer], { type: 'application/json' }), 'printer.json');
+    }
+    if (profiles?.preset) {
+      form.append('presetProfile', new Blob([profiles.preset], { type: 'application/json' }), 'preset.json');
+    }
+    if (profiles?.filaments) {
+      profiles.filaments.forEach((buf, i) => {
+        form.append('filamentProfile', new Blob([buf], { type: 'application/json' }), `filament_${i + 1}.json`);
+      });
     }
 
     onProgress?.(2, 'Submitting to sidecar…');
 
-    // Submit
+    if (useSync) {
+      // Sync path: single POST holds connection until slice completes.
+      // Response body is gcode binary (or zip for multi-plate).
+      const sliceRes = await fetch(`${baseUrl}/slice`, { method: 'POST', body: form });
+      if (!resOk(sliceRes)) {
+        const errText = await safeText(sliceRes);
+        return { gcodePath: '', gcodeSize: 0, exitCode: 1, stdout: '', stderr: `Sidecar sync slice failed: HTTP ${sliceRes.status} ${errText}` };
+      }
+      onProgress?.(95, 'Downloading gcode…');
+      fs.mkdirSync(cmd.outputDir, { recursive: true });
+      const contentType = sliceRes.headers.get('content-type') ?? '';
+      let gcodePath: string;
+      const buf = Buffer.from(await sliceRes.arrayBuffer());
+      if (contentType.includes('zip')) {
+        gcodePath = await extractFirstGcodeFromZip(buf, cmd.outputDir);
+      } else {
+        gcodePath = path.join(cmd.outputDir, 'output.gcode');
+        await fs.promises.writeFile(gcodePath, buf);
+      }
+      const gcodeSize = fs.statSync(gcodePath).size;
+      onProgress?.(100, 'Done');
+      return { gcodePath, gcodeSize, exitCode: 0, stdout: '', stderr: '' };
+    }
+
+    // Async path (single-filament / no profiles): submit + poll + download.
     const submitRes = await fetch(`${baseUrl}/slice-async`, { method: 'POST', body: form });
     if (!resOk(submitRes)) {
       const errText = await safeText(submitRes);
@@ -156,8 +203,6 @@ export class SlicerExecutor {
     }
 
     if (this.cancelled) {
-      // Best-effort cancel on sidecar (no documented cancel endpoint; DELETE
-      // is for finished jobs only per bambuddy source — so we just abandon).
       this.sidecarJobId = null;
       return { gcodePath: '', gcodeSize: 0, exitCode: -1, stdout: '', stderr: 'Job cancelled' };
     }
@@ -179,8 +224,6 @@ export class SlicerExecutor {
     let gcodeSize: number;
 
     if (contentType.includes('zip') || filename.endsWith('.zip')) {
-      // Multi-plate return — extract first gcode. Snorcal builds single-plate
-      // 3MF so this branch shouldn't normally hit; handle defensively.
       const buf = Buffer.from(await resultRes.arrayBuffer());
       gcodePath = await extractFirstGcodeFromZip(buf, cmd.outputDir);
     } else {

@@ -790,6 +790,38 @@ export async function runSliceJob(
 
       db.updateJobProgress(jobId, 15, 'Spawning slicer...');
       onProgress?.(15, 'Spawning slicer...');
+      // Build profile buffers for bambuddy sidecar sync /slice endpoint.
+      // Multi-filament requires the sync route (async caps at 1 filament file).
+      // Read raw profile JSON from DB; the merged settings are already in the
+      // 3MF's project_settings.config, but bambuddy needs the standalone profile
+      // files to construct the multi-extruder printer/preset/filament baseline
+      // before applying 3MF overrides.
+      const profileFiles: { printer?: Buffer; preset?: Buffer; filaments?: Buffer[] } = {};
+      if (body.profiles) {
+        const machineName = body.profiles.machine;
+        const processName = body.profiles.process;
+        if (machineName) {
+          const p = db.getProfile(body.engine, 'machine', machineName);
+          if (p) profileFiles.printer = Buffer.from(p.settings, 'utf-8');
+        }
+        if (processName) {
+          const p = db.getProfile(body.engine, 'process', processName);
+          if (p) profileFiles.preset = Buffer.from(p.settings, 'utf-8');
+        }
+        const filamentBufs: Buffer[] = [];
+        if (body.filamentSlots && body.filamentSlots.length > 0) {
+          for (const slot of body.filamentSlots) {
+            if (!slot.profile) continue;
+            const p = db.getProfile(body.engine, 'filament', slot.profile);
+            if (p) filamentBufs.push(Buffer.from(p.settings, 'utf-8'));
+          }
+        } else if (body.profiles.filament) {
+          const p = db.getProfile(body.engine, 'filament', body.profiles.filament);
+          if (p) filamentBufs.push(Buffer.from(p.settings, 'utf-8'));
+        }
+        if (filamentBufs.length > 0) profileFiles.filaments = filamentBufs;
+      }
+
       const result = await executor.execute(
         {
           engine: body.engine,
@@ -801,6 +833,7 @@ export async function runSliceJob(
           plateIndex: 0,
           workDir,
           dataDir: process.env.SLICER_DATADIR || getDefaultDataDir(body.engine),
+          profileFiles: Object.keys(profileFiles).length > 0 ? profileFiles : undefined,
         },
         (progress: number, step: string) => {
           const mapped = Math.max(15, Math.min(95, progress));
