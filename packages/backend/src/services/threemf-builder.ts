@@ -534,6 +534,13 @@ function buildModelSettings(objects: ObjectDef[], wrapperId: number): string {
   // subtypes — flat per-object entries (one <object> per part) confuse the
   // boolean cut step and the slicer ends up treating the parent mesh as
   // floating / unsliceable.
+  //
+  // Plate element: REQUIRED. Bambuddy comment (library.py:3254) confirms
+  // "model_settings.config carries the plate definitions the CLI needs to
+  // map `--slice N` to a real plate". Without it, BambuStudio/OrcaSlicer
+  // sidecar segfaults when --slice N has no plate to resolve against.
+  // Single-color slices skip model_settings.config entirely so they don't
+  // hit this; multi-color (which forces emission) does.
   let xml = `<?xml version="1.0" encoding="UTF-8"?>
 <config>
   <object id="${wrapperId}">`;
@@ -565,6 +572,13 @@ function buildModelSettings(objects: ObjectDef[], wrapperId: number): string {
   }
   xml += `
   </object>
+  <plate>
+    <metadata key="plater_id" value="1"/>
+    <metadata key="name" value=""/>
+    <model_instance>
+      <metadata key="object_id" value="${wrapperId}"/>
+    </model_instance>
+  </plate>
 </config>`;
   return xml;
 }
