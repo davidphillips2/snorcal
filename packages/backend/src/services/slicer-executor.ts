@@ -62,7 +62,6 @@ export function getSidecarUrl(engine: string): string | null {
 
 export class SlicerExecutor {
   private child: ChildProcess | null = null;
-  private sidecarJobId: string | null = null;
   private sidecarUrl: string | null = null;
   private cancelled = false;
 
@@ -73,17 +72,16 @@ export class SlicerExecutor {
   }
 
   /**
-   * Drive a bambuddy-compatible /slice-async sidecar.
+   * Drive a bambuddy-compatible sync /slice sidecar.
    *
-   * Protocol (from github.com/AFKFelix/orca-slicer-api, used by maziggy/bambuddy):
-   *   POST  /slice-async        multipart: file + form fields → 202 {requestId}
-   *   GET   /slice-async/:id    → {status: pending|processing|completed|failed, metadata?, downloadUrl?}
-   *   GET   /slice-async/:id/result  → binary gcode (or zip of gcodes)
-   *   DELETE /slice-async/:id   → free sidecar memory
-   *
-   * Snorcal sends only the embedded 3MF as `file` — no printer/preset/filament
-   * profile uploads. The 3MF already contains Metadata/project_settings.config
-   * which the slicer reads natively, so no --load-settings is needed.
+   * Mirrors `slice_without_profiles` in
+   * bambuddy/backend/app/services/slicer_api.py: single multipart POST with
+   * the embedded 3MF as `file`, connection held until the slicer exits, body
+   * is gcode (or zip for multi-plate). The 3MF carries
+   * Metadata/project_settings.config with every override snorcal needs
+   * (padded nozzle_diameter / extruder_colour / extruder_offset /
+   * printer_model rewrite for multi-color), so no printer/preset/filament
+   * profile uploads are needed.
    */
   private async executeHttp(cmd: SliceCommand, baseUrl: string, onProgress?: ProgressCallback): Promise<SliceResult> {
     this.sidecarUrl = baseUrl;
@@ -107,12 +105,12 @@ export class SlicerExecutor {
       ? (cmd.plateIndex > 0 ? cmd.plateIndex : 1)
       : 1;
 
-    // Sync /slice supports up to 16 filamentProfile files — required for
-    // multi-filament (async /slice-async caps at 1). When profiles are
-    // attached, switch to sync; otherwise stay on async.
-    const profiles = cmd.profileFiles;
-    const useSync = !!(profiles && (profiles.printer || profiles.preset || (profiles.filaments && profiles.filaments.length > 0)));
-    console.log(`[SlicerExecutor] sidecar POST ${baseUrl}${useSync ? '/slice' : '/slice-async'} file=${filename} (${fileBytes.length} bytes) plate=${plate} profiles=${useSync ? 'sync' : 'none'} filaments=${profiles?.filaments?.length ?? 0}`);
+    // Sync /slice — mirrors bambuddy's slice_without_profiles path exactly.
+    // Single POST, connection held until slicer exits, body is gcode (or zip
+    // for multi-plate). Async /slice-async was the previous path; switched
+    // to sync to match bambuddy's working flow 1:1 (see slicer-api Python
+    // client `slice_without_profiles` in bambuddy/backend/app/services/).
+    console.log(`[SlicerExecutor] sidecar POST ${baseUrl}/slice file=${filename} (${fileBytes.length} bytes) plate=${plate}`);
 
     const form = new FormData();
     form.append('file', new Blob([fileBytes], { type: mime }), filename);
@@ -120,125 +118,36 @@ export class SlicerExecutor {
     form.append('orient', '0');
     form.append('exportType', 'gcode');
     form.append('plate', String(plate));
-    if (profiles?.printer) {
-      form.append('printerProfile', new Blob([profiles.printer], { type: 'application/json' }), 'printer.json');
-    }
-    if (profiles?.preset) {
-      form.append('presetProfile', new Blob([profiles.preset], { type: 'application/json' }), 'preset.json');
-    }
-    if (profiles?.filaments) {
-      profiles.filaments.forEach((buf, i) => {
-        form.append('filamentProfile', new Blob([buf], { type: 'application/json' }), `filament_${i + 1}.json`);
-      });
-    }
 
     onProgress?.(2, 'Submitting to sidecar…');
 
-    if (useSync) {
-      // Sync path: single POST holds connection until slice completes.
-      // Response body is gcode binary (or zip for multi-plate).
-      const sliceRes = await fetch(`${baseUrl}/slice`, { method: 'POST', body: form });
-      if (!resOk(sliceRes)) {
-        const errText = await safeText(sliceRes);
-        return { gcodePath: '', gcodeSize: 0, exitCode: 1, stdout: '', stderr: `Sidecar sync slice failed: HTTP ${sliceRes.status} ${errText}` };
-      }
-      onProgress?.(95, 'Downloading gcode…');
-      fs.mkdirSync(cmd.outputDir, { recursive: true });
-      const contentType = sliceRes.headers.get('content-type') ?? '';
-      let gcodePath: string;
-      const buf = Buffer.from(await sliceRes.arrayBuffer());
-      if (contentType.includes('zip')) {
-        gcodePath = await extractFirstGcodeFromZip(buf, cmd.outputDir);
-      } else {
-        gcodePath = path.join(cmd.outputDir, 'output.gcode');
-        await fs.promises.writeFile(gcodePath, buf);
-      }
-      const gcodeSize = fs.statSync(gcodePath).size;
-      onProgress?.(100, 'Done');
-      return { gcodePath, gcodeSize, exitCode: 0, stdout: '', stderr: '' };
+    const sliceRes = await fetch(`${baseUrl}/slice`, { method: 'POST', body: form });
+    if (!resOk(sliceRes)) {
+      const errText = await safeText(sliceRes);
+      return { gcodePath: '', gcodeSize: 0, exitCode: 1, stdout: '', stderr: `Sidecar sync slice failed: HTTP ${sliceRes.status} ${errText}` };
     }
-
-    // Async path (single-filament / no profiles): submit + poll + download.
-    const submitRes = await fetch(`${baseUrl}/slice-async`, { method: 'POST', body: form });
-    if (!resOk(submitRes)) {
-      const errText = await safeText(submitRes);
-      return { gcodePath: '', gcodeSize: 0, exitCode: 1, stdout: '', stderr: `Sidecar submit failed: HTTP ${submitRes.status} ${errText}` };
-    }
-    const submitJson = await submitRes.json() as { requestId?: string };
-    console.log(`[SlicerExecutor] sidecar submit response HTTP ${submitRes.status}:`, JSON.stringify(submitJson));
-    if (!submitJson.requestId) {
-      return { gcodePath: '', gcodeSize: 0, exitCode: 1, stdout: '', stderr: 'Sidecar returned no requestId' };
-    }
-    this.sidecarJobId = submitJson.requestId;
-
-    // Poll
-    onProgress?.(5, 'Queued');
-    let metadata: { printTime?: number; filamentUsedG?: number; filamentUsedMm?: number } | undefined;
-    let pollErr: string | null = null;
-    while (!this.cancelled) {
-      await sleep(1500);
-      if (this.cancelled) break;
-      const statusRes = await fetch(`${baseUrl}/slice-async/${this.sidecarJobId}`);
-      if (!resOk(statusRes)) {
-        pollErr = `Status poll failed: HTTP ${statusRes.status}`;
-        break;
-      }
-      const statusJson = await statusRes.json() as {
-        status: 'pending' | 'processing' | 'completed' | 'failed';
-        message?: string;
-        metadata?: typeof metadata;
-      };
-      if (statusJson.status === 'pending') {
-        onProgress?.(5, 'Queued');
-      } else if (statusJson.status === 'processing') {
-        onProgress?.(50, 'Slicing…');
-      } else if (statusJson.status === 'failed') {
-        pollErr = statusJson.message ?? 'Slicing failed on sidecar';
-        console.warn(`[SlicerExecutor] sidecar job ${this.sidecarJobId} FAILED: ${pollErr}`);
-        break;
-      } else if (statusJson.status === 'completed') {
-        metadata = statusJson.metadata;
-        break;
-      }
-    }
-
-    if (this.cancelled) {
-      this.sidecarJobId = null;
-      return { gcodePath: '', gcodeSize: 0, exitCode: -1, stdout: '', stderr: 'Job cancelled' };
-    }
-    if (pollErr) {
-      return { gcodePath: '', gcodeSize: 0, exitCode: 1, stdout: '', stderr: pollErr };
-    }
-
-    // Download result
     onProgress?.(95, 'Downloading gcode…');
     fs.mkdirSync(cmd.outputDir, { recursive: true });
-    const resultRes = await fetch(`${baseUrl}/slice-async/${this.sidecarJobId}/result`);
-    if (!resOk(resultRes)) {
-      const errText = await safeText(resultRes);
-      return { gcodePath: '', gcodeSize: 0, exitCode: 1, stdout: '', stderr: `Download failed: HTTP ${resultRes.status} ${errText}` };
-    }
-
-    const contentType = resultRes.headers.get('content-type') ?? '';
+    const contentType = sliceRes.headers.get('content-type') ?? '';
+    const buf = Buffer.from(await sliceRes.arrayBuffer());
     let gcodePath: string;
-    let gcodeSize: number;
-
-    if (contentType.includes('zip') || filename.endsWith('.zip')) {
-      const buf = Buffer.from(await resultRes.arrayBuffer());
+    if (contentType.includes('zip')) {
       gcodePath = await extractFirstGcodeFromZip(buf, cmd.outputDir);
     } else {
-      const buf = Buffer.from(await resultRes.arrayBuffer());
       gcodePath = path.join(cmd.outputDir, 'output.gcode');
       await fs.promises.writeFile(gcodePath, buf);
     }
-    gcodeSize = fs.statSync(gcodePath).size;
-
-    // Best-effort cleanup
-    fetch(`${baseUrl}/slice-async/${this.sidecarJobId}`, { method: 'DELETE' }).catch(() => {});
-    this.sidecarJobId = null;
-
+    const gcodeSize = fs.statSync(gcodePath).size;
     onProgress?.(100, 'Done');
-    const metaLine = metadata ? `\n; sidecar metadata: printTime=${metadata.printTime ?? '?'}s filamentG=${metadata.filamentUsedG ?? '?'} filamentMm=${metadata.filamentUsedMm ?? '?'}` : '';
+
+    // Best-effort metadata from response headers (bambuddy sidecar emits
+    // X-Print-Time-Seconds / X-Filament-Used-G / X-Filament-Used-Mm).
+    const printTime = sliceRes.headers.get('x-print-time-seconds');
+    const filamentG = sliceRes.headers.get('x-filament-used-g');
+    const metaLine = (printTime || filamentG)
+      ? `\n; sidecar metadata: printTime=${printTime ?? '?'}s filamentG=${filamentG ?? '?'}`
+      : '';
+
     return {
       gcodePath,
       gcodeSize,
@@ -376,11 +285,10 @@ export class SlicerExecutor {
   }
 
   cancel() {
-    // HTTP/sidecar mode: set cancelled flag so the poll loop exits. Bambuddy's
-    // DELETE /slice-async/:id only works on finished jobs (per source), so
-    // running slices keep running on the sidecar until they finish — we just
-    // abandon them and ignore the result.
-    if (this.sidecarJobId || this.sidecarUrl) {
+    // HTTP/sidecar mode: sync fetch has no abort signal wired here — set the
+    // flag so any later code can detect cancellation, but the in-flight slice
+    // keeps running on the sidecar until it finishes. We just abandon it.
+    if (this.sidecarUrl) {
       this.cancelled = true;
       return;
     }
@@ -441,10 +349,6 @@ export class SlicerExecutor {
 }
 
 // --- sidecar HTTP helpers ---
-
-function sleep(ms: number): Promise<void> {
-  return new Promise(r => setTimeout(r, ms));
-}
 
 function resOk(res: Response): boolean {
   return res.status >= 200 && res.status < 300;
