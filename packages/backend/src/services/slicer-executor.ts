@@ -84,6 +84,7 @@ export class SlicerExecutor {
 
     const fileBytes = await fs.promises.readFile(cmd.input3mf);
     const filename = path.basename(cmd.input3mf);
+    console.log(`[SlicerExecutor] sidecar POST ${baseUrl}/slice-async file=${filename} (${fileBytes.length} bytes) plate=${cmd.plateIndex}`);
     // Sidecar validates MIME type against an allowlist (model/3mf, model/stl,
     // model/step). Default Blob has empty type → rejected with HTTP 400.
     const ext = path.extname(filename).toLowerCase();
@@ -111,6 +112,7 @@ export class SlicerExecutor {
       return { gcodePath: '', gcodeSize: 0, exitCode: 1, stdout: '', stderr: `Sidecar submit failed: HTTP ${submitRes.status} ${errText}` };
     }
     const submitJson = await submitRes.json() as { requestId?: string };
+    console.log(`[SlicerExecutor] sidecar submit response HTTP ${submitRes.status}:`, JSON.stringify(submitJson));
     if (!submitJson.requestId) {
       return { gcodePath: '', gcodeSize: 0, exitCode: 1, stdout: '', stderr: 'Sidecar returned no requestId' };
     }
@@ -139,6 +141,7 @@ export class SlicerExecutor {
         onProgress?.(50, 'Slicing…');
       } else if (statusJson.status === 'failed') {
         pollErr = statusJson.message ?? 'Slicing failed on sidecar';
+        console.warn(`[SlicerExecutor] sidecar job ${this.sidecarJobId} FAILED: ${pollErr}`);
         break;
       } else if (statusJson.status === 'completed') {
         metadata = statusJson.metadata;
