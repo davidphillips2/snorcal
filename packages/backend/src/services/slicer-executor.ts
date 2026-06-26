@@ -100,7 +100,13 @@ export class SlicerExecutor {
     form.append('orient', '0');
     form.append('exportType', 'gcode');
     if (cmd.plateIndex !== undefined) {
-      form.append('plate', String(cmd.plateIndex));
+      // Snorcal rebuilds a single-plate 3MF where the actual plate is index 1.
+      // Bambuddy sidecar passes `plate` straight to `--slice <N>`. OrcaSlicer
+      // treats `--slice 0` as "all plates" but the sidecar's slice loop expects
+      // a specific plate index, so 0 fails with generic "Failed to slice the
+      // model". Force 1.
+      const plate = cmd.plateIndex > 0 ? cmd.plateIndex : 1;
+      form.append('plate', String(plate));
     }
 
     onProgress?.(2, 'Submitting to sidecar…');
