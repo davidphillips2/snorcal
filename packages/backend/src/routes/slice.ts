@@ -560,11 +560,16 @@ export async function runSliceJob(
 
       // Re-apply multi-material overrides AFTER user settings (user may send enable_prime_tower=0)
       if (body.filamentSlots && body.filamentSlots.length > 1) {
-        // Detect machine extruder count for padding
+        // Detect machine extruder count for padding. Bundled Snapmaker U1
+        // resolves through fdm_U1 → fdm_toolchanger_common which carries
+        // 5-element arrays; padding to 4 (the variant's own extruder_colour
+        // length) under-sizes against the merged machine and the slicer
+        // segfaults in update_values_to_printer_extruders trying to look
+        // up extruder_index 5 (1-based) on a 4-element override.
         const nozzleArr = projectSettings['nozzle_diameter'] as any[] | undefined;
         const pModel = projectSettings['printer_model'] as string | undefined;
         let mExtCount = nozzleArr?.length ?? 1;
-        if (pModel?.includes('U1')) mExtCount = 4;
+        if (pModel?.includes('U1')) mExtCount = 5;
         const tc = Math.max(body.filamentSlots.length, mExtCount);
 
         projectSettings['single_extruder_multi_material'] = '1';
