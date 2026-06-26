@@ -53,8 +53,10 @@ function expandFilamentSlots(
   const existingNozzle = projectSettings['nozzle_diameter'] as any[] | undefined;
   const printerModel = projectSettings['printer_model'] as string | undefined;
   let machineExtruderCount = existingNozzle?.length ?? 1;
-  // Snapmaker U1 always has 4 toolheads regardless of profile loading
-  if (printerModel?.includes('U1')) machineExtruderCount = 4;
+  // Snapmaker U1 bundled chain (fdm_U1 → fdm_toolchanger_common) carries
+  // 5-element arrays; mismatched padding against the merged machine causes
+  // segfault in update_values_to_printer_extruders.
+  if (printerModel?.includes('U1')) machineExtruderCount = 5;
   const targetCount = Math.max(n, machineExtruderCount);
 
   // Set filament_colour/type from slots, pad to targetCount
@@ -577,18 +579,35 @@ export async function buildSliceInput3MF(
       ? nozzleArr.map(String)
       : ['0.4'];
     projectSettings['nozzle_diameter'] = Array.from({ length: tc }, (_, i) => ndSrc[i] ?? ndSrc[0]);
+    // Re-pad extruder_type / nozzle_volume_type to tc. expandFilamentSlots
+    // ran BEFORE the Bambu → Snapmaker rename above with a possibly smaller
+    // targetCount, leaving these arrays shorter than nozzle_diameter. Slicer
+    // iterates nozzle_diameter length and looks up matching extruder_type
+    // per index — any mismatch segfaults update_values_to_printer_extruders.
+    for (const key of ['extruder_type', 'nozzle_volume_type']) {
+      const cur = projectSettings[key];
+      const srcArr = Array.isArray(cur) && cur.length > 0
+        ? cur.map(String)
+        : key === 'extruder_type' ? ['Direct Drive'] : ['Standard'];
+      projectSettings[key] = Array.from({ length: tc }, (_, i) => srcArr[i] ?? srcArr[0]);
+    }
     // Override Bambu printer_model to bypass slicer's is_bbl_vendor_preset
     // dispatch. When slicer sees "Bambu Lab X" vendor, it forces AMS-mode
     // output (M624/M625 markers + "Auto For Flush" filament map) which
     // IGNORES per-triangle paint_color and emits identical payload in every
-    // M624 → effectively single-color. Renaming to a generic multi-extruder
-    // model makes the slicer use its standard multi-extruder pipeline that
-    // honors paint_color and emits per-filament T<n> tool changes that the
-    // in-browser gcode-preview library can render. The gcode still works
-    // on real Bambu AMS hardware (firmware translates T<n> to AMS swaps).
+    // M624 → effectively single-color. The previous rename target
+    // ("Generic Multi-Extruder") doesn't exist as a bundled OrcaSlicer
+    // preset — slicer fails to load any machine profile, falls back to
+    // its internal multi-extruder default (6 slots), and segfaults when
+    // our 2-element overrides can't satisfy index 2..5 lookups in
+    // update_values_to_printer_extruders. Use a real bundled preset
+    // whose extruder count matches filamentSlots.length:
+    //   2 slots → Snapmaker J1 (IDEX dual, fdm_idex chain)
+    //   3-4 slots → Snapmaker U1 (4-toolhead toolchanger)
+    //   5+ slots → Snapmaker U1 (fdm_toolchanger_common chain, 5)
     const currentModel = projectSettings['printer_model'];
     if (typeof currentModel === 'string' && currentModel.toLowerCase().startsWith('bambu lab')) {
-      projectSettings['printer_model'] = 'Generic Multi-Extruder';
+      projectSettings['printer_model'] = body.filamentSlots.length <= 2 ? 'Snapmaker J1' : 'Snapmaker U1';
     }
   }
 
