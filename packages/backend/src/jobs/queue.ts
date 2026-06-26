@@ -20,7 +20,11 @@ export function isQueueAvailable(): boolean {
 }
 
 export function setupQueue(db: Db): { queue: Queue; worker: Worker } | null {
-  const redisHost = process.env.REDIS_HOST || 'localhost';
+  const redisHost = process.env.REDIS_HOST?.trim();
+  if (!redisHost) {
+    console.warn('[Queue] REDIS_HOST unset — skipping Redis (direct slice mode).');
+    return null;
+  }
   const redisPort = parseInt(process.env.REDIS_PORT || '6379');
 
   // Test Redis connection first with a short timeout. ioredis auto-connects
