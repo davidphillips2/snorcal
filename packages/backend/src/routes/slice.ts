@@ -766,6 +766,21 @@ export async function buildSliceInput3MF(
     });
   }
 
+  // Strip "-1" sentinel values from projectSettings before embedding. The
+  // slicer CLI's StaticPrintConfig range validator rejects "-1" with
+  // "<field>: -1 not in range [...]" → "input preset file is invalid" on
+  // Bambu. Mirrors bambuddy's _sanitize_project_settings_sentinels
+  // (library.py:3062-3112) + _PROJECT_SETTINGS_SENTINEL_KEYS allowlist
+  // (library.py:3050-3059) exactly.
+  const SENTINEL_KEYS = new Set([
+    'raft_first_layer_expansion',
+    'tree_support_wall_count',
+    'prime_tower_brim_width',
+  ]);
+  for (const k of SENTINEL_KEYS) {
+    if (projectSettings[k] === '-1' || projectSettings[k] === -1) delete projectSettings[k];
+  }
+
   return build3MF({
     models: buildModels,
     projectSettings,
