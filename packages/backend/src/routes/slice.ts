@@ -610,7 +610,7 @@ export async function buildSliceInput3MF(
   } else {
     const modelRecord = db.getModel(body.modelId!);
     const plateIndex = (body.plateIndex && body.plateIndex > 0) ? body.plateIndex : 1;
-    let stlPath = modelFilePath;
+    let stlPath = modelFilePath || modelRecord?.file_path || '';
     let faceColors: Uint8Array | undefined;
     const plate = db.getPlate(body.modelId!, plateIndex);
     if (plate) {

@@ -1,6 +1,7 @@
 import JSZip from 'jszip';
 import { readSTLPositions, deduplicateVertices } from './model-parser.js';
 import fs from 'node:fs';
+import { randomUUID } from 'node:crypto';
 
 // --- Local helpers ---
 
@@ -209,43 +210,64 @@ export async function build3MF(input: ThreeMFBuildInput): Promise<Buffer> {
     });
   }
 
-  // Build 3MF XML. Wrapper object lists ALL parts (parent + negative/modifier
-  // children) as siblings via <components>. Nesting children inside the
-  // parent's <components> produces a non-spec mesh+components hybrid that
-  // OrcaSlicer silently mishandles.
+  // Build 3MF XML matching Bambu Studio's structure (verified against
+  // /tmp/good-3mf reference, BambuStudio-02.07.01.57 P1S multi-color export):
+  //   - root <model> carries xmlns:BambuStudio + xmlns:p + requiredextensions="p"
+  //   - <metadata> blocks (Application, BambuStudio:3mfVersion, dates)
+  //   - p:UUID on every <object>, <component>, <build>, <item>
+  //   - transform="1 0 0 0 0 1 0 0 0 0 1 0" (identity 4x3) on <component>/<item>
+  //   - printable="1" on <item>
+  // Geometry stays inline (snorcal doesn't emit external /3D/Objects/ files
+  // yet — slicer accepts both patterns per 3MF core spec).
   const topId = nextId;
+  const topUuid = randomUUID();
+  const buildUuid = randomUUID();
+  const itemUuid = randomUUID();
+  const componentUuids = new Map<number, string>();
+  for (const obj of allObjects) componentUuids.set(obj.id, randomUUID());
+
+  const today = new Date().toISOString().slice(0, 10);
+
   let modelXML = `<?xml version="1.0" encoding="UTF-8"?>
-<model unit="millimeter"
-  xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">
+<model unit="millimeter" xml:lang="en-US"
+  xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02"
+  xmlns:BambuStudio="http://schemas.bambulab.com/package/2021"
+  xmlns:p="http://schemas.microsoft.com/3dmanufacturing/production/2015/06"
+  requiredextensions="p">
+  <metadata name="Application">Snorcal-1.0</metadata>
+  <metadata name="BambuStudio:3mfVersion">1</metadata>
+  <metadata name="CreationDate">${today}</metadata>
+  <metadata name="ModificationDate">${today}</metadata>
+  <metadata name="Title"></metadata>
+  <metadata name="Description"></metadata>
+  <metadata name="Designer"></metadata>
+  <metadata name="License"></metadata>
   <resources>`;
 
   for (const obj of allObjects) {
-    modelXML += buildObjectXML(obj);
+    modelXML += buildObjectXML(obj, componentUuids);
   }
 
   // Top-level component object — references every object (parent + children)
-  modelXML += `\n    <object id="${topId}" type="model">
+  modelXML += `\n    <object id="${topId}" p:UUID="${topUuid}" type="model">
       <components>`;
   for (const obj of allObjects) {
-    modelXML += `\n        <component objectid="${obj.id}"/>`;
+    modelXML += `\n        <component objectid="${obj.id}" p:UUID="${componentUuids.get(obj.id)}" transform="1 0 0 0 0 1 0 0 0 0 1 0"/>`;
   }
   modelXML += `\n      </components>
     </object>
   </resources>
-  <build>
-    <item objectid="${topId}"/>
+  <build p:UUID="${buildUuid}">
+    <item objectid="${topId}" p:UUID="${itemUuid}" transform="1 0 0 0 0 1 0 0 0 0 1 0" printable="1"/>
   </build>
 </model>`;
 
-  // Build model_settings.config with per-object extruder assignments.
-  // Note: emit ONLY for multi-object or per-extruder split cases. Single
-  // painted model relies on per-triangle paint_color alone — adding
-  // model_settings.config with extruder=N there causes OrcaSlicer to pin
-  // the whole object and ignore paint_color (regression observed 2026-06-25).
-  let modelSettingsXML = '';
-  if (allObjects.some(o => o.extruder > 1) || allObjects.length > 1) {
-    modelSettingsXML = buildModelSettings(allObjects, topId);
-  }
+  // Always emit model_settings.config (bambuddy parity — Bambu Studio always
+  // emits it). Previous conditional emission skipped single-painted-model
+  // case; regression noted 2026-06-25 was for extruder=N>1, not for presence
+  // of the file itself. Part extruder stays at 1 (or 0 for non-printable),
+  // paint_color carries multi-color assignment.
+  const modelSettingsXML = buildModelSettings(allObjects, topId);
 
   // Package into ZIP
   const zip = new JSZip();
@@ -501,10 +523,11 @@ function kindToPartSubtype(kind: ThreeMFObjectKind): string {
   return 'normal_part';
 }
 
-function buildObjectXML(obj: ObjectDef): string {
+function buildObjectXML(obj: ObjectDef, uuidMap: Map<number, string>): string {
   const vc = obj.vertices.length / 3;
   const fc = obj.indices.length / 3;
-  let xml = `\n    <object id="${obj.id}" type="${kindTo3MFType(obj.kind)}">
+  const uuid = uuidMap.get(obj.id)!;
+  let xml = `\n    <object id="${obj.id}" p:UUID="${uuid}" type="${kindTo3MFType(obj.kind)}">
       <mesh>
         <vertices>`;
   for (let i = 0; i < vc; i++) {
@@ -529,21 +552,21 @@ function buildObjectXML(obj: ObjectDef): string {
 }
 
 function buildModelSettings(objects: ObjectDef[], wrapperId: number): string {
-  // MW/BambuStudio convention: all parts nested under ONE wrapper <object>.
-  // OrcaSlicer keys negative-volume recognition off the wrapper's <part>
-  // subtypes — flat per-object entries (one <object> per part) confuse the
-  // boolean cut step and the slicer ends up treating the parent mesh as
-  // floating / unsliceable.
-  //
-  // Plate element: REQUIRED. Bambuddy comment (library.py:3254) confirms
-  // "model_settings.config carries the plate definitions the CLI needs to
-  // map `--slice N` to a real plate". Without it, BambuStudio/OrcaSlicer
-  // sidecar segfaults when --slice N has no plate to resolve against.
-  // Single-color slices skip model_settings.config entirely so they don't
-  // hit this; multi-color (which forces emission) does.
+  // Bambu Studio reference structure (/tmp/good-3mf, BambuStudio-02.07.01.57):
+  //   <object id=N> wraps all parts + carries object-level name/extruder/face_count
+  //   <part> entries carry matrix (12-value 4x3), source_file, source_offset, extruder
+  //   <plate> carries plater_name, locked, filament_map_mode, thumbnail refs
+  //   <model_instance> carries instance_id + identify_id
+  //   <assemble></assemble> present (empty for single-object)
+  const totalFaceCount = objects.reduce((sum, o) => sum + o.indices.length / 3, 0);
+  const wrapperName = objects[0]?.name ?? 'model';
+
   let xml = `<?xml version="1.0" encoding="UTF-8"?>
 <config>
-  <object id="${wrapperId}">`;
+  <object id="${wrapperId}">
+    <metadata key="name" value="${wrapperName}"/>
+    <metadata key="extruder" value="1"/>
+    <metadata face_count="${totalFaceCount}"/>`;
   for (const obj of objects) {
     const fc = obj.indices.length / 3;
     // Negative/modifier/support parts use extruder="0" (BambuStudio sentinel
@@ -553,7 +576,8 @@ function buildModelSettings(objects: ObjectDef[], wrapperId: number): string {
     xml += `
     <part id="${obj.id}" subtype="${kindToPartSubtype(obj.kind)}">
       <metadata key="name" value="${obj.name}"/>
-      <metadata key="matrix" value="1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1"/>
+      <metadata key="matrix" value="1 0 0 0 0 1 0 0 0 0 1 0"/>
+      <metadata key="source_file" value="${obj.name}.stl"/>
       <metadata key="source_object_id" value="0"/>
       <metadata key="source_volume_id" value="0"/>
       <metadata key="source_offset_x" value="0"/>
@@ -574,11 +598,22 @@ function buildModelSettings(objects: ObjectDef[], wrapperId: number): string {
   </object>
   <plate>
     <metadata key="plater_id" value="1"/>
-    <metadata key="name" value=""/>
+    <metadata key="plater_name" value="Plate 1"/>
+    <metadata key="locked" value="false"/>
+    <metadata key="filament_map_mode" value="Auto For Flush"/>
+    <metadata key="gcode_file" value=""/>
+    <metadata key="thumbnail_file" value="Metadata/plate_1.png"/>
+    <metadata key="thumbnail_no_light_file" value="Metadata/plate_no_light_1.png"/>
+    <metadata key="top_file" value="Metadata/top_1.png"/>
+    <metadata key="pick_file" value="Metadata/pick_1.png"/>
     <model_instance>
       <metadata key="object_id" value="${wrapperId}"/>
+      <metadata key="instance_id" value="0"/>
+      <metadata key="identify_id" value="1"/>
     </model_instance>
   </plate>
+  <assemble>
+  </assemble>
 </config>`;
   return xml;
 }
