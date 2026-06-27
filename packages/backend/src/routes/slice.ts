@@ -9,7 +9,6 @@ import { ensureDir, getJobsDir } from '../services/model-parser.js';
 import { build3MF, type ThreeMFModelInput } from '../services/threemf-builder.js';
 import { SlicerExecutor } from '../services/slicer-executor.js';
 import { findGcodeFile } from '../services/gcode-utils.js';
-import { PROJECT_SETTING_OVERRIDES } from '@snorcal/shared';
 import type { SliceRequest, SliceJobData, MultiMaterialConfig, FilamentSlot } from '@snorcal/shared';
 import os from 'node:os';
 
@@ -413,10 +412,16 @@ export async function buildSliceInput3MF(
   db: Db,
   modelFilePath: string,
 ): Promise<Buffer> {
-  // Build project settings — full template + U1/SnapSpeed overrides + profile overlays + user customizations
+  // Build project settings — neutral template baseline + profile overlays + user customizations.
+  // Bambuddy parity: NO Snapmaker-specific overrides. The previous
+  // PROJECT_SETTING_OVERRIDES slam (printer_model='Snapmaker U1', SnapSpeed
+  // temps, Snapmaker printable_area, etc.) polluted EVERY 3MF regardless of
+  // user-selected machine profile, and bambuddy's UI read the hardcoded
+  // printer_model from project_settings.config ("Snapmaker U1" even with
+  // P1S selected). Profile stub uploads (v0.1.19) carry printer_model via
+  // --load-settings; user profile JSON overlays carry per-printer settings.
   const projectSettings: Record<string, unknown> = {
     ...(defaultProjectSettingsRaw as Record<string, unknown>),
-    ...PROJECT_SETTING_OVERRIDES,
   };
 
   // Merge selected profiles (machine → filament → process)
