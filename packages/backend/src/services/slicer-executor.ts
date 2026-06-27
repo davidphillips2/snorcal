@@ -17,14 +17,18 @@ export interface SliceCommand {
   workDir: string;
   dataDir?: string;
   /**
-   * Optional profile files for bambuddy sidecar sync `/slice` endpoint.
-   * When provided, sync route is used (supports multi-filament). When
-   * absent, async `/slice-async` is used (single-filament only).
+   * Optional profile stubs for bambuddy sidecar sync `/slice` endpoint
+   * (slice_with_profiles path). Each entry is a JSON string shaped as
+   * `{name, inherits: name, from: "system", type}`. Sidecar walks the
+   * `inherits` field against its bundled slicer presets and produces the
+   * full resolved profile, then passes via `--load-settings` /
+   * `--load-filaments`. Mirrors bambuddy `_resolve_standard`
+   * (preset_resolver.py:254-277).
    */
-  profileFiles?: {
-    printer?: Buffer;
-    preset?: Buffer;
-    filaments?: Buffer[];
+  profileStubs?: {
+    printer?: string;    // JSON string for machine profile
+    preset?: string;     // JSON string for process profile
+    filaments?: string[]; // JSON string per filament slot (1-indexed filenames)
   };
 }
 
@@ -74,14 +78,16 @@ export class SlicerExecutor {
   /**
    * Drive a bambuddy-compatible sync /slice sidecar.
    *
-   * Mirrors `slice_without_profiles` in
-   * bambuddy/backend/app/services/slicer_api.py: single multipart POST with
-   * the embedded 3MF as `file`, connection held until the slicer exits, body
-   * is gcode (or zip for multi-plate). The 3MF carries
-   * Metadata/project_settings.config with every override snorcal needs
-   * (padded nozzle_diameter / extruder_colour / extruder_offset /
-   * printer_model rewrite for multi-color), so no printer/preset/filament
-   * profile uploads are needed.
+   * When `cmd.profileStubs` is provided, mirrors `slice_with_profiles` in
+   * bambuddy/backend/app/services/slicer_api.py: multipart POST with the
+   * 3MF as `file` + `printerProfile` + `presetProfile` + N `filamentProfile`
+   * parts. Sidecar runs `--load-settings printer.json --load-filaments
+   * filament_1.json;... --slice N input.3mf`. Bundled slicer presets fill
+   * in printer/extruder baseline; embedded 3MF provides geometry + plate +
+   * paint_color overrides.
+   *
+   * Without profileStubs, falls back to `slice_without_profiles` path
+   * (file-only upload, embedded settings only).
    */
   private async executeHttp(cmd: SliceCommand, baseUrl: string, onProgress?: ProgressCallback): Promise<SliceResult> {
     this.sidecarUrl = baseUrl;
@@ -118,6 +124,23 @@ export class SlicerExecutor {
     form.append('orient', '0');
     form.append('exportType', 'gcode');
     form.append('plate', String(plate));
+
+    // Profile stub uploads (bambuddy slice_with_profiles path). Each value
+    // is a JSON string shaped {name, inherits, from: "system", type}. Sidecar
+    // walks inherits against bundled slicer presets → full resolved profile
+    // → --load-settings / --load-filaments. Field names mirror bambuddy
+    // exactly (slicer_api.py:242-253) so the same /slice route accepts both.
+    if (cmd.profileStubs?.printer) {
+      form.append('printerProfile', new Blob([cmd.profileStubs.printer], { type: 'application/json' }), 'printer.json');
+    }
+    if (cmd.profileStubs?.preset) {
+      form.append('presetProfile', new Blob([cmd.profileStubs.preset], { type: 'application/json' }), 'preset.json');
+    }
+    if (cmd.profileStubs?.filaments && cmd.profileStubs.filaments.length > 0) {
+      cmd.profileStubs.filaments.forEach((json, i) => {
+        form.append('filamentProfile', new Blob([json], { type: 'application/json' }), `filament_${i + 1}.json`);
+      });
+    }
 
     onProgress?.(2, 'Submitting to sidecar…');
 

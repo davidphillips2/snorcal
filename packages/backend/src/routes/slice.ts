@@ -19,6 +19,19 @@ const defaultProjectSettingsRaw = JSON.parse(
   fs.readFileSync(path.join(__dirname, 'default-project-settings.json'), 'utf-8'),
 );
 
+/**
+ * Build a bambuddy-style profile stub for sidecar slice_with_profiles.
+ * Returns JSON string `{name, inherits: name, from: "system", type}`. The
+ * sidecar walks `inherits` against its bundled slicer presets to produce
+ * the full resolved profile, then passes via --load-settings (machine /
+ * process) or --load-filaments (one per slot). Mirrors bambuddy
+ * `_resolve_standard` (preset_resolver.py:254-277). Avoids needing full
+ * resolved JSON in snorcal's DB (which has truncated arrays per v0.1.13).
+ */
+function buildProfileStub(name: string, type: 'machine' | 'process' | 'filament'): string {
+  return JSON.stringify({ name, inherits: name, from: 'system', type });
+}
+
 /** Get default slicer datadir for the current platform and engine */
 function getDefaultDataDir(engine: string): string {
   const home = os.homedir();
@@ -784,13 +797,26 @@ export async function runSliceJob(
 
   db.updateJobProgress(jobId, 15, 'Spawning slicer...');
   onProgress?.(15, 'Spawning slicer...');
-      // Embedded 3MF project_settings.config has everything (padded
-      // nozzle_diameter, extruder_colour, extruder_offset, printer_model
-      // override). Bambuddy sidecar runs slicer with no --load-settings;
-      // the embedded settings drive the multi-extruder pipeline directly.
-      // Uploading standalone profiles would override the padded arrays with
-      // the DB's single-extruder machine profile → segfault in
-      // update_values_to_printer_extruders (extruder_index out of range).
+
+      // Build bambuddy-style profile stubs from the user's picker choices.
+      // Sidecar walks `inherits` against its bundled slicer presets and
+      // produces full resolved profiles, passed via --load-settings /
+      // --load-filaments. Per-slot filament profile names come from
+      // filamentSlots (multi-color) or fallback to profiles.filament.
+      const printerName = body.profiles?.machine;
+      const presetName = body.profiles?.process;
+      const filamentNames: string[] = (body.filamentSlots && body.filamentSlots.length > 0)
+        ? body.filamentSlots.map(s => s.profile).filter((n): n is string => !!n)
+        : (body.profiles?.filament ? [body.profiles.filament] : []);
+      const profileStubs: {
+        printer?: string;
+        preset?: string;
+        filaments?: string[];
+      } = {};
+      if (printerName) profileStubs.printer = buildProfileStub(printerName, 'machine');
+      if (presetName) profileStubs.preset = buildProfileStub(presetName, 'process');
+      if (filamentNames.length > 0) profileStubs.filaments = filamentNames.map(n => buildProfileStub(n, 'filament'));
+
       const result = await executor.execute(
         {
           engine: body.engine,
@@ -802,6 +828,7 @@ export async function runSliceJob(
           plateIndex: 0,
           workDir,
           dataDir: process.env.SLICER_DATADIR || getDefaultDataDir(body.engine),
+          profileStubs: Object.keys(profileStubs).length > 0 ? profileStubs : undefined,
         },
         (progress: number, step: string) => {
           const mapped = Math.max(15, Math.min(95, progress));
