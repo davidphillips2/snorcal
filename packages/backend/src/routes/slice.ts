@@ -51,9 +51,15 @@ function getDefaultDataDir(engine: string): string {
 }
 
 /**
- * Expand all filament_* settings to N-element arrays based on configured slots.
- * Pads to machine extruder count (e.g., Snapmaker U1 has 4 toolheads).
- * Builds NxN flush_volumes_matrix where N = machine extruder count.
+ * Expand filament_* settings per user's filamentSlots.
+ *
+ * Bambuddy parity: NO padding, NO array-length forcing, NO SEMM/prime_tower
+ * override, NO printer_model rewrite. The uploaded profile stubs
+ * (machine/process/filament) drive the slicer's printer model + extruder
+ * count; this function only sets the user's per-slot colour/type choices
+ * on `filament_colour` / `filament_type` and expands the rest of the
+ * filament_* keys to slots.length using the per-slot filament profile
+ * values where available, so each slot carries its own settings.
  */
 function expandFilamentSlots(
   projectSettings: Record<string, unknown>,
@@ -62,137 +68,40 @@ function expandFilamentSlots(
 ): void {
   const n = slots.length;
 
-  // Detect machine extruder count — must match printer's actual toolhead count
-  const existingNozzle = projectSettings['nozzle_diameter'] as any[] | undefined;
-  const printerModel = projectSettings['printer_model'] as string | undefined;
-  let machineExtruderCount = existingNozzle?.length ?? 1;
-  // Snapmaker U1 bundled chain (fdm_U1 → fdm_toolchanger_common) carries
-  // 5-element arrays; mismatched padding against the merged machine causes
-  // segfault in update_values_to_printer_extruders.
-  if (printerModel?.includes('U1')) machineExtruderCount = 5;
-  const targetCount = Math.max(n, machineExtruderCount);
-
-  // Set filament_colour/type from slots, pad to targetCount
-  const colors = slots.map(s => s.color);
-  while (colors.length < targetCount) colors.push(colors[colors.length - 1] || '#FFFFFF');
-  projectSettings['filament_colour'] = colors;
-
-  const types = slots.map(s => s.type);
-  while (types.length < targetCount) types.push(types[types.length - 1] || 'PLA');
-  projectSettings['filament_type'] = types;
+  // Per-slot colour + type straight from the user's picker.
+  projectSettings['filament_colour'] = slots.map(s => s.color);
+  projectSettings['filament_type'] = slots.map(s => s.type);
 
   // Metadata keys that OrcaSlicer treats as scalar (Preset.hpp BBL_JSON_KEY_*).
   // Expanding these to arrays breaks load_from_json's key_values.emplace()
   // which expects string → throws type_error 302, aborting config parse.
   const FILAMENT_METADATA_SCALARS = new Set(['filament_id']);
 
-  // Collect all filament_* keys from profiles AND existing project settings
+  // Collect all filament_* keys from per-slot profiles AND existing project settings.
   const filamentKeys = new Set<string>();
   for (const p of profileSettings) {
     if (p) for (const key of Object.keys(p)) {
       if (key.startsWith('filament_') && !FILAMENT_METADATA_SCALARS.has(key)) filamentKeys.add(key);
     }
   }
-  // Also include filament_* keys already in projectSettings (from defaults/machine profile)
   for (const key of Object.keys(projectSettings)) {
     if (key.startsWith('filament_') && Array.isArray(projectSettings[key]) && !FILAMENT_METADATA_SCALARS.has(key)) filamentKeys.add(key);
   }
 
-  // Expand each filament_* key to targetCount-element array
+  // Expand each filament_* key to slots.length. Use per-slot profile value
+  // when present; else fall back to first non-empty profile value; else
+  // existing project setting; else empty string.
   for (const key of filamentKeys) {
     if (key === 'filament_colour' || key === 'filament_type') continue; // already set
     const existing = projectSettings[key] as any[] | undefined;
-    // If a key is present in some profiles but not others, borrow from the
-    // first profile that has it. Failing that, use the existing project
-    // setting. Empty string as last resort — but a trailing-empty array
-    // entry makes OrcaSlicer's load_from_json reject the whole config
-    // (e.g. "filament_adaptive_volumetric_speed: 0,0,,," → exit 206).
     const profileFallback = profileSettings.find(p => p && p[key] !== undefined && p[key] !== '');
     const expanded = profileSettings.map((p, i) => {
       if (p && p[key] !== undefined && p[key] !== '') return String(p[key]);
       if (profileFallback) return String(profileFallback[key]);
       return existing?.[i] ?? existing?.[0] ?? '';
     });
-    // Pad to targetCount
-    while (expanded.length < targetCount) expanded.push(expanded[expanded.length - 1] || '');
+    while (expanded.length < n) expanded.push(expanded[expanded.length - 1] || '');
     projectSettings[key] = expanded;
-  }
-
-  // Build targetCount x targetCount flush_volumes_matrix (flattened row-major).
-  // existingMatrix may be in SOURCE dimensions (e.g. default template is 4x4 = 16
-  // entries). Index it by source row/col, NOT target row/col — otherwise target
-  // (r,c) reads source idx `r*targetCount+c` which points at the wrong cell
-  // (e.g. for targetCount=3, target (1,2) reads source idx 5, which is source
-  // (1,1) diagonal = '0', corrupting the matrix and triggering slicer exit 154).
-  const defaultFlush = 280;
-  const existingMatrix = projectSettings['flush_volumes_matrix'] as string[] | undefined;
-  const srcDim = existingMatrix && Number.isInteger(Math.sqrt(existingMatrix.length))
-    ? Math.round(Math.sqrt(existingMatrix.length)) : 0;
-  const matrix: string[] = [];
-  for (let r = 0; r < targetCount; r++) {
-    for (let c = 0; c < targetCount; c++) {
-      if (r === c) { matrix.push('0'); }
-      else {
-        const srcIdx = srcDim > 0 ? r * srcDim + c : -1;
-        matrix.push(srcIdx >= 0 && srcIdx < existingMatrix!.length ? existingMatrix![srcIdx] : String(defaultFlush));
-      }
-    }
-  }
-  projectSettings['flush_volumes_matrix'] = matrix;
-
-  // Enable prime tower and multi-material settings for multi-filament slicing
-  if (n > 1) {
-    projectSettings['single_extruder_multi_material'] = '1';
-    projectSettings['enable_prime_tower'] = '1';
-    // Critical: extruder_colour must match machine extruder count
-    projectSettings['extruder_colour'] = colors;
-    projectSettings['default_filament_colour'] = colors;
-    // extruder_offset: pad to targetCount. OrcaSlicer derives logical
-    // extruder count from this array's length (separate from physical
-    // nozzle_diameter, which stays at machine profile length — 1 for AMS).
-    // Without padding, slicer sees single-extruder and never invokes
-    // multi-material segmentation — paint_color on triangles is silently
-    // ignored even though filament_diameter has N entries.
-    projectSettings['extruder_offset'] = Array.from({ length: targetCount }, () => '0x0');
-    // Wiping volumes targetCount x targetCount (flat row-major, 70ml default)
-    const wv: string[] = [];
-    for (let r = 0; r < targetCount; r++) {
-      for (let c = 0; c < targetCount; c++) {
-        wv.push(r === c ? '0' : '70');
-      }
-    }
-    projectSettings['wiping_volumes_extruders'] = wv;
-    // nozzle_diameter MUST be padded to targetCount. Verified empirically by
-    // comparing working multi-color jobs (T0/T1 tool changes, distinct color
-    // segments) vs broken jobs (all merged to extruder 1, M624-only gcode):
-    // padded nozzle_diameter is what triggers OrcaSlicer to emit per-filament
-    // T<n> tool changes and honor paint_color segmentation. Leaving it at
-    // machine-profile length (1 for AMS-style single toolhead) causes the
-    // slicer to pick "Auto For Flush" mode + single master extruder, which
-    // drops all paint_color data on the floor.
-    const existingNozzleArr = projectSettings['nozzle_diameter'];
-    const nozzleSrc = Array.isArray(existingNozzleArr) && existingNozzleArr.length > 0
-      ? existingNozzleArr.map(String)
-      : (typeof existingNozzleArr === 'string' && existingNozzleArr ? [existingNozzleArr] : ['0.4']);
-    projectSettings['nozzle_diameter'] = Array.from({ length: targetCount }, (_, i) => nozzleSrc[i] ?? nozzleSrc[0]);
-    // Per-extruder (non-filament-prefixed) scalars the slicer must see as
-    // N-element arrays for multi-extruder configs. Missing/null → slicer's
-    // update_values_to_printer_extruders_for_multiple_filaments can't match
-    // filament_extruder_variant pairs → gcode_check_result error_code=2 → exit 154.
-    // Defaults from OrcaSlicer C++ (PrintConfig): Direct Drive / Standard.
-    const perExtruderDefaults: Record<string, string> = {
-      extruder_type: 'Direct Drive',
-      nozzle_volume_type: 'Standard',
-    };
-    for (const [key, defaultVal] of Object.entries(perExtruderDefaults)) {
-      const fromProject = projectSettings[key];
-      const srcArr = Array.isArray(fromProject) && fromProject.length > 0
-        ? fromProject.map(String)
-        : fromProject && typeof fromProject === 'string' && fromProject
-          ? [fromProject]
-          : [defaultVal];
-      projectSettings[key] = Array.from({ length: targetCount }, (_, i) => srcArr[i] ?? srcArr[0]);
-    }
   }
 }
 
@@ -567,62 +476,16 @@ export async function buildSliceInput3MF(
     }
   }
 
-  // Re-apply multi-material overrides AFTER user settings (user may send enable_prime_tower=0)
-  if (body.filamentSlots && body.filamentSlots.length > 1) {
-    // Detect machine extruder count for padding. Bundled Snapmaker U1
-    // resolves through fdm_U1 → fdm_toolchanger_common which carries
-    // 5-element arrays; padding to 4 (the variant's own extruder_colour
-    // length) under-sizes against the merged machine and the slicer
-    // segfaults in update_values_to_printer_extruders trying to look
-    // up extruder_index 5 (1-based) on a 4-element override.
-    const nozzleArr = projectSettings['nozzle_diameter'] as any[] | undefined;
-    const pModel = projectSettings['printer_model'] as string | undefined;
-    let mExtCount = nozzleArr?.length ?? 1;
-    if (pModel?.includes('U1')) mExtCount = 5;
-    const tc = Math.max(body.filamentSlots.length, mExtCount);
-
-    projectSettings['single_extruder_multi_material'] = '1';
-    projectSettings['enable_prime_tower'] = '1';
-    const extColors = body.filamentSlots.map(s => s.color);
-    while (extColors.length < tc) extColors.push(extColors[extColors.length - 1] || '#FFFFFF');
-    projectSettings['extruder_colour'] = extColors;
-    projectSettings['default_filament_colour'] = extColors;
-    projectSettings['extruder_offset'] = Array.from({ length: tc }, () => '0x0');
-    const ndSrc = Array.isArray(nozzleArr) && nozzleArr.length > 0
-      ? nozzleArr.map(String)
-      : ['0.4'];
-    projectSettings['nozzle_diameter'] = Array.from({ length: tc }, (_, i) => ndSrc[i] ?? ndSrc[0]);
-    // Re-pad extruder_type / nozzle_volume_type to tc. expandFilamentSlots
-    // ran BEFORE the Bambu → Snapmaker rename above with a possibly smaller
-    // targetCount, leaving these arrays shorter than nozzle_diameter. Slicer
-    // iterates nozzle_diameter length and looks up matching extruder_type
-    // per index — any mismatch segfaults update_values_to_printer_extruders.
-    for (const key of ['extruder_type', 'nozzle_volume_type']) {
-      const cur = projectSettings[key];
-      const srcArr = Array.isArray(cur) && cur.length > 0
-        ? cur.map(String)
-        : key === 'extruder_type' ? ['Direct Drive'] : ['Standard'];
-      projectSettings[key] = Array.from({ length: tc }, (_, i) => srcArr[i] ?? srcArr[0]);
-    }
-    // Override Bambu printer_model to bypass slicer's is_bbl_vendor_preset
-    // dispatch. When slicer sees "Bambu Lab X" vendor, it forces AMS-mode
-    // output (M624/M625 markers + "Auto For Flush" filament map) which
-    // IGNORES per-triangle paint_color and emits identical payload in every
-    // M624 → effectively single-color. The previous rename target
-    // ("Generic Multi-Extruder") doesn't exist as a bundled OrcaSlicer
-    // preset — slicer fails to load any machine profile, falls back to
-    // its internal multi-extruder default (6 slots), and segfaults when
-    // our 2-element overrides can't satisfy index 2..5 lookups in
-    // update_values_to_printer_extruders. Use a real bundled preset
-    // whose extruder count matches filamentSlots.length:
-    //   2 slots → Snapmaker J1 (IDEX dual, fdm_idex chain)
-    //   3-4 slots → Snapmaker U1 (4-toolhead toolchanger)
-    //   5+ slots → Snapmaker U1 (fdm_toolchanger_common chain, 5)
-    const currentModel = projectSettings['printer_model'];
-    if (typeof currentModel === 'string' && currentModel.toLowerCase().startsWith('bambu lab')) {
-      projectSettings['printer_model'] = body.filamentSlots.length <= 2 ? 'Snapmaker J1' : 'Snapmaker U1';
-    }
-  }
+  // Bambuddy parity: NO post-user-settings padding / printer_model rewrite.
+  // Previous block padded nozzle_diameter, extruder_colour, extruder_offset,
+  // extruder_type, nozzle_volume_type to a hardcoded targetCount (5 for U1)
+  // and rewrote "Bambu Lab ..." printer_model to "Snapmaker J1/U1" to bypass
+  // AMS dispatch. That diverged from bambuddy's flow (which preserves the
+  // source 3MF + uploaded profile stubs and lets --load-settings drive the
+  // printer model + extruder count) and correlated with multi-color
+  // segfaults on both bambu + orca sidecars. The uploaded profile stubs
+  // (Phase v0.1.19) + per-slot filament_colour/type set in expandFilamentSlots
+  // are sufficient — let the slicer's bundled printer profile carry the rest.
 
   // Resolve models — support multi-model or single-model requests
   let buildModels: ThreeMFModelInput[];
