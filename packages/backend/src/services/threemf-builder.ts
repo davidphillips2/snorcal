@@ -248,11 +248,18 @@ export async function build3MF(input: ThreeMFBuildInput): Promise<Buffer> {
     modelXML += buildObjectXML(obj, componentUuids);
   }
 
-  // Top-level component object — references every object (parent + children)
+  // Top-level component object — references every object (parent + children).
+  // NOTE: <component> has NO transform attribute. Bisect found that any
+  // component transform (even identity "1 0 0 0 0 1 0 0 0 0 1 0") makes
+  // BambuStudio slicer emit "no layers detected" + exit 156. Snorcal
+  // pre-bakes centering into vertex coords (processModelGeometry), so the
+  // component reference is identity-positioned by default. Bambu Studio's
+  // own exports use component transform because geometry stays in
+  // object-space — different pipeline, different requirement.
   modelXML += `\n    <object id="${topId}" p:UUID="${topUuid}" type="model">
       <components>`;
   for (const obj of allObjects) {
-    modelXML += `\n        <component objectid="${obj.id}" p:UUID="${componentUuids.get(obj.id)}" transform="1 0 0 0 0 1 0 0 0 0 1 0"/>`;
+    modelXML += `\n        <component objectid="${obj.id}" p:UUID="${componentUuids.get(obj.id)}"/>`;
   }
   modelXML += `\n      </components>
     </object>
