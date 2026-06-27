@@ -481,6 +481,42 @@ export async function buildSliceInput3MF(
     }
   }
 
+  // Bambuddy parity: embed preset identity keys. Reference Bambu Studio
+  // exports always carry printer_settings_id / print_settings_id /
+  // filament_settings_id / master_extruder_id / filament_map /
+  // filament_map_mode. Without these the slicer segfaults (SIGSEGV after
+  // orientation analysis) when it tries to resolve the bundled preset
+  // baseline and dereferences a null pointer. Use user-selected profile
+  // names where available; fall back to Bambu P1S defaults so sidecar
+  // slice_with_profiles + slice_without_profiles paths both work.
+  const printerName = body.profiles?.machine || 'Bambu Lab P1S 0.4 nozzle';
+  const presetName = body.profiles?.process || '0.20mm Standard @BBL P1S';
+  const filamentNames: string[] = (body.filamentSlots && body.filamentSlots.length > 0)
+    ? body.filamentSlots.map(s => s.profile).filter((n): n is string => !!n)
+    : (body.profiles?.filament ? [body.profiles.filament] : []);
+  const filamentSettingsIds = (filamentNames.length > 0
+    ? filamentNames
+    : ['Bambu PLA Basic @BBL P1S 0.4 nozzle']);
+  // Pad filament_settings_id to match filament_colour length so slicer
+  // array-length validation passes.
+  const colourCount = Array.isArray(projectSettings['filament_colour'])
+    ? (projectSettings['filament_colour'] as string[]).length
+    : 1;
+  while (filamentSettingsIds.length < colourCount) {
+    filamentSettingsIds.push(filamentSettingsIds[filamentSettingsIds.length - 1]);
+  }
+  projectSettings['printer_settings_id'] = printerName;
+  projectSettings['print_settings_id'] = presetName;
+  projectSettings['filament_settings_id'] = filamentSettingsIds;
+  projectSettings['default_filament_profile'] = [filamentSettingsIds[0]];
+  projectSettings['default_print_profile'] = presetName;
+  projectSettings['master_extruder_id'] = '1';
+  projectSettings['filament_map'] = ['1'];
+  projectSettings['filament_map_mode'] = 'Auto For Flush';
+  if (!projectSettings['printer_model']) {
+    projectSettings['printer_model'] = 'Bambu Lab P1S';
+  }
+
   // Bambuddy parity: NO post-user-settings padding / printer_model rewrite.
   // Previous block padded nozzle_diameter, extruder_colour, extruder_offset,
   // extruder_type, nozzle_volume_type to a hardcoded targetCount (5 for U1)
