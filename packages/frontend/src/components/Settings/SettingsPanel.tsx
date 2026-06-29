@@ -130,6 +130,26 @@ export function SettingsPanel({
     api.getProfiles(engine).then(setProfiles).catch(() => setProfiles([]));
   }, [engine]);
 
+  // When engine changes (or profile list refreshes), drop selections that no
+  // longer exist in the current engine's profile set. Without this, switching
+  // engine leaves a stale machine/process name in state that points at a
+  // profile the new engine doesn't have → silent fallback to defaults at slice
+  // time. Also auto-pick first filament if none selected.
+  useEffect(() => {
+    if (profiles.length === 0) return;
+    const names = new Set(profiles.map(p => p.name));
+    const updates: Partial<SelectedProfiles> = {};
+    if (selectedProfiles.machine && !names.has(selectedProfiles.machine)) {
+      updates.machine = undefined;
+    }
+    if (selectedProfiles.process && !names.has(selectedProfiles.process)) {
+      updates.process = undefined;
+    }
+    if (Object.keys(updates).length > 0) {
+      onProfilesChange({ ...selectedProfiles, ...updates });
+    }
+  }, [profiles, selectedProfiles.machine, selectedProfiles.process]);
+
   useEffect(() => {
     api.listPrinters().then(setPrinters).catch(() => setPrinters([]));
   }, []);
@@ -189,17 +209,30 @@ export function SettingsPanel({
   }, [effectiveModel, machineProfilesAll.length, selectedProfiles.machine]);
 
   // Process filter: key off the SELECTED machine profile, not all printers.
-  // Extract distinctive tokens (drop brand words + pure numbers) and match process names.
+  // Extract distinctive tokens (drop brand words + pure numbers) and match
+  // process names. STRICT — no fallback to all profiles when nothing matches.
+  // Empty result = no compatible process preset for the current machine,
+  // surfaced via empty-state hint in renderProfileSelect.
   const selectedMachine = selectedProfiles.machine;
   const processTokens = extractModelTokens(selectedMachine);
   const processProfilesAll = profiles.filter(p => p.profile_type === 'process');
-  const processMatched = processTokens.length === 0
-    ? processProfilesAll
+  const processProfiles = processTokens.length === 0
+    ? []
     : processProfilesAll.filter(p => {
         const n = p.name.toLowerCase();
         return processTokens.some(tok => n.includes(tok));
       });
-  const processProfiles = processMatched.length > 0 ? processMatched : processProfilesAll;
+
+  // Auto-select first compatible process when machine changes or when current
+  // process selection isn't in the (now-filtered) compatible list. Prefers a
+  // 0.2mm "Standard" profile when available (most generic default).
+  useEffect(() => {
+    if (processProfiles.length === 0) return;
+    const current = selectedProfiles.process;
+    if (current && processProfiles.some(p => p.name === current)) return;
+    const preferStandard = processProfiles.find(p => /standard/i.test(p.name));
+    onProfilesChange({ ...selectedProfiles, process: (preferStandard ?? processProfiles[0]).name });
+  }, [processProfiles, selectedProfiles.process]);
 
   const updateSetting = useCallback((key: string, value: string) => {
     onSettingsChange({ ...settings, [key]: value });
@@ -277,6 +310,11 @@ export function SettingsPanel({
           </button>
         )}
       </div>
+      {options.length === 0 && (
+        <p className="text-[10px] text-amber-400">
+          No matching profiles for this slicer + printer combo. Use “Import profiles” in App Settings for the local slicer, or pick a different printer.
+        </p>
+      )}
     </div>
   );
 
