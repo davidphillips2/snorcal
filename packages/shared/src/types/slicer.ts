@@ -1,5 +1,11 @@
 // Slicer engine identifiers
-export type SlicerEngine = 'orcaslicer' | 'bambustudio';
+export type SlicerEngine =
+  | 'orcaslicer'
+  | 'bambustudio'
+  | 'crealityprint'
+  | 'prusaslicer'
+  | 'elegooslicer'
+  | 'snapmakerorca';
 
 export interface SlicerBinary {
   engine: SlicerEngine;

@@ -3,6 +3,7 @@ import cors from '@fastify/cors';
 import multipart from '@fastify/multipart';
 import path from 'node:path';
 import fs from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { Db } from './db/index.js';
 import { modelRoutes } from './routes/models.js';
 import { sliceRoutes } from './routes/slice.js';
@@ -18,6 +19,7 @@ import { printerManager } from './services/printer-manager.js';
 import { ensureDir, getDataDir } from './services/model-parser.js';
 
 export async function buildApp() {
+  const __dirname = path.dirname(fileURLToPath(import.meta.url));
   // bodyLimit covers JSON payloads (face-color PUT can reach several MB on
   // high-poly models). Multipart has its own 500MB limit below.
   const app = Fastify({ logger: true, bodyLimit: 50 * 1024 * 1024 });

@@ -33,6 +33,10 @@ export function AppSettingsPanel(props: {
   const ENGINE_LABELS: Record<string, string> = {
     orcaslicer: 'OrcaSlicer',
     bambustudio: 'BambuStudio',
+    crealityprint: 'Creality Print',
+    prusaslicer: 'PrusaSlicer',
+    elegooslicer: 'ElegooSlicer',
+    snapmakerorca: 'Snapmaker Orca',
   };
 
   const refresh = async () => {
@@ -85,6 +89,9 @@ export function AppSettingsPanel(props: {
         )}
       </Section>
 
+      {/* Version + updates */}
+      <VersionSection info={info} onRestarted={() => refresh()} />
+
       {/* Slicer engine + sidecars */}
       <Section
         title="Slicer"
@@ -102,7 +109,7 @@ export function AppSettingsPanel(props: {
           <label className="block text-[10px] font-medium text-gray-500 uppercase tracking-wider mb-1">Engine</label>
           {availableEngines && availableEngines.length === 0 ? (
             <div className="text-xs text-amber-400">
-              No slicers configured. Set <code>SLICER_URL_ORCASLICER</code> / <code>SLICER_URL_BAMBUSTUDIO</code> on the server.
+              No slicers found. Install slicer apps on the host (macOS) or set <code>SLICER_URL_&lt;ENGINE&gt;</code> sidecar URLs on the server.
             </div>
           ) : (
             <select
@@ -216,6 +223,143 @@ function StatusBadge({ ok, label }: { ok: boolean; label: string }) {
     <span className={`px-1.5 py-0.5 rounded text-[10px] ${ok ? 'bg-emerald-900/40 text-emerald-300' : 'bg-red-900/40 text-red-300'}`}>
       {label}
     </span>
+  );
+}
+
+// Version display + self-update UI. Shows current version + git SHA, fetches
+// latest tag from GitHub on demand, and (for bare-metal installs) runs the
+// update flow (git pull + pnpm install + build) then triggers a restart.
+// Docker installs show a "use docker pull" hint instead of the update button.
+function VersionSection(props: { info: api.SystemInfo; onRestarted: () => void }) {
+  const { info, onRestarted } = props;
+  const [checkResult, setCheckResult] = useState<api.CheckUpdateResult | null>(null);
+  const [checking, setChecking] = useState(false);
+  const [updating, setUpdating] = useState(false);
+  const [restarting, setRestarting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [pendingRestart, setPendingRestart] = useState(false);
+
+  const version = info.version ?? '?';
+  const sha = info.git?.sha ? info.git.sha.slice(0, 8) : null;
+  const isDocker = info.installMode === 'docker';
+
+  const handleCheck = async () => {
+    setChecking(true); setError(null);
+    try { setCheckResult(await api.checkUpdate()); }
+    catch (e) { setError(e instanceof Error ? e.message : String(e)); }
+    finally { setChecking(false); }
+  };
+
+  const handleUpdate = async () => {
+    setUpdating(true); setError(null);
+    try {
+      const res = await api.performUpdate();
+      setPendingRestart(true);
+      setCheckResult({ current: res.previousVersion, latest: `v${res.newVersion}`, hasUpdate: false });
+      setError(`Updated to ${res.newVersion}. Restart required.`);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally { setUpdating(false); }
+  };
+
+  const handleRestart = async () => {
+    setRestarting(true); setError(null);
+    try {
+      await api.restartBackend();
+      // Poll health — backend will be down briefly during restart.
+      const start = Date.now();
+      let ok = false;
+      while (Date.now() - start < 30_000) {
+        try {
+          const r = await fetch('/api/health', { cache: 'no-store' });
+          if (r.ok) { ok = true; break; }
+        } catch { /* still down */ }
+        await new Promise(res => setTimeout(res, 1000));
+      }
+      if (ok) {
+        setPendingRestart(false);
+        setRestarting(false);
+        onRestarted();
+      } else {
+        setError('Backend did not return within 30s. Check service logs.');
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      setRestarting(false);
+    }
+  };
+
+  return (
+    <Section title="Version">
+      <Row
+        label="Installed"
+        value={
+          <span className="text-xs text-gray-200">
+            v{version}{sha && <span className="text-gray-500 font-mono"> ({sha})</span>}
+            {info.git?.dirty && <span className="text-amber-400 ml-1">dirty</span>}
+          </span>
+        }
+      />
+      <Row
+        label="Install mode"
+        value={
+          <span className="text-xs text-gray-400">
+            {isDocker ? 'Docker container' : info.installMode === 'bare-metal' ? 'Bare-metal (git checkout)' : 'Unknown'}
+          </span>
+        }
+      />
+      {checkResult?.latest && (
+        <Row
+          label="Latest release"
+          value={
+            <span className="text-xs text-gray-200">
+              {checkResult.latest}
+              {checkResult.hasUpdate && <span className="text-emerald-400 ml-1">(update available)</span>}
+            </span>
+          }
+        />
+      )}
+
+      {!isDocker ? (
+        <div className="px-3 py-3 space-y-2">
+          <div className="flex gap-2 flex-wrap">
+            <button
+              onClick={handleCheck}
+              disabled={checking || updating || restarting}
+              className="px-2 py-1 text-xs bg-gray-700 hover:bg-gray-600 rounded text-gray-200 disabled:opacity-50"
+            >
+              {checking ? 'Checking…' : 'Check for updates'}
+            </button>
+            {checkResult?.hasUpdate && (
+              <button
+                onClick={handleUpdate}
+                disabled={updating || restarting}
+                className="px-2 py-1 text-xs bg-emerald-700 hover:bg-emerald-600 rounded text-white disabled:opacity-50"
+              >
+                {updating ? 'Updating…' : `Update to ${checkResult.latest}`}
+              </button>
+            )}
+            {pendingRestart && (
+              <button
+                onClick={handleRestart}
+                disabled={restarting}
+                className="px-2 py-1 text-xs bg-blue-700 hover:bg-blue-600 rounded text-white disabled:opacity-50"
+              >
+                {restarting ? 'Restarting…' : 'Restart now'}
+              </button>
+            )}
+          </div>
+          {error && <div className="text-[10px] text-amber-400 break-all">{error}</div>}
+          <div className="text-[10px] text-gray-500">
+            Self-update runs <code>git fetch</code> + <code>git reset --hard &lt;tag&gt;</code> + <code>pnpm install</code> + <code>pnpm build</code>. Refuses if working tree is dirty.
+          </div>
+        </div>
+      ) : (
+        <div className="px-3 py-2 text-[10px] text-gray-500">
+          Running in Docker — update via <code>docker pull</code> + restart container. Self-update disabled.
+        </div>
+      )}
+    </Section>
   );
 }
 

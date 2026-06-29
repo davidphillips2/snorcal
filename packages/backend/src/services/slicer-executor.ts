@@ -2,7 +2,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import path from 'node:path';
 import fs from 'node:fs';
 import { randomUUID } from 'node:crypto';
-import { getSlicerBinary } from '@snorcal/shared';
+import { getSlicerBinary, isBambuStudioClass } from '@snorcal/shared';
 import type { SlicerEngine } from '@snorcal/shared';
 import { findGcodeFile } from './gcode-utils.js';
 
@@ -339,7 +339,7 @@ export class SlicerExecutor {
       '--debug', '2',
     );
 
-    if (cmd.engine === 'bambustudio') {
+    if (isBambuStudioClass(cmd.engine)) {
       args.push('--skip_useless_pick');
     }
 

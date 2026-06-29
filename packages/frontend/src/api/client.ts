@@ -598,6 +598,9 @@ export async function bambuLogin(email: string, password?: string, code?: string
 // --- System info ---
 
 export interface SystemInfo {
+  version?: string;
+  git?: { sha: string | null; branch: string | null; dirty: boolean | null };
+  installMode?: 'docker' | 'bare-metal' | 'unknown';
   storage: {
     dataDir: string;
     dbSize: number | null;
@@ -641,4 +644,37 @@ export async function getAvailableEngines(): Promise<string[]> {
     const data = await apiFetch('/system/engines') as { engines: string[] };
     return Array.isArray(data.engines) ? data.engines : [];
   } catch { return []; }
+}
+
+export interface CheckUpdateResult {
+  current: string;
+  latest: string | null;
+  hasUpdate: boolean;
+}
+
+export async function checkUpdate(): Promise<CheckUpdateResult> {
+  const data = await apiFetch('/system/check-update') as CheckUpdateResult;
+  return data;
+}
+
+export interface UpdateStep {
+  name: string;
+  code: number;
+  stderrTail?: string;
+}
+
+export interface UpdateResult {
+  previousVersion: string;
+  newVersion: string;
+  steps: UpdateStep[];
+  requiresRestart: boolean;
+}
+
+export async function performUpdate(): Promise<UpdateResult> {
+  const data = await apiFetch('/system/update', { method: 'POST' }) as UpdateResult;
+  return data;
+}
+
+export async function restartBackend(): Promise<{ ok: boolean; message?: string }> {
+  return apiFetch('/system/restart', { method: 'POST' });
 }

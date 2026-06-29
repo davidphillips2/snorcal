@@ -32,7 +32,10 @@ const STATUS_COLORS: Record<string, string> = {
 const ENGINE_LABELS: Record<string, string> = {
   orcaslicer: 'OrcaSlicer',
   bambustudio: 'BambuStudio',
-  snapmaker_orca: 'Snapmaker Orca',
+  crealityprint: 'Creality Print',
+  prusaslicer: 'PrusaSlicer',
+  elegooslicer: 'ElegooSlicer',
+  snapmakerorca: 'Snapmaker Orca',
 };
 
 export function JobCard({ job, onCancel, onDownload, onDownloadThreemf, onPreview, onSendToPrinter }: JobCardProps) {
