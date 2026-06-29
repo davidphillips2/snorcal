@@ -241,14 +241,15 @@ export async function build3MF(input: ThreeMFBuildInput): Promise<Buffer> {
   // metadata starts with "BambuStudio-" (bbs_3mf.cpp:1914-1922). Without it,
   // filament_colour is never loaded → "no filament colors found in projects"
   // warning → slicer crashes downstream. OrcaSlicer's gate is commented out
-  // (OrcaSlicer.cpp:1859-1870 commented) so Orca accepts any value.
+  // (OrcaSlicer.cpp:1859-1870 commented) so Orca accepts any value — but
+  // tagging with "OrcaSlicer-*" flips m_is_bbl_3mf=true which triggers
+  // stricter model_settings.config validation (regressed in v0.1.35).
+  // Keep Orca-class at neutral prefix; only override for Bambu forks where
+  // the gate actively rejects our config.
   const APP_BY_ENGINE: Record<string, string> = {
     bambustudio: 'BambuStudio-02.06.00.51',
-    orcaslicer: 'OrcaSlicer-2.4.0',
-    snapmakerorca: 'OrcaSlicer-2.4.0', // Snapmaker Orca CLI = OrcaSlicer
     crealityprint: 'BambuStudio-02.06.00.51', // Creality Print = Bambu fork
     elegooslicer: 'BambuStudio-02.06.00.51', // ElegooSlicer = Bambu fork
-    prusaslicer: 'Snorcal-1.0', // PrusaSlicer uses its own 3MF importer
   };
   const appMetadata = (input.engine && APP_BY_ENGINE[input.engine]) || 'Snorcal-1.0';
 
