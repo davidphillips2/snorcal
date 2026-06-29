@@ -13,19 +13,26 @@ import { getSidecarUrl } from '../services/slicer-executor.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-// Repo root = three levels up from dist/routes/system.js
-// (dist/routes/system.js -> dist/routes -> dist -> packages/backend -> repo root is ../../.. from packages/backend)
-// Dist layout: packages/backend/dist/routes/system.js → repo root = ../../../../
+// Repo root for bare-metal (../.. from dist/routes = packages/backend,
+// ../../.. = packages, ../../../.. = repo root). For Docker, the root
+// package.json is at /app/package.json — walk up looking for a package.json
+// named 'snorcal' to find the right one in either layout.
 const REPO_ROOT = path.resolve(__dirname, '../../../../');
 
 function readRootPackageVersion(): string {
-  try {
-    const pkgPath = path.join(REPO_ROOT, 'package.json');
-    const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
-    return (pkg.version as string) || '0.0.0';
-  } catch {
-    return '0.0.0';
+  // Walk up looking for the snorcal root package.json by name.
+  let dir: string = __dirname;
+  for (let i = 0; i < 8; i++) {
+    const candidate = path.join(dir, 'package.json');
+    try {
+      const pkg = JSON.parse(fs.readFileSync(candidate, 'utf-8'));
+      if (pkg.name === 'snorcal') return (pkg.version as string) || '0.0.0';
+    } catch { /* not here */ }
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
   }
+  return '0.0.0';
 }
 
 const APP_VERSION = readRootPackageVersion();

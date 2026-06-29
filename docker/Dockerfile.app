@@ -50,6 +50,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
+# Root package.json is the single source of truth for the app version
+# (read by /api/system/info via walk-up to find a package.json named "snorcal").
+COPY --from=backend-builder /build/package.json /app/package.json
+
 COPY --from=frontend-builder /build/packages/frontend/dist /app/frontend/dist
 COPY --from=backend-builder /build/packages/backend/package.json /app/backend/package.json
 COPY --from=backend-builder /build/packages/backend/dist /app/backend/dist
