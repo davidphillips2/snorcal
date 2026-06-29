@@ -90,14 +90,22 @@ function expandFilamentSlots(
   // Expand each filament_* key to slots.length. Use per-slot profile value
   // when present; else fall back to first non-empty profile value; else
   // existing project setting; else empty string.
+  // Profile values may be ARRAYS (Bambu filament profiles carry per-extruder
+  // arrays like filament_overhang_2_4_speed=['50','50']). For slot i, take
+  // element [i] of that array — DO NOT String() the whole array (joins to
+  // "50,50" which the slicer reads as a single corrupted value).
+  const pickSlotValue = (v: unknown, i: number): string => {
+    if (Array.isArray(v)) return String(v[i] ?? v[0] ?? '');
+    return String(v);
+  };
   for (const key of filamentKeys) {
     if (key === 'filament_colour' || key === 'filament_type') continue; // already set
     const existing = projectSettings[key] as any[] | undefined;
     const profileFallback = profileSettings.find(p => p && p[key] !== undefined && p[key] !== '');
     const expanded = profileSettings.map((p, i) => {
-      if (p && p[key] !== undefined && p[key] !== '') return String(p[key]);
-      if (profileFallback) return String(profileFallback[key]);
-      return existing?.[i] ?? existing?.[0] ?? '';
+      if (p && p[key] !== undefined && p[key] !== '') return pickSlotValue(p[key], i);
+      if (profileFallback) return pickSlotValue(profileFallback[key], i);
+      return pickSlotValue(existing, i) || '';
     });
     while (expanded.length < n) expanded.push(expanded[expanded.length - 1] || '');
     projectSettings[key] = expanded;
@@ -434,10 +442,45 @@ export async function buildSliceInput3MF(
       if (!profile) continue;
       try {
         const profileSettings = JSON.parse(profile.settings) as Record<string, unknown>;
+        // Profile JSON files contain Preset.hpp fields (metadata like
+        // setting_id, compatible_printers, description, instantiations,
+        // renamed_from, version, inherits, etc) that identify the preset
+        // itself and are NOT project_settings keys. Embedding them
+        // pollutes project_settings.config with scalars where the slicer
+        // expects arrays (filament_id vs filament_ids, etc) → array-index
+        // OOB → SIGSEGV. Whitelist approach: only override keys the
+        // template already has AND skip Preset.hpp self-identification
+        // fields (name, from, inherits, version, type) which the template
+        // carries as project-internal markers (`name="project_settings"`,
+        // `from="project"`) that must NOT be overwritten with profile-
+        // specific values.
+        const PROFILE_SELF_KEYS = new Set([
+          'type', 'name', 'inherits', 'from', 'version',
+        ]);
         for (const [key, val] of Object.entries(profileSettings)) {
-          if (['type', 'name', 'inherits', 'from', 'version'].includes(key)) continue;
+          if (PROFILE_SELF_KEYS.has(key)) continue;
+          if (!(key in projectSettings)) continue;
           if (val === null) continue;
-          projectSettings[key] = val;
+          // Bambu filament/process profiles store per-extruder arrays of
+          // length 1-2 (per-filament overrides). Project template (cloned
+          // from reference BambuStudio export) carries full AMS-slot arrays
+          // (often length 4). Overwriting template with the shorter profile
+          // array TRUNCATES it — the slicer then array-indexes past the end
+          // → SIGSEGV in load_nozzle_infos_with_compatibility. Pad profile
+          // value to template length by CYCLING the source pattern (matches
+          // BambuStudio's own 2-filament → 4-AMS-slot expansion: [a,b] →
+          // [a,b,a,b], not [a,b,b,b]).
+          const existing = projectSettings[key];
+          if (Array.isArray(val) && Array.isArray(existing) && existing.length > val.length) {
+            const padded: unknown[] = [];
+            const src = val as unknown[];
+            for (let i = 0; i < (existing as unknown[]).length; i++) {
+              padded.push(src[i % src.length]);
+            }
+            projectSettings[key] = padded;
+          } else {
+            projectSettings[key] = val;
+          }
         }
       } catch {
         // Skip unparseable profile
@@ -464,15 +507,18 @@ export async function buildSliceInput3MF(
     mergeFilamentProfiles(projectSettings, profile0Settings, profile1Settings, body.multiMaterial);
   }
 
-  // Multi-color filament slots: expand all filament_* arrays to N elements
+  // Multi-color filament slots: snorcal previously ran expandFilamentSlots
+  // here to overlay per-slot filament profiles onto project_settings arrays.
+  // That function truncated template (reference) arrays to slots.length,
+  // losing the AMS-slot padding BambuStudio expects → array OOB → SIGSEGV
+  // in load_nozzle_infos_with_compatibility. Per-slot profile differences
+  // are now handled by sidecar profile stub uploads (v0.1.19) resolved
+  // against bundled slicer presets via --load-filaments. Locally we set
+  // only the per-slot user-picked colors + types; the template carries
+  // correct full-length arrays for everything else.
   if (body.filamentSlots && body.filamentSlots.length > 1) {
-    const profileSettings: (Record<string, unknown> | null)[] = body.filamentSlots.map((slot) => {
-      if (!slot.profile) return null;
-      const p = db.getProfile(body.engine, 'filament', slot.profile);
-      if (!p) return null;
-      try { return JSON.parse(p.settings) as Record<string, unknown>; } catch { return null; }
-    });
-    expandFilamentSlots(projectSettings, body.filamentSlots, profileSettings);
+    projectSettings['filament_colour'] = body.filamentSlots.map(s => s.color);
+    projectSettings['filament_type'] = body.filamentSlots.map(s => s.type);
   }
 
   if (body.settings?.process) {
@@ -481,40 +527,37 @@ export async function buildSliceInput3MF(
     }
   }
 
-  // Bambuddy parity: embed preset identity keys. Reference Bambu Studio
-  // exports always carry printer_settings_id / print_settings_id /
-  // filament_settings_id / master_extruder_id / filament_map /
-  // filament_map_mode. Without these the slicer segfaults (SIGSEGV after
-  // orientation analysis) when it tries to resolve the bundled preset
-  // baseline and dereferences a null pointer. Use user-selected profile
-  // names where available; fall back to Bambu P1S defaults so sidecar
-  // slice_with_profiles + slice_without_profiles paths both work.
-  const printerName = body.profiles?.machine || 'Bambu Lab P1S 0.4 nozzle';
-  const presetName = body.profiles?.process || '0.20mm Standard @BBL P1S';
+  // Bambuddy parity: preset identity keys (printer_settings_id,
+  // print_settings_id, filament_settings_id, master_extruder_id,
+  // filament_map, filament_map_mode) ship in the BambuStudio reference
+  // template (default-project-settings.json) with values that match real
+  // bundled slicer presets. Override them ONLY when the user explicitly
+  // picks different profiles via body.profiles / body.filamentSlots —
+  // unconditional overrides with hardcoded fallbacks (the v0.1.26 bug)
+  // rewrote `print_settings_id` from the template's valid
+  // `0.20mm Standard @BBL X1C` to a non-existent `0.20mm Standard @BBL P1S`
+  // (BambuStudio ships no such process preset — P1S uses X1C). The slicer
+  // failed to resolve the named preset → null deref → SIGSEGV after
+  // orientation analysis.
+  if (body.profiles?.machine) {
+    projectSettings['printer_settings_id'] = body.profiles.machine;
+  }
+  if (body.profiles?.process) {
+    projectSettings['print_settings_id'] = body.profiles.process;
+    projectSettings['default_print_profile'] = body.profiles.process;
+  }
   const filamentNames: string[] = (body.filamentSlots && body.filamentSlots.length > 0)
     ? body.filamentSlots.map(s => s.profile).filter((n): n is string => !!n)
     : (body.profiles?.filament ? [body.profiles.filament] : []);
-  const filamentSettingsIds = (filamentNames.length > 0
-    ? filamentNames
-    : ['Bambu PLA Basic @BBL P1S 0.4 nozzle']);
-  // Pad filament_settings_id to match filament_colour length so slicer
-  // array-length validation passes.
-  const colourCount = Array.isArray(projectSettings['filament_colour'])
-    ? (projectSettings['filament_colour'] as string[]).length
-    : 1;
-  while (filamentSettingsIds.length < colourCount) {
-    filamentSettingsIds.push(filamentSettingsIds[filamentSettingsIds.length - 1]);
-  }
-  projectSettings['printer_settings_id'] = printerName;
-  projectSettings['print_settings_id'] = presetName;
-  projectSettings['filament_settings_id'] = filamentSettingsIds;
-  projectSettings['default_filament_profile'] = [filamentSettingsIds[0]];
-  projectSettings['default_print_profile'] = presetName;
-  projectSettings['master_extruder_id'] = '1';
-  projectSettings['filament_map'] = ['1'];
-  projectSettings['filament_map_mode'] = 'Auto For Flush';
-  if (!projectSettings['printer_model']) {
-    projectSettings['printer_model'] = 'Bambu Lab P1S';
+  if (filamentNames.length > 0) {
+    const colourCount = Array.isArray(projectSettings['filament_colour'])
+      ? (projectSettings['filament_colour'] as string[]).length
+      : 1;
+    while (filamentNames.length < colourCount) {
+      filamentNames.push(filamentNames[filamentNames.length - 1]);
+    }
+    projectSettings['filament_settings_id'] = filamentNames;
+    projectSettings['default_filament_profile'] = [filamentNames[0]];
   }
 
   // Bambuddy parity: NO post-user-settings padding / printer_model rewrite.
@@ -670,20 +713,19 @@ export async function buildSliceInput3MF(
     });
   }
 
-  // Strip "-1" sentinel values from projectSettings before embedding. The
-  // slicer CLI's StaticPrintConfig range validator rejects "-1" with
-  // "<field>: -1 not in range [...]" → "input preset file is invalid" on
-  // Bambu. Mirrors bambuddy's _sanitize_project_settings_sentinels
-  // (library.py:3062-3112) + _PROJECT_SETTINGS_SENTINEL_KEYS allowlist
-  // (library.py:3050-3059) exactly.
-  const SENTINEL_KEYS = new Set([
-    'raft_first_layer_expansion',
-    'tree_support_wall_count',
-    'prime_tower_brim_width',
-  ]);
-  for (const k of SENTINEL_KEYS) {
-    if (projectSettings[k] === '-1' || projectSettings[k] === -1) delete projectSettings[k];
-  }
+  // Bambuddy parity: do NOT strip "-1" sentinel values from projectSettings.
+  // The previous v0.1.20 strip (mirroring bambuddy's
+  // _sanitize_project_settings_sentinels) deleted raft_first_layer_expansion
+  // / tree_support_wall_count / prime_tower_brim_width when they held -1.
+  // That mirroring was based on bambuddy's HTTP layer — bambuddy STRIPS
+  // sentinels from the embedded 3MF it RECEIVES, then resolves the bundled
+  // slicer preset via --load-settings which re-supplies valid values for
+  // those keys. Snorcal in local mode (no profile stubs, no --load-settings)
+  // ends up with neither — the slicer derefs a null config key during
+  // load_nozzle_infos_with_compatibility → SIGSEGV. Reference BambuStudio
+  // 3MF exports ship these keys with -1 intact and slice fine; the range
+  // validator warning that v0.1.20 chased was actually a different issue
+  // (since-fixed by template replacement in v0.1.27). Keep sentinels.
 
   return build3MF({
     models: buildModels,

@@ -289,7 +289,7 @@ export async function build3MF(input: ThreeMFBuildInput): Promise<Buffer> {
     if (!settings.filament_colour || !Array.isArray(settings.filament_colour) || (settings.filament_colour as string[]).length === 0) {
       settings.filament_colour = ['#FFFFFF'];
     }
-    zip.folder('Metadata')!.file('project_settings.config', JSON.stringify(settings, null, 4));
+    zip.folder('Metadata')!.file('project_settings.config', JSON.stringify(settings, null, 4) + '\n');
   }
 
   return zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
@@ -583,7 +583,7 @@ function buildModelSettings(objects: ObjectDef[], wrapperId: number): string {
     xml += `
     <part id="${obj.id}" subtype="${kindToPartSubtype(obj.kind)}">
       <metadata key="name" value="${obj.name}"/>
-      <metadata key="matrix" value="1 0 0 0 0 1 0 0 0 0 1 0"/>
+      <metadata key="matrix" value="1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1"/>
       <metadata key="source_file" value="${obj.name}.stl"/>
       <metadata key="source_object_id" value="0"/>
       <metadata key="source_volume_id" value="0"/>
