@@ -250,12 +250,13 @@ export async function build3MF(input: ThreeMFBuildInput): Promise<Buffer> {
     bambustudio: 'BambuStudio-02.06.00.51',
     crealityprint: 'BambuStudio-02.06.00.51', // Creality Print = Bambu fork
     elegooslicer: 'BambuStudio-02.06.00.51', // ElegooSlicer = Bambu fork
-    // Snapmaker Orca: OrcaSlicer fork, but its bundled binary contains the
-    // BambuStudio-style gate (BambuStudio- string present) AND its own
-    // "Snapmaker_Orca-" prefix. Without matching prefix, project_settings.config
-    // keys load but filament_colour specifically never propagates to
-    // m_print_config (exit 1 with "no filament colors found in projects").
-    snapmakerorca: 'Snapmaker_Orca-01.10.01.50',
+    // Snapmaker Orca: OrcaSlicer fork that inherited BambuStudio's 3MF
+    // importer gate + version regex. Both Application-prefix gate AND the
+    // "Version Check: File Version 0.0.0.0" parser are hardcoded to the
+    // BambuStudio-X.Y.Z.W pattern. Snapmaker_Orca- prefix passes the gate
+    // but fails version parse. Lie about identity: tag with BambuStudio-
+    // prefix matching Snapmaker Orca's actual version (01.10.01.50).
+    snapmakerorca: 'BambuStudio-01.10.01.50',
   };
   const appMetadata = (input.engine && APP_BY_ENGINE[input.engine]) || 'Snorcal-1.0';
 
