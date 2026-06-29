@@ -159,9 +159,6 @@ export function SettingsPanel({
     api.listPrinters().then(setPrinters).catch(() => setPrinters([]));
   }, []);
 
-  const machineProfilesAll = profiles.filter(p => p.profile_type === 'machine');
-  const filamentProfiles = profiles.filter(p => p.profile_type === 'filament');
-
   // Filter machine dropdown to profiles matching the TARGET printer's `model`.
   // Falls back to union of all connected printers' models when no target set
   // (preserves multi-printer flow). Printers with no model = ignored.
@@ -170,6 +167,34 @@ export function SettingsPanel({
     (effectiveModel ? [effectiveModel] : printers.map(p => p.model))
       .filter((m): m is string => !!m && m.trim().length > 0)
   ));
+
+  const machineProfilesAll = profiles.filter(p => p.profile_type === 'machine');
+  const filamentProfilesAll = profiles.filter(p => p.profile_type === 'filament');
+
+  // Filament filter: match filament profile names against printer model tokens
+  // (e.g. "Bambu PLA Basic @BBL P1S 0.4 nozzle" matches tokens from "Bambu Lab
+  // P1S"). Falls back to all filaments when no printer tokens — preserves the
+  // "no printer selected, show generic" path.
+  const printerTokens = extractModelTokens(effectiveModel ?? printerModels.join(' '));
+  const filamentByPrinter = printerTokens.length === 0
+    ? filamentProfilesAll
+    : filamentProfilesAll.filter(p => {
+        const n = p.name.toLowerCase();
+        return printerTokens.some(tok => n.includes(tok));
+      });
+  const filamentProfiles = filamentByPrinter.length > 0 ? filamentByPrinter : filamentProfilesAll;
+
+  // Filament slot clearer (printer-scope): when target printer changes, drop
+  // any slot.profile that isn't in the printer-filtered filament list. Same
+  // idea as the engine-scope clearer but keyed off the derived filament set.
+  useEffect(() => {
+    if (filamentByPrinter.length === 0) return; // no narrowing to do
+    const allowed = new Set(filamentByPrinter.map(p => p.name));
+    if (filamentSlots.some(s => s.profile && !allowed.has(s.profile))) {
+      onFilamentSlotsChange(filamentSlots.map(s => (s.profile && !allowed.has(s.profile) ? { ...s, profile: undefined } : s)));
+    }
+  }, [filamentByPrinter]);
+
   const machineFiltered = printerModels.length === 0
     ? machineProfilesAll
     : machineProfilesAll.filter(p =>
