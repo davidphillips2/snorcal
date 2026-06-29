@@ -54,6 +54,15 @@ export interface ThreeMFBuildInput {
   // Common
   projectSettings?: Record<string, unknown>;
   buildVolume?: { x: number; y: number; z: number };
+  /**
+   * Target engine. BambuStudio's 3MF importer (bbs_3mf.cpp:1914-1922) skips
+   * ALL config files (project_settings.config, slice_info.config) unless the
+   * model's <metadata name="Application"> starts with "BambuStudio-". Without
+   * it, filament_colour is never loaded → "no filament colors found in
+   * projects" warning → downstream crash. OrcaSlicer's gate is commented out,
+   * so Orca doesn't care what value we put here.
+   */
+  engine?: string;
 }
 
 interface ProcessedGeometry {
@@ -228,13 +237,28 @@ export async function build3MF(input: ThreeMFBuildInput): Promise<Buffer> {
 
   const today = new Date().toISOString().slice(0, 10);
 
+  // BambuStudio's 3MF importer skips ALL config files unless Application
+  // metadata starts with "BambuStudio-" (bbs_3mf.cpp:1914-1922). Without it,
+  // filament_colour is never loaded → "no filament colors found in projects"
+  // warning → slicer crashes downstream. OrcaSlicer's gate is commented out
+  // (OrcaSlicer.cpp:1859-1870 commented) so Orca accepts any value.
+  const APP_BY_ENGINE: Record<string, string> = {
+    bambustudio: 'BambuStudio-02.06.00.51',
+    orcaslicer: 'OrcaSlicer-2.4.0',
+    snapmakerorca: 'OrcaSlicer-2.4.0', // Snapmaker Orca CLI = OrcaSlicer
+    crealityprint: 'BambuStudio-02.06.00.51', // Creality Print = Bambu fork
+    elegooslicer: 'BambuStudio-02.06.00.51', // ElegooSlicer = Bambu fork
+    prusaslicer: 'Snorcal-1.0', // PrusaSlicer uses its own 3MF importer
+  };
+  const appMetadata = (input.engine && APP_BY_ENGINE[input.engine]) || 'Snorcal-1.0';
+
   let modelXML = `<?xml version="1.0" encoding="UTF-8"?>
 <model unit="millimeter" xml:lang="en-US"
   xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02"
   xmlns:BambuStudio="http://schemas.bambulab.com/package/2021"
   xmlns:p="http://schemas.microsoft.com/3dmanufacturing/production/2015/06"
   requiredextensions="p">
-  <metadata name="Application">Snorcal-1.0</metadata>
+  <metadata name="Application">${appMetadata}</metadata>
   <metadata name="BambuStudio:3mfVersion">1</metadata>
   <metadata name="CreationDate">${today}</metadata>
   <metadata name="ModificationDate">${today}</metadata>

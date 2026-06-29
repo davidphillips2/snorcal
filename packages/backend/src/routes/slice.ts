@@ -742,6 +742,7 @@ export async function buildSliceInput3MF(
     models: buildModels,
     projectSettings,
     buildVolume: body.buildVolume,
+    engine: body.engine,
   });
 }
 
