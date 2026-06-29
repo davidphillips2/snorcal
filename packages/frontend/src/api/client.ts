@@ -646,6 +646,18 @@ export async function getAvailableEngines(): Promise<string[]> {
   } catch { return []; }
 }
 
+export interface LocalProfileImportResult {
+  scanned: number;
+  imported: Record<string, number>;
+  skippedCount: number;
+  errorCount: number;
+  errors: { file: string; error: string }[];
+}
+
+export async function importLocalProfiles(engine: string): Promise<LocalProfileImportResult> {
+  return apiFetch(`/settings/${encodeURIComponent(engine)}/import-local`, { method: 'POST' }) as Promise<LocalProfileImportResult>;
+}
+
 export interface CheckUpdateResult {
   current: string;
   latest: string | null;

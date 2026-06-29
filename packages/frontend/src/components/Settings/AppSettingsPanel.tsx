@@ -29,6 +29,10 @@ export function AppSettingsPanel(props: {
   const [availableEngines, setAvailableEngines] = useState<string[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [testing, setTesting] = useState(false);
+  // Per-engine import status. Keyed by engine id so each row tracks its own.
+  const [importStates, setImportStates] = useState<
+    Record<string, { status: 'running' | 'done' | 'error'; message: string }>
+  >({});
 
   const ENGINE_LABELS: Record<string, string> = {
     orcaslicer: 'OrcaSlicer',
@@ -67,6 +71,35 @@ export function AppSettingsPanel(props: {
     setTesting(true);
     try { setSidecarTest(await api.testSidecar()); }
     finally { setTesting(false); }
+  };
+
+  // Bulk-import every bundled preset from the locally-installed slicer.
+  // Confirm first — overwrites any same-named existing profiles in snorcal's DB.
+  const handleImportLocal = async (eng: string, label: string) => {
+    const ok = window.confirm(
+      `Import all machine / process / filament profiles from local ${label} into snorcal?\n` +
+      `Same-named existing profiles will be overwritten.`,
+    );
+    if (!ok) return;
+    setImportStates(s => ({ ...s, [eng]: { status: 'running', message: 'Scanning slicer profile dir…' } }));
+    try {
+      const res = await api.importLocalProfiles(eng);
+      const i = res.imported;
+      const parts = [
+        i.machine ? `${i.machine} machine` : null,
+        i.process ? `${i.process} process` : null,
+        i.filament ? `${i.filament} filament` : null,
+      ].filter(Boolean);
+      const summary = parts.length
+        ? `Imported ${parts.join(', ')} (${res.scanned} scanned, ${res.skippedCount} skipped, ${res.errorCount} errors).`
+        : `No profiles imported (${res.scanned} scanned, ${res.skippedCount} skipped, ${res.errorCount} errors).`;
+      setImportStates(s => ({ ...s, [eng]: { status: res.errorCount > 0 ? 'error' : 'done', message: summary } }));
+    } catch (e) {
+      setImportStates(s => ({ ...s, [eng]: {
+        status: 'error',
+        message: `Import failed: ${e instanceof Error ? e.message : String(e)}`,
+      } }));
+    }
   };
 
   if (loading || !info) {
@@ -128,26 +161,41 @@ export function AppSettingsPanel(props: {
         </div>
         {Object.entries(info.slicer.sidecars).map(([eng, cfg]) => {
           const status = sidecarTest?.sidecars[eng];
+          const label = ENGINE_LABELS[eng] ?? eng;
+          const canImportLocal = !cfg.url && cfg.binaryExists;
+          const importState = importStates[eng];
           return (
-            <Row
-              key={eng}
-              label={ENGINE_LABELS[eng] ?? eng}
-              value={
-                cfg.url ? (
-                  <span>
-                    <code className="text-gray-300 text-xs">{cfg.url}</code>{' '}
-                    <StatusBadge
-                      ok={status?.status === 'ok'}
-                      label={status?.status ?? 'unset'}
-                    />
-                  </span>
-                ) : cfg.binaryExists ? (
-                  <StatusBadge ok={true} label="local binary" />
-                ) : (
-                  <StatusBadge ok={false} label="not found" />
-                )
-              }
-            />
+            <div key={eng} className="px-3 py-2">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-xs text-gray-400">{label}</span>
+                <span className="text-xs text-gray-200 text-right flex items-center gap-2 flex-wrap justify-end">
+                  {cfg.url ? (
+                    <>
+                      <code className="text-gray-300 text-xs">{cfg.url}</code>
+                      <StatusBadge ok={status?.status === 'ok'} label={status?.status ?? 'unset'} />
+                    </>
+                  ) : cfg.binaryExists ? (
+                    <StatusBadge ok={true} label="local binary" />
+                  ) : (
+                    <StatusBadge ok={false} label="not found" />
+                  )}
+                  {canImportLocal && (
+                    <button
+                      onClick={() => handleImportLocal(eng, label)}
+                      disabled={importState?.status === 'running'}
+                      className="px-2 py-0.5 text-[10px] bg-gray-700 hover:bg-gray-600 rounded text-gray-300 disabled:opacity-50"
+                    >
+                      {importState?.status === 'running' ? 'Importing…' : 'Import profiles'}
+                    </button>
+                  )}
+                </span>
+              </div>
+              {importState?.message && (
+                <div className={`mt-1 text-[10px] ${importState.status === 'error' ? 'text-red-400' : 'text-gray-400'}`}>
+                  {importState.message}
+                </div>
+              )}
+            </div>
           );
         })}
       </Section>

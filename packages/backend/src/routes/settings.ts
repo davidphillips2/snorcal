@@ -1,16 +1,19 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import JSZip from 'jszip';
+import fs from 'node:fs';
+import path from 'node:path';
 import type { Db } from '../db/index.js';
 import {
   DEFAULT_PROCESS_SETTINGS,
   DEFAULT_MACHINE_SETTINGS,
   DEFAULT_FILAMENT_SETTINGS,
+  getSlicerBinary,
 } from '@snorcal/shared';
 
 const VALID_TYPES = ['machine', 'filament', 'process'] as const;
 type ProfileType = typeof VALID_TYPES[number];
 
-function detectProfileType(json: Record<string, unknown>, filename: string): ProfileType | null {
+export function detectProfileType(json: Record<string, unknown>, filename: string): ProfileType | null {
   // From JSON "type" field
   const t = String(json['type'] || '').toLowerCase();
   if (VALID_TYPES.includes(t as ProfileType)) return t as ProfileType;
@@ -24,7 +27,7 @@ function detectProfileType(json: Record<string, unknown>, filename: string): Pro
   return null;
 }
 
-function getProfileName(json: Record<string, unknown>, filename: string): string {
+export function getProfileName(json: Record<string, unknown>, filename: string): string {
   if (json['name'] && typeof json['name'] === 'string') return json['name'];
   // Strip directory path and extension
   const base = filename.split('/').pop() || filename;
@@ -138,6 +141,97 @@ export async function settingsRoutes(app: FastifyInstance, options: { db: Db }) 
       }
 
       return { ok: true, data: { imported, errors } };
+    },
+  );
+
+  // POST /api/settings/:engine/import-local — Scan the locally-installed
+  // slicer's bundled profiles directory and bulk-import every machine /
+  // process / filament preset JSON into the DB. Reuses detectProfileType +
+  // getProfileName from the file-upload path. Idempotent — re-running
+  // upserts over existing rows.
+  //
+  // Skips: vendor metadata JSONs (no `type` field, not under machine/process
+  // /filament subdir), template JSONs (filename contains "template" — these
+  // are gcode snippet templates, not slicable presets), and JSONs with no
+  // usable name.
+  app.post<{ Params: { engine: string } }>(
+    '/api/settings/:engine/import-local',
+    async (req, reply) => {
+      const { engine } = req.params;
+
+      let profilesRoot: string;
+      try {
+        profilesRoot = path.join(getSlicerBinary(engine).profilesDir, 'profiles');
+      } catch {
+        return reply.status(400).send({ ok: false, error: `Unknown engine: ${engine}` });
+      }
+      if (!fs.existsSync(profilesRoot)) {
+        return reply.status(404).send({
+          ok: false,
+          error: `Local profiles dir not found: ${profilesRoot}. Is ${engine} installed on this host?`,
+        });
+      }
+
+      const imported: { type: string; name: string }[] = [];
+      const skipped: { file: string; reason: string }[] = [];
+      const errors: { file: string; error: string }[] = [];
+
+      const walk = (dir: string): string[] => {
+        const out: string[] = [];
+        for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+          const full = path.join(dir, entry.name);
+          if (entry.isDirectory()) out.push(...walk(full));
+          else if (entry.isFile() && entry.name.endsWith('.json')) out.push(full);
+        }
+        return out;
+      };
+
+      const files = walk(profilesRoot);
+      for (const file of files) {
+        const rel = path.relative(profilesRoot, file);
+        // Skip gcode snippet templates — they're not slicable presets.
+        if (/template/i.test(rel)) {
+          skipped.push({ file: rel, reason: 'template' });
+          continue;
+        }
+        try {
+          const json = JSON.parse(fs.readFileSync(file, 'utf-8')) as Record<string, unknown>;
+          if (typeof json !== 'object' || json === null) {
+            skipped.push({ file: rel, reason: 'not a JSON object' });
+            continue;
+          }
+          const type = detectProfileType(json, rel);
+          if (!type) {
+            skipped.push({ file: rel, reason: 'unknown type' });
+            continue;
+          }
+          const name = getProfileName(json, rel);
+          if (!name) {
+            skipped.push({ file: rel, reason: 'no name' });
+            continue;
+          }
+          db.upsertProfile(engine, type, name, JSON.stringify(json));
+          imported.push({ type, name });
+        } catch (e) {
+          errors.push({ file: rel, error: e instanceof Error ? e.message : String(e) });
+        }
+      }
+
+      const counts = imported.reduce<Record<string, number>>((acc, { type }) => {
+        acc[type] = (acc[type] ?? 0) + 1;
+        return acc;
+      }, {});
+
+      return {
+        ok: true,
+        data: {
+          scanned: files.length,
+          imported: counts,
+          skippedCount: skipped.length,
+          errorCount: errors.length,
+          errors: errors.slice(0, 20), // cap to keep payload small
+        },
+      };
     },
   );
 
