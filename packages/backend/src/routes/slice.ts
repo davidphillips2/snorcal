@@ -721,25 +721,62 @@ export async function buildSliceInput3MF(
     });
   }
 
-  // Bambuddy parity: do NOT strip "-1" sentinel values from projectSettings.
-  // The previous v0.1.20 strip (mirroring bambuddy's
-  // _sanitize_project_settings_sentinels) deleted raft_first_layer_expansion
-  // / tree_support_wall_count / prime_tower_brim_width when they held -1.
-  // That mirroring was based on bambuddy's HTTP layer — bambuddy STRIPS
-  // sentinels from the embedded 3MF it RECEIVES, then resolves the bundled
-  // slicer preset via --load-settings which re-supplies valid values for
-  // those keys. Snorcal in local mode (no profile stubs, no --load-settings)
-  // ends up with neither — the slicer derefs a null config key during
-  // load_nozzle_infos_with_compatibility → SIGSEGV. Reference BambuStudio
-  // 3MF exports ship these keys with -1 intact and slice fine; the range
-  // validator warning that v0.1.20 chased was actually a different issue
-  // (since-fixed by template replacement in v0.1.27). Keep sentinels.
+  // Normalize values that BambuStudio exports as "inherit/auto" sentinels
+  // but that OrcaSlicer CLI rejects at range validation, and that both
+  // sidecars can trip over during multi-color slicing.
+  //
+  //   - "-1" sentinel (inherit-from-parent in BambuStudio GUI)  → "0"
+  //     Affects: raft_first_layer_expansion, tree_support_wall_count,
+  //     prime_tower_lift_height, filament_ramming_volumetric_speed[*],
+  //     ironing_fan_speed[*], and others in user-imported 3MFs.
+  //   - "*_filament": "0" (BambuStudio "unset" marker, range wants >= 1) → "1"
+  //     Affects: solid_infill_filament, sparse_infill_filament, wall_filament,
+  //     support_filament, support_interface_filament.
+  //
+  // Verified against OrcaSlicer 2.4 + BambuStudio 02.07 sidecar range checks
+  // (exit 238 with `raft_first_layer_expansion: -1 not in range [0, MAX]`
+  //  + `solid_infill_filament: 0 not in range [1, MAX]`).
+  sanitizeSentinelsAndZeroFilaments(projectSettings);
 
   return build3MF({
     models: buildModels,
     projectSettings,
     buildVolume: body.buildVolume,
   });
+}
+
+/**
+ * Mutates `settings` in place: replaces "-1" sentinel values (BambuStudio
+ * inherit-from-parent marker) with "0", and `*_filament: "0"` (BambuStudio
+ * unset marker — slicer range wants >= 1) with "1". Handles arrays.
+ *
+ * OrcaSlicer CLI rejects these outright (exit 238). BambuStudio tolerates
+ * them in its own GUI exports but snorcal's HTTP-upload path can still trip
+ * the slicer downstream. Safer to normalize universally.
+ *
+ * Replaces v0.1.20's narrower 3-key strip and v0.1.28's "keep sentinels"
+ * decision (the latter was based on the assumption that bambuddy sidecar
+ * strips them upstream — it does NOT for the sync /slice path snorcal uses).
+ */
+function sanitizeSentinelsAndZeroFilaments(settings: Record<string, unknown>): void {
+  const fixScalar = (v: unknown): unknown => {
+    if (typeof v !== 'string') return v;
+    if (v === '-1') return '0';
+    return v;
+  };
+  for (const [key, val] of Object.entries(settings)) {
+    if (Array.isArray(val)) {
+      settings[key] = val.map(fixScalar);
+      continue;
+    }
+    if (typeof val === 'string') {
+      if (val === '-1') {
+        settings[key] = '0';
+      } else if (val === '0' && key.endsWith('_filament')) {
+        settings[key] = '1';
+      }
+    }
+  }
 }
 
 export async function runSliceJob(
