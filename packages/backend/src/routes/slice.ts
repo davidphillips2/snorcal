@@ -736,7 +736,7 @@ export async function buildSliceInput3MF(
   // Verified against OrcaSlicer 2.4 + BambuStudio 02.07 sidecar range checks
   // (exit 238 with `raft_first_layer_expansion: -1 not in range [0, MAX]`
   //  + `solid_infill_filament: 0 not in range [1, MAX]`).
-  sanitizeSentinelsAndZeroFilaments(projectSettings);
+  sanitizeSentinelsAndZeroFilaments(projectSettings, body.engine);
 
   return build3MF({
     models: buildModels,
@@ -759,7 +759,7 @@ export async function buildSliceInput3MF(
  * decision (the latter was based on the assumption that bambuddy sidecar
  * strips them upstream — it does NOT for the sync /slice path snorcal uses).
  */
-function sanitizeSentinelsAndZeroFilaments(settings: Record<string, unknown>): void {
+function sanitizeSentinelsAndZeroFilaments(settings: Record<string, unknown>, engine?: string): void {
   const fixScalar = (v: unknown): unknown => {
     if (typeof v !== 'string') return v;
     if (v === '-1') return '0';
@@ -789,6 +789,26 @@ function sanitizeSentinelsAndZeroFilaments(settings: Record<string, unknown>): v
   delete settings.compatible_printers;
   delete settings.compatible_printers_condition;
   delete settings.upward_compatible_machine;
+
+  // Force-clear inherits_group — Snapmaker Orca (and OrcaSlicer in general)
+  // loads named library presets via this key and overlays their values on
+  // top of the embedded project_settings, overriding snorcal's resolved
+  // values (filament_colour, filament_settings_id, etc). bambu-to-snapmaker-u1
+  // converter clears every slot to "" (converter.py:260-262). Pad/truncate
+  // to match filament_colour length so array stays consistent.
+  const fg = settings.inherits_group;
+  if (Array.isArray(fg)) {
+    settings.inherits_group = fg.map(() => '');
+  } else if (fg !== undefined) {
+    settings.inherits_group = [''];
+  }
+
+  // Snapmaker Orca has a prime-tower bug with "rib" wall type
+  // (bambu-to-snapmaker-u1 converter.py:249 forces "rectangle" for all
+  // U1 output). Force-set when targeting snapmaker to avoid the crash.
+  if (engine === 'snapmakerorca') {
+    settings.wipe_tower_wall_type = 'rectangle';
+  }
 }
 
 export async function runSliceJob(

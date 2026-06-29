@@ -322,6 +322,26 @@ export async function build3MF(input: ThreeMFBuildInput): Promise<Buffer> {
       settings.filament_colour = ['#FFFFFF'];
     }
     zip.folder('Metadata')!.file('project_settings.config', JSON.stringify(settings, null, 4) + '\n');
+
+    // Metadata/slice_info.config — minimal header. Required by Snapmaker Orca
+    // to recognise the file as a project (bambu-to-snapmaker-u1 converter
+    // emits this for every output, even when source had none). Other Bambu/
+    // Orca forks tolerate its presence; no harm emitting universally.
+    zip.folder('Metadata')!.file('slice_info.config', sliceInfoXML());
+
+    // Metadata/plate_1.json — required by Snapmaker Orca; missing causes JSON
+    // parse error during project load (converter.py:922-929). Schema mirrors
+    // bambuddy reference. Keys: filament_colors (RGBA hex), filament_ids
+    // (filament_settings_id), first_extruder (0-indexed), is_seq_print, version.
+    const filamentColours = (settings.filament_colour as string[]) ?? ['#FFFFFF'];
+    const filamentIds = (settings.filament_settings_id as string[]) ?? [];
+    zip.folder('Metadata')!.file('plate_1.json', JSON.stringify({
+      filament_colors: filamentColours,
+      filament_ids: filamentIds,
+      first_extruder: 0,
+      is_seq_print: false,
+      version: 2,
+    }));
   }
 
   return zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
@@ -655,6 +675,19 @@ function buildModelSettings(objects: ObjectDef[], wrapperId: number): string {
   </assemble>
 </config>`;
   return xml;
+}
+
+function sliceInfoXML(): string {
+  // Minimal slice_info.config — bambu-to-snapmaker-u1 reference layout
+  // (metadata_helpers.minimal_slice_info). X-BBL-Client-Type=slicer is the
+  // gate key; version value empty is tolerated.
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<config>
+  <header>
+    <header_item key="X-BBL-Client-Type" value="slicer"/>
+    <header_item key="X-BBL-Client-Version" value=""/>
+  </header>
+</config>`;
 }
 
 function contentTypesXML(): string {
