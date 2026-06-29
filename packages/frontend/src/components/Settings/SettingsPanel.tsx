@@ -148,6 +148,11 @@ export function SettingsPanel({
     if (Object.keys(updates).length > 0) {
       onProfilesChange({ ...selectedProfiles, ...updates });
     }
+    // Filament slots: each slot.profile is also engine-scoped. Clear any that
+    // no longer resolve to a real filament profile in the new engine's set.
+    if (filamentSlots.some(s => s.profile && !names.has(s.profile))) {
+      onFilamentSlotsChange(filamentSlots.map(s => (s.profile && !names.has(s.profile) ? { ...s, profile: undefined } : s)));
+    }
   }, [profiles, selectedProfiles.machine, selectedProfiles.process]);
 
   useEffect(() => {
@@ -225,13 +230,15 @@ export function SettingsPanel({
 
   // Auto-select first compatible process when machine changes or when current
   // process selection isn't in the (now-filtered) compatible list. Prefers a
-  // 0.2mm "Standard" profile when available (most generic default).
+  // 0.2mm "Standard" profile when available (most generic default), then any
+  // "Standard", then first entry.
   useEffect(() => {
     if (processProfiles.length === 0) return;
     const current = selectedProfiles.process;
     if (current && processProfiles.some(p => p.name === current)) return;
+    const prefer02Standard = processProfiles.find(p => /0\.2.*standard/i.test(p.name));
     const preferStandard = processProfiles.find(p => /standard/i.test(p.name));
-    onProfilesChange({ ...selectedProfiles, process: (preferStandard ?? processProfiles[0]).name });
+    onProfilesChange({ ...selectedProfiles, process: (prefer02Standard ?? preferStandard ?? processProfiles[0]).name });
   }, [processProfiles, selectedProfiles.process]);
 
   const updateSetting = useCallback((key: string, value: string) => {
