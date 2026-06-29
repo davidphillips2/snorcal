@@ -326,8 +326,11 @@ export class SlicerExecutor {
   private buildArgs(cmd: SliceCommand): string[] {
     const args: string[] = [];
 
-    // Point to slicer's data dir (contains system profiles cache)
-    if (cmd.dataDir) {
+    // Point to slicer's data dir (contains system profiles cache).
+    // OrcaSlicer-class CLIs accept --datadir; BambuStudio-class CLIs reject
+    // it ("Invalid option --datadir", exit 254). Bambu uses --load-settings
+    // / --load-filaments + reads bundled presets from its resource bundle.
+    if (cmd.dataDir && !isBambuStudioClass(cmd.engine)) {
       args.push('--datadir', cmd.dataDir);
     }
 
