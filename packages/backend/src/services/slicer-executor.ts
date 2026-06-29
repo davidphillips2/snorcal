@@ -342,10 +342,10 @@ export class SlicerExecutor {
       '--debug', '2',
     );
 
-    if (isBambuStudioClass(cmd.engine)) {
-      args.push('--skip_useless_pick');
-    }
-
+    // --skip_useless_pick was previously gated on isBambuStudioClass. Local
+    // BambuStudio.app CLI rejects it ("Invalid option --skip_useless_pick",
+    // exit 254). Sidecar (HTTP mode) builds its own args server-side and is
+    // unaffected by anything we drop here.
     args.push(cmd.input3mf);
     return args;
   }
