@@ -82,6 +82,7 @@ export function JobCard({ job, onCancel, onDownload, onDownloadThreemf, onPrevie
             <span>{job.filamentUsedG < 1 ? `${(job.filamentUsedG * 1000).toFixed(0)}mg` : `${job.filamentUsedG.toFixed(1)}g`}</span>
           )}
           {job.gcodeSize && <span>{(job.gcodeSize / 1024).toFixed(1)} KB</span>}
+          {job.engine && <span className="text-gray-500">via {ENGINE_LABELS[job.engine] ?? job.engine}</span>}
         </div>
       )}
 
