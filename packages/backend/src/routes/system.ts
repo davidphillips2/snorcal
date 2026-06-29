@@ -139,10 +139,12 @@ export async function systemRoutes(app: FastifyInstance, options: { db: Db }) {
     const redisPort = parseInt(process.env.REDIS_PORT || '6379');
 
     // Per-engine sidecar URLs (bambuddy-style separate services per slicer).
-    const sidecars: Record<string, { url: string | null; local: boolean }> = {};
+    const sidecars: Record<string, { url: string | null; local: boolean; binaryExists: boolean }> = {};
     for (const engine of Object.keys(SLICER_BINARIES)) {
       const url = getSidecarUrl(engine);
-      sidecars[engine] = { url, local: !url };
+      let binaryExists = false;
+      try { binaryExists = fs.existsSync(getSlicerBinary(engine).binaryPath); } catch { /* unknown engine */ }
+      sidecars[engine] = { url, local: !url, binaryExists };
     }
 
     const modelCount = db.listModels().length;

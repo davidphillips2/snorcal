@@ -612,7 +612,7 @@ export interface SystemInfo {
   counts: { models: number; jobs: number; printers: number };
   queue: { state: 'connected' | 'fallback'; redisHost: string; redisPort: number };
   slicer: {
-    sidecars: Record<string, { url: string | null; local: boolean }>;
+    sidecars: Record<string, { url: string | null; local: boolean; binaryExists?: boolean }>;
     local: boolean;
   };
   host: {

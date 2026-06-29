@@ -141,8 +141,10 @@ export function AppSettingsPanel(props: {
                       label={status?.status ?? 'unset'}
                     />
                   </span>
-                ) : (
+                ) : cfg.binaryExists ? (
                   <StatusBadge ok={true} label="local binary" />
+                ) : (
+                  <StatusBadge ok={false} label="not found" />
                 )
               }
             />
