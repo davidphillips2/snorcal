@@ -778,6 +778,17 @@ function sanitizeSentinelsAndZeroFilaments(settings: Record<string, unknown>): v
       }
     }
   }
+  // Strip compatibility-list fields. These are preset-store hints used by the
+  // slicer to gate "process X compatible with printer Y" checks when settings
+  // are loaded from named system presets. Snorcal embeds full resolved
+  // settings inline, so the check is redundant AND actively harmful when the
+  // user picks a printer whose model isn't in a list inherited from default
+  // profiles (e.g. Snapmaker U1 not in default `print_compatible_printers`
+  // Bambu-only list → exit 239 "process not compatible with printer").
+  delete settings.print_compatible_printers;
+  delete settings.compatible_printers;
+  delete settings.compatible_printers_condition;
+  delete settings.upward_compatible_machine;
 }
 
 export async function runSliceJob(
