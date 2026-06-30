@@ -41,7 +41,11 @@ function getDefaultDataDir(engine: string): string {
       crealityprint: 'CrealityPrint',
       prusaslicer: 'PrusaSlicer',
       elegooslicer: 'ElegooSlicer',
-      snapmakerorca: 'Snapmaker Orca',
+      // Snapmaker Orca's GUI writes to "Snapmaker_Orca" (underscore) — verified
+      // against actual install. The "Snapmaker Orca" (space) dir is empty on
+      // a real user box, so sending it as --datadir deprives the CLI of the
+      // user's resolved preset cache → "no filament colors found in projects".
+      snapmakerorca: 'Snapmaker_Orca',
     };
     return path.join(home, 'Library', 'Application Support', macDirs[engine] ?? 'OrcaSlicer');
   }
