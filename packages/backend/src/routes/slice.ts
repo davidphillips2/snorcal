@@ -813,6 +813,14 @@ function sanitizeSentinelsAndZeroFilaments(settings: Record<string, unknown>, en
   if (engine === 'snapmakerorca') {
     settings.wipe_tower_wall_type = 'rectangle';
   }
+
+  // OrcaSlicer/BambuStudio exit 205: "Ooze prevention is only supported with
+  // the wipe tower when 'single_extruder_multi_material' is off". Error fires
+  // whenever ooze_prevention=1 AND single_extruder_multi_material=1, regardless
+  // of prime tower state. User-imported profiles can drag ooze_prevention=1 in
+  // even though snorcal defaults to 0. Force off universally — snorcal never
+  // emits the AMS-only ooze-prevention mode that would make this useful.
+  settings.ooze_prevention = '0';
 }
 
 export async function runSliceJob(
