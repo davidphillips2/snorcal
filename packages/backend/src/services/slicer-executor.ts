@@ -287,6 +287,19 @@ export class SlicerExecutor {
         const gcodeResult = this.findGcode(cmd.outputDir);
 
         if (exitCode !== 0) {
+          // OrcaSlicer/BambuStudio sometimes emit non-zero exit codes (e.g.
+          // 154) even when slicing fully succeeded and a valid gcode file is
+          // sitting in the output directory — observed during multi-color
+          // slices with Snapmaker U1 profile overlays where a downstream
+          // validation step (extruder-type lookup, flush-matrix check) fires
+          // after gcode generation. Treat gcode-present as success so we
+          // don't throw away a usable slice. Bambuddy parity: sidecar
+          // endpoint does the same.
+          if (gcodeResult && gcodeResult.size > 1024) {
+            console.warn(`[SlicerExecutor] Slicer exited ${exitCode} but gcode present (${gcodeResult.size} bytes) — treating as success`);
+            resolve({ gcodePath: gcodeResult.path, gcodeSize: gcodeResult.size, exitCode: 0, stdout, stderr });
+            return;
+          }
           resolve({
             gcodePath: gcodeResult?.path ?? '',
             gcodeSize: gcodeResult?.size ?? 0,
