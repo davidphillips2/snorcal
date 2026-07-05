@@ -23,16 +23,22 @@ Open http://localhost:3000. On first load you'll set a password (see
 [Authentication](#authentication)), then the setup wizard runs to discover
 your printer and pick a profile.
 
-One container runs everything — the Node app plus a bundled OrcaSlicer binary
-(pulled from the [SimplyPrint/slicer-builds](https://github.com/SimplyPrint/slicer-builds)
-nightly release). Slicing uses the same `executeLocal` code path as bare-metal,
-so output matches. Memory ceiling: 4G (slicer + node + Xvfb need real headroom).
+One container runs everything — the Node app plus your choice of slicer
+binary, fetched on first boot from the
+[SimplyPrint/slicer-builds](https://github.com/SimplyPrint/slicer-builds)
+nightly release and cached in the data volume. Slicing uses the same
+`executeLocal` code path as bare-metal, so output matches.
 
-| Image variant | Contains                          | When to use                       |
-|---------------|-----------------------------------|-----------------------------------|
-| `:latest`     | App + OrcaSlicer + Xvfb (default) | Most users — covers Orca mods, Bambu/Snapmaker via Orca profiles |
-| `:bambu`      | App + BambuStudio + Xvfb          | Future — Bambu-purists wanting the native engine |
-| `:full`       | App + both slicers + Xvfb         | Future — power users wanting both |
+Pick your slicer with the `SLICER_ENGINE` env var:
+
+| `SLICER_ENGINE` | Slicer fetched                  | Notes |
+|-----------------|---------------------------------|-------|
+| `orca` (default) | OrcaSlicer                     | Covers Orca mods, Bambu/Snapmaker via Orca profiles |
+| `bambu`         | BambuStudio                     | Bambu-purists wanting the native engine |
+| `both`          | OrcaSlicer + BambuStudio        | Power users wanting both engines |
+
+To change slicers later, set the env and clear `/data/slicers/` (or just the
+relevant subdir) so the entrypoint re-fetches.
 
 Redis is optional (commented out in the compose file). Without it, slices run
 in-process via the direct path — fine for single-user setups.

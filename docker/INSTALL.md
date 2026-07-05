@@ -47,7 +47,7 @@ In the same terminal, from the same folder:
 docker compose -f docker-compose.example.yml up -d
 ```
 
-First run will download ~2 GB of images (Snorcal + two slicer sidecars). Coffee time. When it's done you'll see "Container ... Started" for three containers.
+First run will download one image (~3 GB — the app plus a bundled OrcaSlicer and Xvfb). Coffee time. When it's done you'll see "Container ... Started".
 
 ---
 

@@ -10,10 +10,6 @@ services:
     build:
       context: ..
       dockerfile: docker/Dockerfile.app
-      args:
-        # Slicer binary zip. Default: OrcaSlicer nightly from SimplyPrint/slicer-builds.
-        # Pin a specific release tag here for reproducible builds.
-        # - SLICER_URL=https://github.com/SimplyPrint/slicer-builds/releases/download/nightly/OrcaSlicer-linux-x86-64-nightly.zip
     ports:
       - "${PORT:-3000}:3000"
     volumes:
@@ -25,6 +21,9 @@ services:
       # - REDIS_PORT=6379
       - DATA_DIR=/data
       - NODE_ENV=production
+      # Which slicer(s) to fetch on first boot: orca | bambu | both. Default: orca.
+      # - SLICER_ENGINE=orca
+      # - SLICER_BASE_URL=https://github.com/SimplyPrint/slicer-builds/releases/download/nightly
       # Auth is ON by default — first launch shows a setup screen to pick a
       # password. Pre-set the hash to skip it (headless deploys).
       # - SNORCAL_PASSWORD_HASH=scrypt$N=32768$r=8$p=1$...

@@ -25,6 +25,11 @@ services:
       # - REDIS_PORT=6379
       - DATA_DIR=/data
       - NODE_ENV=production
+      # Which slicer(s) to fetch on first boot: orca | bambu | both.
+      # Default: orca. Cached in the /data volume across restarts.
+      # - SLICER_ENGINE=orca
+      # Override the slicer download source (e.g. pin a specific release tag):
+      # - SLICER_BASE_URL=https://github.com/SimplyPrint/slicer-builds/releases/download/nightly
       # Auth is ON by default — first launch shows a setup screen to pick a
       # password. Pre-set the hash to skip it (headless deploys). Generate with
       # `pnpm --filter backend exec tsx scripts/hash-password.ts`.
