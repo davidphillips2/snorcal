@@ -23,17 +23,31 @@ Open http://localhost:3000. On first load you'll set a password (see
 [Authentication](#authentication)), then the setup wizard runs to discover
 your printer and pick a profile.
 
-Three containers spin up:
+One container runs everything — the Node app plus a bundled OrcaSlicer binary
+(pulled from the [SimplyPrint/slicer-builds](https://github.com/SimplyPrint/slicer-builds)
+nightly release). Slicing uses the same `executeLocal` code path as bare-metal,
+so output matches. Memory ceiling: 4G (slicer + node + Xvfb need real headroom).
 
-| Service  | Image base         | Has                                  | Memory |
-|----------|--------------------|--------------------------------------|--------|
-| `app`    | node:20-slim       | Backend + frontend static            | 512M   |
-| `slicer` | ubuntu:22.04       | OrcaSlicer + BambuStudio + Xvfb + sidecar HTTP | 4G     |
-| `redis`  | redis:7-alpine     | BullMQ job queue                     | 128M   |
+| Image variant | Contains                          | When to use                       |
+|---------------|-----------------------------------|-----------------------------------|
+| `:latest`     | App + OrcaSlicer + Xvfb (default) | Most users — covers Orca mods, Bambu/Snapmaker via Orca profiles |
+| `:bambu`      | App + BambuStudio + Xvfb          | Future — Bambu-purists wanting the native engine |
+| `:full`       | App + both slicers + Xvfb         | Future — power users wanting both |
 
-All three share the `snorcal-data` volume mounted at `/data`. DB lives at
+Redis is optional (commented out in the compose file). Without it, slices run
+in-process via the direct path — fine for single-user setups.
+
+Data lives in the `snorcal-data` volume mounted at `/data`. DB at
 `/data/snorcal.db`, models at `/data/models/`, jobs at `/data/jobs/`,
 print photos at `/data/print-photos/`.
+
+### Using an external slicer sidecar (legacy mode)
+
+If you'd rather run the slicer as a separate container (the old multi-service
+shape), set `SLICER_URL_ORCASLICER=http://host:port` in the app's environment.
+When set, snorcal uses the HTTP sidecar path instead of the in-image binary.
+Useful if you already run [bambuddy](https://github.com/maziggy/bambuddy)
+sidecars or want to share one slicer across multiple snorcal instances.
 
 ### Stop / update
 
@@ -88,33 +102,33 @@ Redis optional. If missing, queue degrades to direct async (no retry/concurrency
 └────────────────────────┬─────────────────────────────────────┘
                          │ HTTP /api + SSE
 ┌────────────────────────▼─────────────────────────────────────┐
-│  app container (Node + Fastify)                              │
+│  snorcal container (Node + Fastify + bundled slicer)         │
 │    - SQLite (models, jobs, profiles, spools, prints, printers)│
 │    - 3MF builder (jszip + face colors + project settings)    │
-│    - BullMQ worker → POSTs /slice to sidecar                 │
+│    - SlicerExecutor spawns OrcaSlicer under `xvfb-run`       │
+│      (same code path bare-metal uses; output matches)        │
 │    - Printer adapters (Moonraker MQTT, Bambu MQTT)           │
-└──────┬──────────────────────────┬────────────────────────────┘
-       │ shared /data volume      │ MQTT/HTTP to printer
-┌──────▼─────────────┐  ┌────────▼─────────────────────────────┐
-│  slicer container  │  │  printer (Klipper / Bambu)           │
-│  - Xvfb :99        │  │    camera, status, file transfer     │
-│  - OrcaSlicer      │  └──────────────────────────────────────┘
-│  - BambuStudio     │
-│  - HTTP :3001      │  ┌────────────────┐
-│    (SSE progress)  │  │  redis:7-alpine│
-└────────────────────┘  └────────────────┘
+│    - /data volume: DB, models, jobs, photos                  │
+└──────────────────────────┬───────────────────────────────────┘
+                           │ MQTT/HTTP to printer
+              ┌────────────▼─────────────────────────────────┐
+              │  printer (Klipper / Bambu)                   │
+              │    camera, status, file transfer             │
+              └──────────────────────────────────────────────┘
+
+  (optional) redis:7-alpine — BullMQ job queue. Without it, slices run
+  in-process. Only needed for queueing/concurrency control.
 ```
 
 ### Slicing pipeline
 
-1. `POST /api/slice` → BullMQ job
+1. `POST /api/slice` → job (BullMQ if Redis present, else direct in-process)
 2. Worker builds 3MF from STL + face colors + project settings (`threemf-builder.ts`)
 3. Writes `input.3mf` to `/data/jobs/<jobId>/`
-4. POSTs `{"engine","input3mf","outputDir",...}` to `http://slicer:3001/slice`
-5. Sidecar spawns slicer under Xvfb, streams SSE progress events back
-6. Sidecar writes gcode to `/data/jobs/<jobId>/output/`
-7. Worker reads gcode from same path (shared volume), updates DB, fires SSE
-8. Frontend polls job or listens to SSE for completion
+4. Spawns `orca-slicer --datadir <dir> --slice 0 --outputdir <dir> ... input.3mf`
+   under `xvfb-run` (in-image binary; no HTTP hop)
+5. Reads gcode from `/data/jobs/<jobId>/output/`, updates DB, fires SSE
+6. Frontend listens to SSE for completion
 
 CLI contract: `<binary> --datadir <dir> --slice 0 --outputdir <dir> --arrange 0 --orient 0 --debug 2 input.3mf`
 

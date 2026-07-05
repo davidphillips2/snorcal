@@ -36,17 +36,53 @@ COPY packages/backend/ ./packages/backend/
 
 RUN pnpm --filter shared build && pnpm --filter backend build
 
-# ---- Stage 3: App runtime (Node only, no slicers) ----
+# ---- Stage 3: Download slicer binary ----
+# Pulls the OrcaSlicer nightly build from the SimplyPrint/slicer-builds
+# release. The zip ships a flat bin/ tree (orca-slicer + bundled .so libs).
+# Override SLICER_URL to pin a specific release tag for reproducible builds.
+FROM node:20-bookworm-slim AS slicer-fetch
+ARG SLICER_URL=https://github.com/SimplyPrint/slicer-builds/releases/download/nightly/OrcaSlicer-linux-x86-64-nightly.zip
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates unzip \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /slicer
+RUN curl -fsSL "${SLICER_URL}" -o slicer.zip \
+    && unzip -q slicer.zip -d /opt/slicer \
+    && rm slicer.zip \
+    && chmod +x /opt/slicer/bin/orca-slicer 2>/dev/null || true \
+    && test -f /opt/slicer/bin/orca-slicer
+
+# ---- Stage 4: App runtime (Node + bundled slicer) ----
 FROM node:20-bookworm-slim AS runtime
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# redis-cli + curl for entrypoint wait loops
+# redis-cli + curl for entrypoint wait loops; Xvfb + GL/GTK libs the slicer
+# needs at runtime (the binary bundles most .so deps, but GL/GTK/Xvfb are
+# system-level and must be present for headless rendering).
 RUN apt-get update && apt-get install -y --no-install-recommends \
     redis-tools \
     curl \
     ca-certificates \
+    xvfb \
+    libgl1-mesa-dri \
+    libglu1-mesa \
+    libglew2.2 \
+    libgtk-3-0 \
+    libwebkit2gtk-4.1-0 \
+    libcurl4 \
+    libtiff6 \
+    libpng16-16 \
+    libjpeg-turbo8 \
+    locales \
+    && locale-gen en_US.UTF-8 \
     && rm -rf /var/lib/apt/lists/*
+
+ENV LANG=en_US.UTF-8
+ENV LC_ALL=en_US.UTF-8
+
+# Slicer tree (binary + bundled libs). No resources/ dir in the upstream zip —
+# snorcal embeds all settings in the 3MF directly, so SLICER_DATADIR is unset.
+COPY --from=slicer-fetch /opt/slicer /opt/slicer
 
 WORKDIR /app
 
@@ -76,6 +112,12 @@ ENV NODE_ENV=production
 ENV DATA_DIR=/data
 ENV FRONTEND_DIR=/app/frontend/dist
 ENV PORT=3000
+
+# Tell snorcal where the in-image slicer lives. executeLocal reads
+# SLICER_PATH_<ENGINE> and wraps the binary in `xvfb-run` on Linux without a
+# DISPLAY. With SLICER_URL_* unset, snorcal runs the same code path as
+# bare-metal (no HTTP sidecar → output matches bare-metal).
+ENV SLICER_PATH_ORCASLICER=/opt/slicer/bin/orca-slicer
 
 EXPOSE 3000
 

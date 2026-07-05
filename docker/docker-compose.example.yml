@@ -1,13 +1,11 @@
-# Example production deployment using prebuilt images.
+# Example production deployment using a prebuilt image.
 #
-# Snorcal app + two bambuddy slicer sidecars (OrcaSlicer + BambuStudio).
-# Pull slicer images from maziggy's GHCR — see https://github.com/maziggy/bambuddy/blob/main/slicer-api/README.md
-#
+# Single container: snorcal app + OrcaSlicer + Xvfb bundled together.
 #   docker compose -f docker/docker-compose.example.yml up -d
 #
-# Note: slicer sidecars do NOT share a volume with the app. Snorcal uploads the
-# 3MF via HTTP and downloads the gcode back over HTTP. Each container has its
-# own /data.
+# The slicer runs in-image via the same code path as bare-metal (no HTTP
+# sidecar), so Docker output matches bare-metal. To use an external sidecar
+# instead (legacy mode), set SLICER_URL_* env vars and they take precedence.
 #
 # Redis is optional (commented out by default). Without it, slices run
 # in-process via the direct path — fine for single-user setups. Uncomment
@@ -27,53 +25,30 @@ services:
       # - REDIS_PORT=6379
       - DATA_DIR=/data
       - NODE_ENV=production
-      - SLICER_URL_ORCASLICER=http://orca-slicer-api:3000
-      - SLICER_URL_BAMBUSTUDIO=http://bambu-studio-api:3000
       # Auth is ON by default — first launch shows a setup screen to pick a
       # password. Pre-set the hash to skip it (headless deploys). Generate with
       # `pnpm --filter backend exec tsx scripts/hash-password.ts`.
       # - SNORCAL_PASSWORD_HASH=scrypt$N=32768$r=8$p=1$...
       # - SNORCAL_SESSION_SECRET=  # random 32+ bytes; auto-generated if unset
       # - SNORCAL_AUTH_DISABLED=0  # 1 = DANGER, every route open
+      # SLICER_URL_* intentionally unset — the in-image OrcaSlicer is used.
+      # Set SLICER_URL_ORCASLICER=http://host:port to use an external sidecar.
       # - DEBUG_PRINTER=1
     restart: unless-stopped
     deploy:
       resources:
         limits:
-          memory: 512M
+          memory: 4G   # slicer + node + Xvfb need real headroom
 
-  orca-slicer-api:
-    image: ghcr.io/maziggy/orca-slicer-api:latest
-    restart: unless-stopped
-    deploy:
-      resources:
-        limits:
-          memory: 4G
-
-  bambu-studio-api:
-    image: ghcr.io/maziggy/bambu-studio-api:latest
-    restart: unless-stopped
-    deploy:
-      resources:
-        limits:
-          memory: 4G
-
-  # Redis (optional — enables BullMQ job queue). Uncomment alongside
-  # REDIS_HOST/REDIS_PORT in `app` to re-enable.
   # redis:
   #   image: redis:7-alpine
-  #   volumes:
-  #     - snorcal-redis:/data
-  #   healthcheck:
-  #     test: ["CMD", "redis-cli", "ping"]
-  #     interval: 5s
-  #     timeout: 3s
-  #     retries: 5
   #   restart: unless-stopped
   #   deploy:
   #     resources:
   #       limits:
   #         memory: 128M
+  #   volumes:
+  #     - snorcal-redis:/data
 
 volumes:
   snorcal-data:

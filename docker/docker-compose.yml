@@ -1,8 +1,19 @@
+# Dev/build compose — builds the snorcal image locally from source.
+# Single container: app + OrcaSlicer + Xvfb bundled.
+#
+#   docker compose -f docker/docker-compose.yml up --build
+#
+# For the public prebuilt-image deploy, see docker-compose.example.yml.
+
 services:
   app:
     build:
       context: ..
       dockerfile: docker/Dockerfile.app
+      args:
+        # Slicer binary zip. Default: OrcaSlicer nightly from SimplyPrint/slicer-builds.
+        # Pin a specific release tag here for reproducible builds.
+        # - SLICER_URL=https://github.com/SimplyPrint/slicer-builds/releases/download/nightly/OrcaSlicer-linux-x86-64-nightly.zip
     ports:
       - "${PORT:-3000}:3000"
     volumes:
@@ -14,53 +25,26 @@ services:
       # - REDIS_PORT=6379
       - DATA_DIR=/data
       - NODE_ENV=production
-      - SLICER_URL_ORCASLICER=http://orca-slicer-api:3003
-      - SLICER_URL_BAMBUSTUDIO=http://bambu-studio-api:3001
       # Auth is ON by default — first launch shows a setup screen to pick a
       # password. Pre-set the hash to skip it (headless deploys).
       # - SNORCAL_PASSWORD_HASH=scrypt$N=32768$r=8$p=1$...
       # - SNORCAL_AUTH_DISABLED=0  # 1 = DANGER, every route open
-    restart: unless-stopped
-    deploy:
-      resources:
-        limits:
-          memory: 512M
-
-  # Bambuddy slicer sidecars (optional but recommended for actual slicing).
-  # Comment out the one you don't need; remove the corresponding SLICER_URL_*
-  # env above if you do.
-  orca-slicer-api:
-    image: ghcr.io/maziggy/orca-slicer-api:latest
+      # SLICER_URL_* intentionally unset — the in-image OrcaSlicer is used.
     restart: unless-stopped
     deploy:
       resources:
         limits:
           memory: 4G
 
-  bambu-studio-api:
-    image: ghcr.io/maziggy/bambu-studio-api:latest
-    restart: unless-stopped
-    deploy:
-      resources:
-        limits:
-          memory: 4G
-
-  # Redis (optional — enables BullMQ job queue). Uncomment alongside
-  # REDIS_HOST/REDIS_PORT in `app` to re-enable.
   # redis:
   #   image: redis:7-alpine
-  #   volumes:
-  #     - snorcal-redis:/data
-  #   healthcheck:
-  #     test: ["CMD", "redis-cli", "ping"]
-  #     interval: 5s
-  #     timeout: 3s
-  #     retries: 5
   #   restart: unless-stopped
   #   deploy:
   #     resources:
   #       limits:
   #         memory: 128M
+  #   volumes:
+  #     - snorcal-redis:/data
 
 volumes:
   snorcal-data:

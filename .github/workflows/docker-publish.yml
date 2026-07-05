@@ -1,11 +1,12 @@
 name: Publish Docker images
 
 # Builds and pushes the snorcal app image to GitHub Container Registry:
-#   ghcr.io/<owner>/snorcal  — slim Node app (amd64 + arm64)
+#   ghcr.io/<owner>/snorcal  — Node app + bundled OrcaSlicer + Xvfb (amd64)
 #
-# Slicer sidecars are NOT built here. Use upstream bambuddy images:
-#   ghcr.io/maziggy/orca-slicer-api  (amd64 only)
-#   ghcr.io/maziggy/bambu-studio-api (amd64 only)
+# The slicer binary is downloaded (multi-stage) from the upstream
+# SimplyPrint/slicer-builds nightly release and bundled into the image.
+# Override SLICER_URL below (or pin a specific release tag) to use a
+# different slicer build.
 #
 # Triggers:
 #   - git tag v*.*.*   → semver tags (e.g. v1.2.3 → 1.2.3, 1.2, 1, latest)
@@ -75,5 +76,10 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # Slicer binary zip to bundle. Default: OrcaSlicer nightly from the
+          # upstream SimplyPrint/slicer-builds release. Pin to a specific
+          # release tag for reproducible builds.
+          build-args: |
+            SLICER_URL=https://github.com/SimplyPrint/slicer-builds/releases/download/nightly/OrcaSlicer-linux-x86-64-nightly.zip
           cache-from: type=gha,scope=app-${{ matrix.platform }}
           cache-to: type=gha,mode=max,scope=app-${{ matrix.platform }}
