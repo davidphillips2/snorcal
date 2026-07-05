@@ -38,7 +38,9 @@ export function buildSlots(
   if (protocol === 'bambu' && ams && ams.length > 0) {
     return ams.map(s => ({
       value: s.trayId,
-      label: `Tray ${s.trayId}`,
+      // P1S AMS trays report 0-indexed id (0..3) but physical slots are
+      // labeled 1..4 on the front of the unit. Match the silkscreen.
+      label: `Tray ${Number(s.trayId) + 1}`,
       color: s.color ? '#' + s.color.replace(/^#/, '').slice(0, 6) : null,
       type: s.type ?? null,
       brand: s.brand ?? null,

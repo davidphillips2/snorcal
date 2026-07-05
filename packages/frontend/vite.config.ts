@@ -71,9 +71,12 @@ export default defineConfig({
           },
         ],
       },
+      // Service worker disabled in dev — its NetworkFirst runtime cache hangs
+      // for 4s during backend restarts and serves stale /api/printers data,
+      // which makes the UI look "crashed" (stale state, no live updates).
+      // Production builds still get the SW for offline support.
       devOptions: {
-        enabled: true,
-        type: 'module',
+        enabled: false,
       },
     }),
   ],

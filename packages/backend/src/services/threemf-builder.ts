@@ -246,17 +246,15 @@ export async function build3MF(input: ThreeMFBuildInput): Promise<Buffer> {
   // stricter model_settings.config validation (regressed in v0.1.35).
   // Keep Orca-class at neutral prefix; only override for Bambu forks where
   // the gate actively rejects our config.
+  // Application metadata MUST be `BambuStudio-<X.Y.Z.W>` for Bambu-class
+  // importers (prefix gate at bbs_3mf.cpp:1914-1922). The version portion is
+  // checked against the slicer's own version ("Version Check: File Version
+  // X not supported by current cli version Y") — if file version > slicer
+  // version, the slicer rejects the 3MF. Pin each engine to its own version.
+  // BambuStudio fork pattern: vendor strips BambuStudio- prefix off their
+  // own builds but keeps the prefix gate, so we always lie with that prefix.
   const APP_BY_ENGINE: Record<string, string> = {
     bambustudio: 'BambuStudio-02.06.00.51',
-    crealityprint: 'BambuStudio-02.06.00.51', // Creality Print = Bambu fork
-    elegooslicer: 'BambuStudio-02.06.00.51', // ElegooSlicer = Bambu fork
-    // Snapmaker Orca: OrcaSlicer fork that inherited BambuStudio's 3MF
-    // importer gate + version regex. Both Application-prefix gate AND the
-    // "Version Check: File Version 0.0.0.0" parser are hardcoded to the
-    // BambuStudio-X.Y.Z.W pattern. Snapmaker_Orca- prefix passes the gate
-    // but fails version parse. Lie about identity: tag with BambuStudio-
-    // prefix matching Snapmaker Orca's actual version (01.10.01.50).
-    snapmakerorca: 'BambuStudio-01.10.01.50',
   };
   const appMetadata = (input.engine && APP_BY_ENGINE[input.engine]) || 'Snorcal-1.0';
 
@@ -323,16 +321,24 @@ export async function build3MF(input: ThreeMFBuildInput): Promise<Buffer> {
     }
     zip.folder('Metadata')!.file('project_settings.config', JSON.stringify(settings, null, 4) + '\n');
 
-    // Metadata/slice_info.config — minimal header. Required by Snapmaker Orca
-    // to recognise the file as a project (bambu-to-snapmaker-u1 converter
-    // emits this for every output, even when source had none). Other Bambu/
-    // Orca forks tolerate its presence; no harm emitting universally.
-    zip.folder('Metadata')!.file('slice_info.config', sliceInfoXML());
+    // Metadata/slice_info.config — required by OrcaSlicer/BambuStudio to
+    // recognise the file as a project AND to find filament colors. Empty-header
+    // version was enough for project recognition but the slicer emits
+    // "no filament colors found in projects" + exits 1 because it looks for
+    // <filament> elements here, not in project_settings.config. Bambuddy
+    // reference (test_threemf_tools.py:295-297):
+    //   <filament id="1" used_g="0" type="PLA" color="#FF0000"/>
+    // Per-slot info sourced from project_settings filament_type + filament_colour.
+    const fc = (settings.filament_colour as string[]) ?? ['#FFFFFFFF'];
+    const ft = (settings.filament_type as string[]) ?? [];
+    const len = Math.max(fc.length, ft.length, 1);
+    zip.folder('Metadata')!.file('slice_info.config', sliceInfoXML(fc, ft, len));
 
-    // Metadata/plate_1.json — required by Snapmaker Orca; missing causes JSON
-    // parse error during project load (converter.py:922-929). Schema mirrors
-    // bambuddy reference. Keys: filament_colors (RGBA hex), filament_ids
-    // (filament_settings_id), first_extruder (0-indexed), is_seq_print, version.
+    // Metadata/plate_1.json — required by OrcaSlicer/BambuStudio; missing
+    // causes JSON parse error during project load (converter.py:922-929).
+    // Schema mirrors bambuddy reference. Keys: filament_colors (RGBA hex),
+    // filament_ids (filament_settings_id), first_extruder (0-indexed),
+    // is_seq_print, version.
     const filamentColours = (settings.filament_colour as string[]) ?? ['#FFFFFF'];
     const filamentIds = (settings.filament_settings_id as string[]) ?? [];
     zip.folder('Metadata')!.file('plate_1.json', JSON.stringify({
@@ -677,16 +683,26 @@ function buildModelSettings(objects: ObjectDef[], wrapperId: number): string {
   return xml;
 }
 
-function sliceInfoXML(): string {
-  // Minimal slice_info.config — bambu-to-snapmaker-u1 reference layout
-  // (metadata_helpers.minimal_slice_info). X-BBL-Client-Type=slicer is the
-  // gate key; version value empty is tolerated.
+function sliceInfoXML(colors: string[], types: string[], slotCount: number): string {
+  // bambuddy reference: slice_info.config carries one <filament> element per
+  // slot. OrcaSlicer/BambuStudio read these for filament colors + types when
+  // loading a project; missing them → "no filament colors found in projects".
+  // id is 1-indexed. color is RGB hex with leading #. type is base material
+  // ("PLA", "PETG", etc). used_g=0 because file is pre-slice.
+  let filaments = '';
+  for (let i = 0; i < slotCount; i++) {
+    const raw = colors[i] ?? '#FFFFFFFF';
+    // Normalize to "#RRGGBB" (slicer importer expects 6-hex + #).
+    const hex = '#' + raw.replace(/^#/, '').slice(0, 6).padEnd(6, 'F').toUpperCase();
+    const type = (types[i] ?? 'PLA').toUpperCase();
+    filaments += `\n  <filament id="${i + 1}" used_g="0" type="${type}" color="${hex}"/>`;
+  }
   return `<?xml version="1.0" encoding="UTF-8"?>
 <config>
   <header>
     <header_item key="X-BBL-Client-Type" value="slicer"/>
     <header_item key="X-BBL-Client-Version" value=""/>
-  </header>
+  </header>${filaments}
 </config>`;
 }
 

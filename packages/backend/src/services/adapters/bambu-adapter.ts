@@ -5,6 +5,7 @@ import mqtt from 'mqtt';
 import { Client as FtpClient } from 'basic-ftp';
 import type { PrinterCommand, PrinterStatus, PrinterState, PrinterConnectionState, AmsSlot, PrintOptions } from '@snorcal/shared';
 import type { PrinterAdapter } from './adapter.js';
+import { assertSafeUrl } from '../ssrf.js';
 
 export interface BambuAdapterOptions {
   printerId: string;
@@ -19,9 +20,16 @@ export interface BambuAdapterOptions {
 interface BambuPrintObject {
   // Subset of fields actually used
   state?: string;
+  gcode_state?: string;
+  stg_cur?: number;                  // print stage enum (heating/leveling/cali/etc)
+  mc_print_stage?: string | number;
   gcode_file?: string;
   subtask_name?: string;
-  progress?: number;
+  // Print progress fields. P1S/P1P/A1 report the motion-controller percentage
+  // as `mc_percent` (0-100). X1C firmware emits `print_percentage` instead.
+  // Older code read a non-existent `progress` field → bar always showed 0%.
+  mc_percent?: number;
+  print_percentage?: number;
   layer_num?: number;
   total_layer_num?: number;
   mc_remaining_time?: number;       // minutes
@@ -37,7 +45,7 @@ interface BambuPrintObject {
 }
 
 interface BambuReport {
-  print?: BambuPrintObject;
+  print?: BambuPrintObject & { ams?: any };
   ams?: any;
   info?: { module?: { project_name?: string } };
 }
@@ -50,7 +58,10 @@ const STATE_MAP: Record<string, PrinterState> = {
   FINISH: 'complete',
   FAILED: 'error',
   SLICING: 'idle',
-  PREPARE: 'idle',
+  // PREPARE = printer's pre-print routine (auto bed level, nozzle check,
+  // heating, flow cali). Map to 'printing' so UI shows pause/cancel controls
+  // and treats it as in-progress, not idle.
+  PREPARE: 'printing',
 };
 
 export class BambuAdapter implements PrinterAdapter {
@@ -68,6 +79,10 @@ export class BambuAdapter implements PrinterAdapter {
   private connection: PrinterConnectionState = 'disconnected';
   private status: PrinterStatus | null = null;
   private lastReport: BambuReport = {};
+  // P1S only includes AMS in occasional pushall responses (not every print
+  // payload). Spread-merge of lastReport loses it on those intermediate
+  // ticks → UI flicker. Cache last seen AMS and reuse.
+  private cachedAms: any = null;
 
   private statusCbs = new Set<(s: PrinterStatus) => void>();
   private connectionCbs = new Set<(c: boolean, r?: string) => void>();
@@ -118,14 +133,40 @@ export class BambuAdapter implements PrinterAdapter {
           if (err) { fail(err); return; }
           this.client = client;
           this.setConnection(true);
-          this.publish({ pushing: { command: 'pushall', sequence_id: '0' } });
+          // Mirror bambuddy connect sequence — P1S pushall response alone
+          // doesn't include AMS data. get_version + extrusion_cali_get wake
+          // the AMS report on the printer side.
+          this.publish({ pushing: { command: 'pushall' } });
+          this.publish({ info: { sequence_id: '0', command: 'get_version' } });
+          this.publish({ print: { sequence_id: '0', command: 'extrusion_cali_get', filament_id: '', nozzle_diameter: '0.4' } });
           if (!settled) { settled = true; resolve(); }
           if (process.env.DEBUG_PRINTER) console.debug('[Bambu] connected + subscribed');
         });
       });
 
       client.on('message', (_topic, payload) => {
-        try { this.handleReport(JSON.parse(payload.toString('utf-8'))); } catch {}
+        const txt = payload.toString('utf-8');
+        if (process.env.DEBUG_PRINTER) {
+          // Log top-level keys of every message so we can find where AMS data
+          // lives (pushall response splits across multiple messages; AMS may
+          // arrive under a different key like ams_status or inside print).
+          try {
+            const obj = JSON.parse(txt);
+            const keys = Object.keys(obj);
+            const has_ams = 'ams' in obj;
+            console.debug('[Bambu] msg keys:', keys.join(','), '| has_ams:', has_ams,
+              has_ams ? `| ams.keys=${Object.keys(obj.ams ?? {}).join(',')}` : '',
+              `| len=${txt.length}`);
+            // Dump any non-print payload to disk for inspection (first 5 only
+            // to avoid spam). The 4KB "print" pushall response on P1S does NOT
+            // include AMS — bambuddy requests AMS via a separate command
+            // after pushall. Capturing what arrives helps confirm.
+            if (has_ams || (keys.length > 0 && !keys.includes('print'))) {
+              console.debug('[Bambu] NON-PRINT MSG:', txt.slice(0, 800));
+            }
+          } catch { /* ignore */ }
+        }
+        try { this.handleReport(JSON.parse(txt)); } catch {}
       });
 
       client.on('error', (err) => {
@@ -159,23 +200,53 @@ export class BambuAdapter implements PrinterAdapter {
   }
 
   private handleReport(report: BambuReport): void {
-    this.lastReport = { ...this.lastReport, ...report };
+    // Deep-merge `print` so partial P1S intermediate ticks (which omit
+    // gcode_state, subtask_name, etc.) don't wipe the last pushall's values.
+    // Previously shallow-merge replaced the cached print obj on every tick →
+    // gcode_state was lost → fell back to top-level `state` which P1S keeps
+    // at "IDLE" always → UI showed idle during active prints.
+    if (report.print) {
+      this.lastReport = {
+        ...this.lastReport,
+        print: { ...this.lastReport.print, ...report.print },
+        ams: report.ams ?? this.lastReport.ams,
+        info: report.info ?? this.lastReport.info,
+      };
+    } else {
+      this.lastReport = { ...this.lastReport, ...report };
+    }
+    // AMS arrives intermittently (only in occasional pushall responses on P1S).
+    // Cache when present so status remains stable between AMS-bearing pushes.
+    const ams = report.ams ?? report.print?.ams;
+    if (ams) this.cachedAms = ams;
     this.recomputeStatus();
   }
 
   private recomputeStatus(): void {
     const p = this.lastReport.print;
-    const stateRaw = p?.state ?? 'IDLE';
+    // P1S keeps top-level `state` = "IDLE" always; real print state is in
+    // `gcode_state`. Prefer gcode_state, fall back to state for older firmware.
+    const stateRaw = p?.gcode_state ?? p?.state ?? 'IDLE';
+    if (process.env.DEBUG_PRINTER) {
+      console.debug('[Bambu] state raw:', JSON.stringify(stateRaw), 'stg_cur:', p?.stg_cur);
+    }
     const state = STATE_MAP[stateRaw] ?? 'idle';
 
-    const amsSlots = this.parseAms(this.lastReport.ams);
+    // P1S sends AMS nested inside print.ams; X1C sends top-level ams. Cache
+    // bridges the gap between AMS-bearing pushes (intermittent on P1S).
+    const amsSource = this.cachedAms ?? this.lastReport.ams ?? this.lastReport.print?.ams;
+    const amsSlots = this.parseAms(amsSource);
+
+    // mc_percent is the MC-reported progress (0-100) on P1S/P1P/A1; X1C
+    // firmware emits print_percentage instead. Both are percentages → /100.
+    const pct = p?.mc_percent ?? p?.print_percentage;
 
     this.status = {
       printerId: this.printerId,
       protocol: 'bambu',
       connection: this.connection,
       state,
-      progress: p?.progress !== undefined ? p.progress / 100 : undefined,
+      progress: pct !== undefined ? pct / 100 : undefined,
       layer: p?.layer_num,
       totalLayers: p?.total_layer_num,
       temps: {
@@ -194,6 +265,9 @@ export class BambuAdapter implements PrinterAdapter {
   }
 
   private parseAms(ams: any): AmsSlot[] | undefined {
+    if (process.env.DEBUG_PRINTER) {
+      console.debug('[Bambu] ams raw:', JSON.stringify(ams)?.slice(0, 600));
+    }
     if (!ams || !Array.isArray(ams.ams) || ams.ams.length === 0) return undefined;
     const slots: AmsSlot[] = [];
     for (const unit of ams.ams) {
@@ -201,6 +275,16 @@ export class BambuAdapter implements PrinterAdapter {
       const trays = Array.isArray(unit.tray) ? unit.tray : [];
       for (const tray of trays) {
         if (!tray || tray.id === undefined) continue;
+        // Skip empty trays. Bambu MQTT marks a loaded tray with
+        // tray.tray_exist === "1". Older firmware omits the field — fall back
+        // to "has spool data" via non-empty tray_type or remaining filament.
+        // Without this filter, snorcal pushes 4 phantom slots per AMS unit
+        // and the AMS panel renders blank for empty trays (bambuddy shows
+        // only the loaded 3 the user actually has).
+        const loaded = tray.tray_exist === '1'
+          || (typeof tray.tray_type === 'string' && tray.tray_type.length > 0 && tray.tray_type !== 'empty')
+          || (typeof tray.remain === 'number' && tray.remain > 0);
+        if (!loaded) continue;
         slots.push({
           id: unitId,
           trayId: tray.id,
@@ -274,18 +358,24 @@ export class BambuAdapter implements PrinterAdapter {
       case 'start': {
         // args.file = printer-side 3mf filename (already FTP'd)
         // args.plate = gcode path inside 3mf e.g. "Metadata/plate_1.gcode"
-        // args.amsMapping = optional number[] (gcode filament idx → 1-indexed AMS tray, 0=skip)
+        // args.amsMapping = optional number[] (gcode filament idx → global tray ID; -1=skip)
         //                   When provided, switches on use_ams so printer pulls from physical trays.
         // args.printOptions = optional PrintOptions for per-print toggles (defaults: all off)
         const file = String(cmd.args?.file ?? '');
         const platePath = String(cmd.args?.plate ?? 'Metadata/plate_1.gcode');
         if (!file) throw new Error('file required for start');
         const amsMapping = Array.isArray(cmd.args?.amsMapping) ? (cmd.args!.amsMapping as number[]) : null;
-        const useAms = amsMapping !== null && amsMapping.some(v => v > 0);
+        // amsMapping values are 0-indexed tray IDs (0..3 for AMS 0); -1 = skip.
+        // v >= 0 = mapped to a real tray. Old `v > 0` check skipped tray 0.
+        const useAms = amsMapping !== null && amsMapping.some(v => v >= 0);
         const po = (cmd.args?.printOptions ?? {}) as PrintOptions;
+        // Match bambuddy wire format. P1S rejects task_id=0 (firmware clamps
+        // and treats as continuation of prior failed job → "Load failed").
+        // Mint a fresh id per submission, capped to signed int32 (P1S overflow).
+        const submissionId = String(Date.now() % 2_147_483_647 || 1);
         this.publish({
           print: {
-            sequence_id: '0',
+            sequence_id: '20000',
             command: 'project_file',
             param: platePath,
             url: `ftp://${file}`,
@@ -294,12 +384,20 @@ export class BambuAdapter implements PrinterAdapter {
             bed_type: 'auto',
             timelapse: po.timelapse === true,
             bed_leveling: po.bedLeveling === true,
+            auto_bed_leveling: po.bedLeveling === true ? 1 : 0,
             flow_cali: po.flowCali === true,
+            // 1 = run flow cali, 0 = skip. Matches BambuStudio wire format.
+            extrude_cali_flag: po.flowCali === true ? 1 : 0,
             vibration_cali: po.vibrationCali === true,
             layer_inspect: false,
             use_ams: useAms,
             ...(useAms ? { ams_mapping: amsMapping } : {}),
             cfg: '0',
+            subtask_name: file.replace(/\.gcode(\.3mf)?$/i, '').replace(/\.3mf$/i, ''),
+            profile_id: '0',
+            project_id: submissionId,
+            subtask_id: submissionId,
+            task_id: submissionId,
           },
         });
         return;
@@ -384,7 +482,9 @@ export class BambuAdapter implements PrinterAdapter {
   async fetchCameraSnapshot(): Promise<Buffer | null> {
     // HTTP override — camera_ip may hold a full URL (e.g. bambuddy snapshot endpoint)
     if (/^https?:\/\//i.test(this.cameraIp)) {
-      const res = await fetch(this.cameraIp, { signal: AbortSignal.timeout(6000) });
+      // Defense-in-depth: validate the URL (allowPrivate — printer/camera is on LAN).
+      assertSafeUrl(this.cameraIp, { allowPrivate: true });
+      const res = await fetch(this.cameraIp, { signal: AbortSignal.timeout(6000), redirect: 'manual' });
       if (!res.ok) throw new Error(`camera HTTP ${res.status}`);
       const ab = await res.arrayBuffer();
       return Buffer.from(ab);

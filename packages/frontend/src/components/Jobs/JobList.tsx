@@ -12,6 +12,7 @@ interface JobCardProps {
     filamentCost?: number;
     errorMessage?: string;
     plateIndex?: number;
+    printerName?: string | null;
     createdAt: string;
   };
   onCancel?: (jobId: string) => void;
@@ -32,10 +33,7 @@ const STATUS_COLORS: Record<string, string> = {
 const ENGINE_LABELS: Record<string, string> = {
   orcaslicer: 'OrcaSlicer',
   bambustudio: 'BambuStudio',
-  crealityprint: 'Creality Print',
   prusaslicer: 'PrusaSlicer',
-  elegooslicer: 'ElegooSlicer',
-  snapmakerorca: 'Snapmaker Orca',
 };
 
 export function JobCard({ job, onCancel, onDownload, onDownloadThreemf, onPreview, onSendToPrinter }: JobCardProps) {
@@ -55,9 +53,12 @@ export function JobCard({ job, onCancel, onDownload, onDownloadThreemf, onPrevie
       {/* Progress bar */}
       {(job.status === 'running' || job.status === 'completed') && (
         <div className="mb-1.5">
-          <div className="flex justify-between text-[10px] text-gray-400 mb-0.5">
-            <span>{job.currentStep || job.status}</span>
-            <span>{job.progress}%</span>
+          <div className="flex justify-between items-center text-[10px] text-gray-400 mb-0.5 gap-2">
+            <span className="truncate">{job.currentStep || job.status}</span>
+            {job.printerName && (
+              <span className="text-gray-500 truncate text-center flex-1">{job.printerName}</span>
+            )}
+            <span className="shrink-0">{job.progress}%</span>
           </div>
           <div className="w-full bg-gray-600 rounded-full h-1">
             <div

@@ -13,29 +13,11 @@ export const SLICER_BINARIES: Record<SlicerEngine, SlicerBinary> = {
     profilesDir: '/opt/bambustudio/resources',
     label: 'BambuStudio',
   },
-  crealityprint: {
-    engine: 'crealityprint',
-    binaryPath: '/opt/creality-print/bin/CrealityPrint',
-    profilesDir: '/opt/creality-print/resources',
-    label: 'Creality Print',
-  },
   prusaslicer: {
     engine: 'prusaslicer',
     binaryPath: '/opt/prusaslicer/bin/prusa-slicer',
     profilesDir: '/opt/prusaslicer/resources',
     label: 'PrusaSlicer',
-  },
-  elegooslicer: {
-    engine: 'elegooslicer',
-    binaryPath: '/opt/elegoo-slicer/bin/ElegooSlicer',
-    profilesDir: '/opt/elegoo-slicer/resources',
-    label: 'ElegooSlicer',
-  },
-  snapmakerorca: {
-    engine: 'snapmakerorca',
-    binaryPath: '/opt/snapmaker-orca/bin/snapmaker-orca',
-    profilesDir: '/opt/snapmaker-orca/resources',
-    label: 'Snapmaker Orca',
   },
 };
 
@@ -50,27 +32,35 @@ const MAC_PATHS: Record<SlicerEngine, { binaryPath: string; profilesDir: string 
     binaryPath: '/Applications/BambuStudio.app/Contents/MacOS/BambuStudio',
     profilesDir: '/Applications/BambuStudio.app/Contents/Resources',
   },
-  crealityprint: {
-    binaryPath: '/Applications/Creality Print.app/Contents/MacOS/CrealityPrint',
-    profilesDir: '/Applications/Creality Print.app/Contents/Resources',
-  },
   prusaslicer: {
     binaryPath: '/Applications/PrusaSlicer.app/Contents/MacOS/PrusaSlicer',
     profilesDir: '/Applications/PrusaSlicer.app/Contents/Resources',
   },
-  elegooslicer: {
-    binaryPath: '/Applications/ElegooSlicer.app/Contents/MacOS/ElegooSlicer',
-    profilesDir: '/Applications/ElegooSlicer.app/Contents/Resources',
-  },
-  snapmakerorca: {
-    binaryPath: '/Applications/Snapmaker Orca.app/Contents/MacOS/Snapmaker_Orca',
-    profilesDir: '/Applications/Snapmaker Orca.app/Contents/Resources',
-  },
 };
 
-export function getSlicerBinary(engine: string): SlicerBinary {
+/**
+ * Resolve the binary + profiles dir for an engine.
+ *
+ * Priority (highest wins):
+ *   1. `overridePath` — explicit arg, typically from the DB-backed
+ *      `slicer_path_overrides` app setting (user-set via App Settings UI).
+ *   2. `SLICER_PATH_<ENGINE_UPPER>` env var — admin/server-side config.
+ *   3. Platform default — `/Applications/<Name>.app/...` on macOS,
+ *      `/opt/<name>/bin/...` on Linux.
+ *
+ * Only `binaryPath` is affected by overrides; `profilesDir` stays at the
+ * platform default (slicer CLI doesn't read profiles when settings are
+ * embedded in the 3MF, so an off-default binary location rarely needs a
+ * matching profiles dir override).
+ */
+export function getSlicerBinary(engine: string, overridePath?: string): SlicerBinary {
   const config = (SLICER_BINARIES as Record<string, SlicerBinary>)[engine];
   if (!config) throw new Error(`Unknown slicer engine: ${engine}`);
+
+  // DB-backed override (highest priority)
+  if (overridePath) {
+    return { ...config, binaryPath: overridePath };
+  }
 
   // Allow env var overrides
   const envPath = process.env[`SLICER_PATH_${engine.toUpperCase()}`];
@@ -90,10 +80,6 @@ export function getSlicerBinary(engine: string): SlicerBinary {
  * BambuStudio-class engines share BambuStudio's CLI quirks (--skip_useless_pick,
  * project_settings.config schema, AMS-style filament arrays). Used by arg
  * builder + project-settings emitter to decide BambuStudio-specific behavior.
- *
- * Note: crealityprint + elegooslicer are NOT included — Creality Print is a
- * PrusaSlicer fork, ElegooSlicer has its own CLI quirks. Add here only if
- * confirmed to need the same BambuStudio-specific flags.
  */
 export function isBambuStudioClass(engine: string): boolean {
   return engine === 'bambustudio';
@@ -101,10 +87,8 @@ export function isBambuStudioClass(engine: string): boolean {
 
 /**
  * OrcaSlicer-class engines share OrcaSlicer's CLI (no --skip_useless_pick,
- * project_settings.config schema, paint_color format). Snapmaker Orca is a
- * distinct product from OrcaSlicer but the slicing CLI + 3MF format are
- * identical (verified Snapmaker_Orca-01.10.01.50 CLI --help).
+ * project_settings.config schema, paint_color format).
  */
 export function isOrcaSlicerClass(engine: string): boolean {
-  return engine === 'orcaslicer' || engine === 'snapmakerorca';
+  return engine === 'orcaslicer';
 }

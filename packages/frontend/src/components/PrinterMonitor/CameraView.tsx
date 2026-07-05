@@ -6,6 +6,11 @@ interface Props {
   expanded?: boolean;
 }
 
+/** Only http(s) URLs are safe to render/fetch. Blocks javascript:/data:/file:. */
+function isHttpUrl(s: string | null | undefined): s is string {
+  return !!s && /^https?:\/\//i.test(s);
+}
+
 export function CameraView({ printer, expanded }: Props) {
   const size = expanded
     ? 'w-full aspect-video'
@@ -13,25 +18,30 @@ export function CameraView({ printer, expanded }: Props) {
 
   const streamUrl = printer.cameraStreamUrl ?? null;
   const snapshotUrl = printer.cameraSnapshotUrl ?? null;
-  const isWebRTC = !!streamUrl && /\/(webrtc|stream)(\?|$|\/)/.test(streamUrl);
+  // Scheme guard first — a non-http streamUrl (e.g. javascript:) must never
+  // reach <img src> or the WebRTC path. Backend also rejects these at write
+  // time; this is defense-in-depth for any pre-existing bad rows.
+  const safeStreamUrl = isHttpUrl(streamUrl) ? streamUrl : null;
+  const safeSnapshotUrl = isHttpUrl(snapshotUrl) ? snapshotUrl : null;
+  const isWebRTC = !!safeStreamUrl && /\/(webrtc|stream)(\?|$|\/)/.test(safeStreamUrl);
 
   // Camera reachability is independent of the control-plane connection — always try.
 
   if (isWebRTC) {
     return <WebRTCPlayer printerId={printer.id} size={size} />;
   }
-  if (streamUrl) {
+  if (safeStreamUrl) {
     return (
       <img
-        src={streamUrl}
+        src={safeStreamUrl}
         alt="camera"
         className={`${size} bg-black rounded object-cover`}
         onError={(e) => { (e.target as HTMLImageElement).style.opacity = '0.3'; }}
       />
     );
   }
-  if (snapshotUrl) {
-    return <SnapshotPoll url={snapshotUrl} size={size} />;
+  if (safeSnapshotUrl) {
+    return <SnapshotPoll url={safeSnapshotUrl} size={size} />;
   }
 
   // Fall back to backend-resolved per-protocol camera route

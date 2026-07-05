@@ -1,6 +1,13 @@
 import Database from 'better-sqlite3';
 import { MIGRATIONS, runSchemaMigrations } from './migrations.js';
 import { seedDefaultProfiles } from './seed-profiles.js';
+import { encryptSecret, isEncrypted } from '../services/secret-crypto.js';
+
+/** Encrypt a secret for storage unless it's empty or already encrypted. */
+function enc(v: string | null | undefined): string | null {
+  if (v == null || v === '') return null;
+  return isEncrypted(v) ? v : encryptSecret(v);
+}
 
 export class Db {
   private db: Database.Database;
@@ -10,6 +17,41 @@ export class Db {
     this.db.pragma('journal_mode = WAL');
     this.db.pragma('foreign_keys = ON');
     this.migrate();
+    this.encryptLegacySecrets();
+  }
+
+  /**
+   * One-shot migration: re-encrypt any plaintext secrets already in the DB.
+   * Idempotent — rows already carrying the `enc:v1:` prefix are skipped.
+   * Runs on every startup; cheap when there's nothing to do (a few SELECTs).
+   */
+  private encryptLegacySecrets() {
+    let migrated = 0;
+    const cols: Array<{ table: string; col: string; where?: string }> = [
+      { table: 'printers', col: 'access_code' },
+      { table: 'printers', col: 'api_key' },
+      { table: 'app_settings', col: 'value', where: "key = 'bambu_cloud_token'" },
+    ];
+    for (const { table, col, where } of cols) {
+      const sql = `SELECT id AS pk, ${col} AS v FROM ${table}${where ? ` WHERE ${where}` : ''}`;
+      let rows: any[];
+      try {
+        rows = this.db.prepare(sql).all() as any[];
+      } catch {
+        // Table/column may not exist on a fresh DB mid-migration; skip silently.
+        continue;
+      }
+      for (const row of rows) {
+        if (typeof row.v !== 'string' || row.v === '' || isEncrypted(row.v)) continue;
+        // Encrypt + write back. `enc` skips already-encrypted values; safe.
+        const upd = this.db.prepare(`UPDATE ${table} SET ${col} = ? WHERE id = ?`);
+        upd.run(enc(row.v), row.pk);
+        migrated++;
+      }
+    }
+    if (migrated > 0) {
+      console.log(`[db] encrypted ${migrated} legacy plaintext secret(s) at rest.`);
+    }
   }
 
   private migrate() {
@@ -59,11 +101,12 @@ export class Db {
 
   insertJob(job: {
     id: string; modelId: string; engine: string; settings: string; outputDir: string;
+    printerId?: string | null; printerName?: string | null;
   }) {
     this.db.prepare(`
-      INSERT INTO jobs (id, model_id, engine, settings, output_dir)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(job.id, job.modelId, job.engine, job.settings, job.outputDir);
+      INSERT INTO jobs (id, model_id, engine, settings, output_dir, printer_id, printer_name)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(job.id, job.modelId, job.engine, job.settings, job.outputDir, job.printerId ?? null, job.printerName ?? null);
   }
 
   getJob(id: string) {
@@ -75,6 +118,68 @@ export class Db {
       return this.db.prepare('SELECT * FROM jobs WHERE status = ? ORDER BY created_at DESC').all(status) as DbJob[];
     }
     return this.db.prepare('SELECT * FROM jobs ORDER BY created_at DESC').all() as DbJob[];
+  }
+
+  /**
+   * Jobs older than `days` days, optionally filtered by status set.
+   * Pass days=0 to skip the age filter. Empty/missing statuses = all statuses.
+   * Used by the storage cleanup route.
+   */
+  listJobsOlderThan(days: number, statuses?: string[]): DbJob[] {
+    const conds: string[] = [];
+    const params: (string | number)[] = [];
+    if (days > 0) {
+      conds.push("created_at < datetime('now', ?)");
+      params.push(`-${days} days`);
+    }
+    if (statuses && statuses.length > 0) {
+      const placeholders = statuses.map(() => '?').join(',');
+      conds.push(`status IN (${placeholders})`);
+      params.push(...statuses);
+    }
+    const where = conds.length > 0 ? `WHERE ${conds.join(' AND ')}` : '';
+    return this.db.prepare(`SELECT * FROM jobs ${where} ORDER BY created_at DESC`).all(...params) as DbJob[];
+  }
+
+  /** All jobs belonging to a model (any status). Used to fs-clean their workDirs when the model is purged. */
+  listJobsByModel(modelId: string): DbJob[] {
+    return this.db.prepare('SELECT * FROM jobs WHERE model_id = ?').all(modelId) as DbJob[];
+  }
+
+  /**
+   * Models with no jobs in the last `days` days. Pass days=0 to mean "no jobs
+   * at all" (truly orphaned). Used by the storage cleanup route.
+   */
+  listOrphanedModels(days: number): DbModel[] {
+    if (days > 0) {
+      return this.db.prepare(`
+        SELECT m.* FROM models m
+        WHERE NOT EXISTS (
+          SELECT 1 FROM jobs j
+          WHERE j.model_id = m.id AND j.created_at >= datetime('now', ?)
+        )
+        ORDER BY m.created_at DESC
+      `).all(`-${days} days`) as DbModel[];
+    }
+    return this.db.prepare(`
+      SELECT m.* FROM models m
+      WHERE NOT EXISTS (SELECT 1 FROM jobs j WHERE j.model_id = m.id)
+      ORDER BY m.created_at DESC
+    `).all() as DbModel[];
+  }
+
+  /** Models older than `days` days. days=0 returns all. */
+  listModelsOlderThan(days: number): DbModel[] {
+    if (days > 0) {
+      return this.db.prepare("SELECT * FROM models WHERE created_at < datetime('now', ?) ORDER BY created_at DESC")
+        .all(`-${days} days`) as DbModel[];
+    }
+    return this.db.prepare('SELECT * FROM models ORDER BY created_at DESC').all() as DbModel[];
+  }
+
+  /** Delete one job row by id. Does NOT touch disk — caller handles fs cleanup. */
+  deleteJob(id: string) {
+    this.db.prepare('DELETE FROM jobs WHERE id = ?').run(id);
   }
 
   updateJobStatus(id: string, status: string, extra?: { progress?: number; currentStep?: string; errorMessage?: string }) {
@@ -150,7 +255,7 @@ export class Db {
     this.db.prepare(`
       INSERT INTO printers (id, name, protocol, ip, port, serial, access_code, api_key, camera_ip, camera_stream_url, camera_snapshot_url, model, manual_slots)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(p.id, p.name, p.protocol, p.ip, p.port, p.serial ?? null, p.access_code ?? null, p.api_key ?? null, p.camera_ip ?? null, p.camera_stream_url ?? null, p.camera_snapshot_url ?? null, p.model ?? null, p.manual_slots ?? 0);
+    `).run(p.id, p.name, p.protocol, p.ip, p.port, p.serial ?? null, enc(p.access_code), enc(p.api_key), p.camera_ip ?? null, p.camera_stream_url ?? null, p.camera_snapshot_url ?? null, p.model ?? null, p.manual_slots ?? 0);
   }
 
   updatePrinterModel(id: string, model: string | null) {
@@ -174,8 +279,8 @@ export class Db {
     if (fields.name !== undefined) { sets.push('name = ?'); vals.push(fields.name); }
     if (fields.ip !== undefined) { sets.push('ip = ?'); vals.push(fields.ip); }
     if (fields.port !== undefined) { sets.push('port = ?'); vals.push(fields.port); }
-    if (fields.access_code !== undefined) { sets.push('access_code = ?'); vals.push(fields.access_code); }
-    if (fields.api_key !== undefined) { sets.push('api_key = ?'); vals.push(fields.api_key); }
+    if (fields.access_code !== undefined) { sets.push('access_code = ?'); vals.push(enc(fields.access_code)); }
+    if (fields.api_key !== undefined) { sets.push('api_key = ?'); vals.push(enc(fields.api_key)); }
     if (fields.camera_stream_url !== undefined) { sets.push('camera_stream_url = ?'); vals.push(fields.camera_stream_url); }
     if (fields.camera_snapshot_url !== undefined) { sets.push('camera_snapshot_url = ?'); vals.push(fields.camera_snapshot_url); }
     if (fields.model !== undefined) { sets.push('model = ?'); vals.push(fields.model); }
@@ -427,7 +532,7 @@ export interface DbJob {
   filament_used_g: number | null; filament_cost: number | null;
   error_message: string | null; created_at: string;
   started_at: string | null; completed_at: string | null;
-  printer_id: string | null;
+  printer_id: string | null; printer_name: string | null;
 }
 
 export interface DbProfileSummary {

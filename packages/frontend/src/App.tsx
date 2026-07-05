@@ -19,6 +19,8 @@ import { ModelUploader } from './components/ModelUploader';
 import { JobList } from './components/Jobs/JobList';
 import { SettingsPanel } from './components/Settings/SettingsPanel';
 import { AppSettingsPanel } from './components/Settings/AppSettingsPanel';
+import { DEFAULT_VALUES } from './components/Settings/settings-definitions';
+import { PRINTERS, getSavedPrinter } from './config/printers';
 import { GcodePreviewCanvas } from './components/Viewer/GcodePreviewCanvas';
 import { GcodeLayerSlider } from './components/Viewer/GcodeLayerSlider';
 import { GcodeTimeBreakdown } from './components/Viewer/GcodeTimeBreakdown';
@@ -41,7 +43,7 @@ import { TransformGizmo } from './components/Viewer/TransformGizmo';
 import { CollisionOverlay } from './components/Viewer/CollisionOverlay';
 import { MultiMeasureOverlay } from './components/Viewer/MultiMeasureOverlay';
 import { isCoarsePointer, type TransformMode, type TransformSpace, type SnapSettings } from './lib/transforms';
-import type { ModelKind, Scale3D, Mirror3D } from '@snorcal/shared';
+import type { ModelKind, Scale3D, Mirror3D, FilamentSlot } from '@snorcal/shared';
 
 // --- Types ---
 
@@ -237,7 +239,7 @@ interface PersistedState {
   engine: string;
   settings: Record<string, string>;
   selectedProfiles: { machine?: string; filament?: string; filament2?: string; process?: string };
-  filamentSlots: Array<{ color: string; type: string; profile?: string }>;
+  filamentSlots: FilamentSlot[];
   multiMaterial: { enabled: boolean; supportFilament: string; supportInterfaceFilament: string };
   printerIp: string;
   // UI state — restored across reloads so user lands where they left off
@@ -515,9 +517,13 @@ export default function App() {
   }, []);
   const [settings, setSettings] = useState<Record<string, string>>(() => persisted.current?.settings || {});
   const [selectedProfiles, setSelectedProfiles] = useState(() => persisted.current?.selectedProfiles || {});
-  const [filamentSlots, setFilamentSlots] = useState<Array<{ color: string; type: string; profile?: string }>>(() =>
+  const [filamentSlots, setFilamentSlots] = useState<FilamentSlot[]>(() =>
     persisted.current?.filamentSlots || (() => { try { return JSON.parse(localStorage.getItem('snorcal_filament_slots') || 'null'); } catch { return null; } })() || [{ color: '#FF0000', type: 'PLA' }]
   );
+  // Pending embedded slicer settings offered to the user on 3MF load. When
+  // present, a banner renders with Apply/Dismiss. We don't auto-apply printer/
+  // process keys because that silently swaps the user's selected printer.
+  const [embeddedSettingsPrompt, setEmbeddedSettingsPrompt] = useState<{ blob: Record<string, unknown>; summary: string } | null>(null);
   const [printerIp, setPrinterIp] = useState(() => persisted.current?.printerIp || localStorage.getItem('snorcal_printer_ip') || '');
   const [multiMaterial, setMultiMaterial] = useState(() =>
     persisted.current?.multiMaterial || (() => { try { return JSON.parse(localStorage.getItem('snorcal_multi_material') || 'null'); } catch { return null; } })() || { enabled: false, supportFilament: '1', supportInterfaceFilament: '1' }
@@ -562,10 +568,21 @@ export default function App() {
 
   // Sync bed volume from target printer's record
   useEffect(() => {
-    if (!targetPrinterId) { setBedVolume(null); return; }
+    if (!targetPrinterId) {
+      // No DB printer selected — fall back to legacy PRINTERS preset (if any)
+      // so gcode-preview renders the correct bed size. Without this, the
+      // preview falls back to 200x200 and objects centered for a 270-bed
+      // printer look off-center, with prime tower drawn outside the visible bed.
+      const legacy = PRINTERS.find(p => p.id === getSavedPrinter()?.id);
+      setBedVolume(legacy?.buildVolume ?? null);
+      return;
+    }
     api.listPrinters().then(list => {
       const p = list.find(x => x.id === targetPrinterId);
-      setBedVolume(p?.bedVolume ?? null);
+      // DB record may have null bedVolume (older entries) — fall back to
+      // legacy preset by printer id so the preview still sizes correctly.
+      const legacy = !p?.bedVolume ? PRINTERS.find(lp => lp.id === p?.id)?.buildVolume : undefined;
+      setBedVolume(p?.bedVolume ?? legacy ?? null);
     }).catch(() => {});
   }, [targetPrinterId]);
 
@@ -622,7 +639,10 @@ export default function App() {
   const [isParsingGcode, setIsParsingGcode] = useState(false);
   const [layerCount, setLayerCount] = useState(0);
   const [jobPauses, setJobPauses] = useState<PausePoint[]>([]);
-  const layerTypes = useMemo(() => gcodeText ? extractLayerTypes(gcodeText) : new Map<number, string>(), [gcodeText]);
+  // Split once; share the line array with the parsers and the preview to avoid
+  // 3+ simultaneous full copies of large gcodes (was an OOM driver).
+  const gcodeLines = useMemo(() => gcodeText ? gcodeText.split('\n') : null, [gcodeText]);
+  const layerTypes = useMemo(() => gcodeLines ? extractLayerTypes(gcodeLines) : new Map<number, string>(), [gcodeLines]);
   // Stable colors array — inline .map() would create a new ref every render
   // and re-trigger GcodePreviewCanvas's init effect, disposing the preview.
   const previewExtrusionColors = useMemo(() => filamentSlots.map(s => {
@@ -647,7 +667,8 @@ export default function App() {
         id: j.id, modelName: j.modelName, engine: j.engine, status: j.status,
         progress: j.progress, currentStep: j.currentStep, gcodeSize: j.gcodeSize,
         estimatedTime: j.estimatedTime, filamentUsedG: j.filamentUsedG,
-        filamentCost: j.filamentCost, errorMessage: j.errorMessage, createdAt: j.createdAt,
+        filamentCost: j.filamentCost, errorMessage: j.errorMessage,
+        printerName: j.printerName, createdAt: j.createdAt,
       })));
     }).catch(console.error);
 
@@ -951,7 +972,7 @@ export default function App() {
       // MakerWorld imports explicitly overwrite project settings (user opted
       // into the bundle's full slicer config). Plain uploads use the same
       // helper but skip the settings overwrite.
-      await applySourceSettings(m.modelId, { overwriteSettings: true });
+      await applySourceSettings(m.modelId);
     } catch (err) {
       alert(`MakerWorld import failed: ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -966,30 +987,110 @@ export default function App() {
    * explicitly opted into the bundle), false for plain uploads (we only want
    * the filament slots, not the printer profile / gcode macros).
    */
-  const applySourceSettings = useCallback(async (modelId: string, opts?: { overwriteSettings?: boolean }) => {
-    const sourceSettings = await api.getModelSourceSettings(modelId);
+  /**
+   * Apply embedded 3MF settings on load. Used by BOTH plain upload and
+   * MakerWorld import (same behavior — no more silent printer-swap on MW).
+   *
+   * - Filament metadata (color/type/vendor/diameter/density/cost) is always
+   *   extracted into filamentSlots.
+   * - Full embedded printer/process settings are NOT auto-applied. If they
+   *   differ from the user's current selection, a banner prompts Apply/Dismiss.
+   * - 404 ("no embedded settings") is silent (model just has no config).
+   *   Other errors surface as an alert so loads don't fail invisibly.
+   */
+  const applySourceSettings = useCallback(async (modelId: string) => {
+    let sourceSettings: Record<string, unknown> | null;
+    try {
+      sourceSettings = await api.getModelSourceSettings(modelId);
+    } catch (err) {
+      // 404 = model has no embedded settings — benign, nothing to apply.
+      const msg = err instanceof Error ? err.message : String(err);
+      if (!/not found|no source settings/i.test(msg)) {
+        alert(`Failed to load embedded settings: ${msg}`);
+      }
+      return;
+    }
     if (!sourceSettings || typeof sourceSettings !== 'object') return;
 
-    if (opts?.overwriteSettings) {
-      const coerced: Record<string, string> = {};
-      for (const [k, v] of Object.entries(sourceSettings)) {
-        if (v == null) continue;
-        if (k.endsWith('_gcode')) continue;  // preserve user's printer-specific macros
-        coerced[k] = typeof v === 'string' ? v : JSON.stringify(v);
-      }
-      setSettings(prev => ({ ...prev, ...coerced }));
-    }
+    // Helper: read a filament_* key as a string array (the slicer schema shape).
+    const arr = (k: string): string[] | undefined => {
+      const v = sourceSettings[k];
+      return Array.isArray(v) ? v.map(x => typeof x === 'string' ? x : String(x)) : undefined;
+    };
 
-    const colors = sourceSettings.filament_colour;
-    const types = sourceSettings.filament_type;
-    if (Array.isArray(colors) && colors.length > 0) {
-      const newSlots = colors.map((c: unknown, i: number) => ({
-        color: typeof c === 'string' ? c : '#FFFFFF',
-        type: Array.isArray(types) && typeof types[i] === 'string' ? (types[i] as string) : 'PLA',
+    // Rich filament-slot extraction (was color+type only).
+    const colors = arr('filament_colour');
+    if (colors && colors.length > 0) {
+      const vendors = arr('filament_vendor');
+      const types = arr('filament_type');
+      const diameters = arr('filament_diameter');
+      const densities = arr('filament_density');
+      const costs = arr('filament_cost');
+      const newSlots: FilamentSlot[] = colors.map((c, i) => ({
+        color: c || '#FFFFFF',
+        type: types?.[i] || 'PLA',
+        vendor: vendors?.[i],
+        diameter: diameters?.[i],
+        density: densities?.[i],
+        cost: costs?.[i],
       }));
       setFilamentSlots(newSlots);
     }
-  }, []);
+
+    // Detect whether the embedded printer/process settings differ from the
+    // user's current selection. If so, prompt instead of silently overlaying.
+    // Filters _gcode keys (preserve user's printer-specific macros on apply).
+    // Detect whether the embedded printer/process settings differ from the
+    // user's current selection. If so, prompt instead of silently overlaying.
+    const cur = (k: string): string | undefined => {
+      const v = sourceSettings[k];
+      if (v == null) return undefined;
+      return typeof v === 'string' ? v : JSON.stringify(v);
+    };
+    // Only consider a small allowlist of keys that signal "this bundle was
+    // sliced for a different printer/process" — avoids prompting on noise.
+    const SIGNAL_KEYS = ['printer_model', 'printer_settings_id', 'process_class', 'filament_settings_id'];
+    const differs = SIGNAL_KEYS.some(k => cur(k) !== undefined && cur(k) !== settings[k]);
+    if (differs) {
+      const printerModel = cur('printer_model') ?? '';
+      const process = cur('process_class') ?? cur('print_settings_id') ?? '';
+      const summary = [printerModel, process].filter(Boolean).join(' · ') || 'embedded slicer profile';
+      // Keep the RAW blob (not a coerced copy) — the synthesize endpoint
+      // needs the original nested/array values to build profiles correctly.
+      setEmbeddedSettingsPrompt({ blob: sourceSettings, summary });
+    }
+  }, [settings]);
+
+  // Apply embedded settings: synthesize profiles into the DB (named by the
+  // blob's *_settings_id keys) so the dropdowns can select them, then overlay
+  // the raw numeric settings onto `settings` and select the new profiles.
+  const handleApplyEmbeddedSettings = useCallback(async () => {
+    if (!embeddedSettingsPrompt) return;
+    const { blob } = embeddedSettingsPrompt;
+    try {
+      const names = await api.synthesizeEmbeddedProfiles(engine, blob);
+      setSelectedProfiles(prev => ({
+        ...prev,
+        machine: names.machine ?? prev.machine,
+        process: names.process ?? prev.process,
+        filament: names.filament ?? prev.filament,
+      }));
+    } catch (err) {
+      // Synthesis failed (e.g. no ids in blob) — non-fatal; fall through to
+      // the raw overlay so the user still gets the per-key settings.
+      console.warn('synthesizeEmbeddedProfiles failed:', err);
+    }
+    // Overlay raw numeric/string settings (layer height, temps, speeds, etc.)
+    // so per-key values the profiles don't capture still take effect. Skip
+    // _gcode keys to preserve the user's printer-specific macros.
+    const coerced: Record<string, string> = {};
+    for (const [k, v] of Object.entries(blob)) {
+      if (v == null || k.endsWith('_gcode')) continue;
+      coerced[k] = typeof v === 'string' ? v : JSON.stringify(v);
+    }
+    setSettings(prev => ({ ...prev, ...coerced }));
+    setEmbeddedSettingsPrompt(null);
+  }, [embeddedSettingsPrompt, engine]);
 
   // Remove model from project
   const handleRemoveModel = useCallback((idx: number) => {
@@ -1075,7 +1176,12 @@ export default function App() {
   // so the pre-slice download is byte-identical to what would have been sent.
   const buildSliceBody = useCallback((models: ProjectModel[]) => {
     if (models.length === 0) throw new Error('No models');
+    // Layer DEFAULT_VALUES first so UI source-of-truth wins over backend
+    // default-project-settings.json. Backend defaults otherwise mismatch UI
+    // (e.g. enable_prime_tower: backend "1" vs UI "0" → user sees tower
+    // they never asked for). User toggles in `settings` override both.
     const processSettings: Record<string, string> = {};
+    Object.assign(processSettings, DEFAULT_VALUES);
     Object.assign(processSettings, settings);
     const firstPlateIdx = plates.findIndex(p => p.id === models[0].plateId) + 1 || 1;
     const anyMultiPlate = models.some(m => m.plateCount > 1);
@@ -1101,8 +1207,9 @@ export default function App() {
       multiMaterial: multiMaterial.enabled ? multiMaterial : undefined,
       filamentSlots: filamentSlots.length > 1 ? filamentSlots : undefined,
       buildVolume: bedVolume ?? undefined,
+      printerId: targetPrinterId ?? undefined,
     } as const;
-  }, [engine, settings, selectedProfiles, multiMaterial, filamentSlots, bedVolume, plates]);
+  }, [engine, settings, selectedProfiles, multiMaterial, filamentSlots, bedVolume, plates, targetPrinterId]);
 
   // Save the input 3MF without slicing — useful when slice fails and you want
   // to inspect the exact bytes snorcal would have sent, or to slice in
@@ -1970,6 +2077,25 @@ export default function App() {
 
         {/* 3D Viewer */}
         <div className="flex-1 relative overflow-hidden">
+          {embeddedSettingsPrompt && (
+            <div className="absolute top-2 left-1/2 -translate-x-1/2 z-30 bg-gray-800/95 backdrop-blur border border-gray-600 rounded-lg shadow-lg px-3 py-2 flex items-center gap-3 max-w-[90%]">
+              <span className="text-xs text-gray-200 truncate">
+                Embedded settings: <span className="text-gray-400">{embeddedSettingsPrompt.summary}</span>
+              </span>
+              <button
+                onClick={handleApplyEmbeddedSettings}
+                className="text-xs px-2 py-1 bg-blue-600 hover:bg-blue-500 rounded text-white whitespace-nowrap"
+              >
+                Apply
+              </button>
+              <button
+                onClick={() => setEmbeddedSettingsPrompt(null)}
+                className="text-xs px-2 py-1 bg-gray-700 hover:bg-gray-600 rounded text-gray-200 whitespace-nowrap"
+              >
+                Dismiss
+              </button>
+            </div>
+          )}
           <Scene onReady={setSceneRefs} onContextLost={() => {
             console.warn('[3D] WebGL context lost — auto-disabling viewer');
             setViewer3DEnabled(false);
@@ -2315,7 +2441,7 @@ export default function App() {
               <GcodePreviewCanvas gcode={gcodeText} layer={currentPreviewLayer} singleLayerMode={!showAllLayers}
                 extrusionColors={previewExtrusionColors} buildVolume={bedVolume ?? undefined}
                 colorMode={gcodeColorMode} onLayerCountReady={handleLayerCountReady} />
-              <GcodeTimeBreakdown gcode={gcodeText} />
+              <GcodeTimeBreakdown gcode={gcodeLines ?? gcodeText} />
               <GcodeLayerStrip
                 currentLayer={currentPreviewLayer}
                 totalLayers={layerCount}

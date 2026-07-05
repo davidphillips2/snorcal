@@ -17,6 +17,13 @@ export interface SliceCommand {
   workDir: string;
   dataDir?: string;
   /**
+   * Optional DB-backed per-engine binary path override (highest priority).
+   * When set, `executeLocal` passes it to `getSlicerBinary(engine, override)`
+   * so the spawn target follows the user's App Settings override. Sidecar
+   * path ignores this (HTTP uploads don't need a local binary).
+   */
+  binaryOverridePath?: string;
+  /**
    * Optional profile stubs for bambuddy sidecar sync `/slice` endpoint
    * (slice_with_profiles path). Each entry is a JSON string shaped as
    * `{name, inherits: name, from: "system", type}`. Sidecar walks the
@@ -183,7 +190,7 @@ export class SlicerExecutor {
   private cancelHttp: (() => void) | null = null;
 
   private async executeLocal(cmd: SliceCommand, onProgress?: ProgressCallback): Promise<SliceResult> {
-    const binary = getSlicerBinary(cmd.engine);
+    const binary = getSlicerBinary(cmd.engine, cmd.binaryOverridePath);
 
     fs.mkdirSync(cmd.outputDir, { recursive: true });
 

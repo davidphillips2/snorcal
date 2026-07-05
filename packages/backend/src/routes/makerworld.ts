@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import type { Db } from '../db/index.js';
+import { encryptSecret, decryptSecret } from '../services/secret-crypto.js';
 import { register3MFModel } from './models.js';
 import {
   parseUrl,
@@ -75,7 +76,8 @@ export async function makerworldRoutes(app: FastifyInstance, options: { db: Db }
       return reply.status(400).send({ ok: false, error: 'numericId, alphanumericId, profileId required' });
     }
 
-    const token = db.getSetting('bambu_cloud_token');
+    const storedToken = db.getSetting('bambu_cloud_token');
+    const token = storedToken ? decryptSecret(storedToken) : null;
     if (!token) {
       return reply.status(400).send({ ok: false, error: 'Bambu cloud token required — set in Settings' });
     }
@@ -112,7 +114,15 @@ export async function makerworldRoutes(app: FastifyInstance, options: { db: Db }
         db.updateModelSourceSettings(result.id, JSON.stringify(sourceSettings));
       }
 
-      return { ok: true, data: { ...result, deduped: false } };
+      return {
+        ok: true,
+        data: {
+          modelId: result.id,
+          name: result.name,
+          plateCount: result.plateCount,
+          deduped: false,
+        },
+      };
     } catch (e) {
       return reply.status(mwErrorStatus(e)).send({ ok: false, error: mwErrorMessage(e) });
     }
@@ -135,8 +145,10 @@ export async function makerworldRoutes(app: FastifyInstance, options: { db: Db }
   });
 
   // POST /api/makerworld/login { email, password?, code? }
-  // Logs into Bambu Lab — returns token, or signals TOTP/email-code challenge.
-  // On success: stores token via settings layer so caller doesn't have to.
+  // Logs into Bambu Lab — signals TOTP/email-code challenge, or stores token
+  // server-side on success. The bearer token and tfaKey are NEVER returned to
+  // the client (only success/challenge flags + message); the frontend reads the
+  // masked hint via GET /api/settings/key/bambu_cloud_token afterward.
   app.post<{ Body: { email?: string; password?: string; code?: string } }>(
     '/api/makerworld/login',
     async (req, reply) => {
@@ -147,9 +159,13 @@ export async function makerworldRoutes(app: FastifyInstance, options: { db: Db }
       try {
         const result = await bambuLogin({ email, password, code });
         if (result.success && result.token) {
-          db.setSetting('bambu_cloud_token', result.token);
+          db.setSetting('bambu_cloud_token', encryptSecret(result.token));
         }
-        return { ok: true, data: result };
+        // Strip secrets from the response. The frontend only consumes
+        // success / needsTfa / needsEmailCode / message.
+        const { token: _t, tfaKey: _k, ...safe } = result;
+        void _t; void _k;
+        return { ok: true, data: safe };
       } catch (e) {
         return reply.status(mwErrorStatus(e)).send({ ok: false, error: mwErrorMessage(e) });
       }

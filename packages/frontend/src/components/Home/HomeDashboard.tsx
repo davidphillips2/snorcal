@@ -231,30 +231,49 @@ function PrinterTile({ printer, status, onReconnect, onOpen }: {
           </div>
         )}
 
-        {/* AMS color dots */}
-        {status?.ams && status.ams.length > 0 && (
-          <div className="flex gap-1 mt-1.5">
-            {status.ams.slice(0, 8).map((slot, i) => (
-              <span key={i} className="w-3 h-3 rounded-full border border-gray-600"
-                title={`${slot.type ?? 'unknown'} ${slot.remain !== undefined ? `${slot.remain}%` : ''}`}
-                style={{ backgroundColor: slot.color ? `#${slot.color.slice(0, 6)}` : '#444' }} />
-            ))}
-          </div>
-        )}
-
-        {/* Progress */}
-        {status?.progress !== undefined && status.progress > 0 && (
-          <div className="mt-2">
-            <div className="h-1 bg-gray-700 rounded overflow-hidden">
-              <div className="h-full bg-blue-500" style={{ width: `${Math.round(status.progress * 100)}%` }} />
+        {/* Filament color dots — AMS for bambu, manual filaments otherwise. */}
+        {(() => {
+          const ams = status?.ams && status.ams.length > 0 ? status.ams : null;
+          const manual = !ams && printer.manualFilaments && printer.manualFilaments.length > 0
+            ? printer.manualFilaments
+            : null;
+          const slots = ams ?? manual ?? [];
+          if (slots.length === 0) return null;
+          return (
+            <div className="flex gap-1 mt-1.5">
+              {slots.slice(0, 8).map((slot, i) => {
+                const hex = slot.color ? `#${slot.color.slice(0, 6)}` : '#444';
+                const label = slot.type ?? 'unknown';
+                const remain = slot.remain !== undefined ? ` ${slot.remain}%` : '';
+                const brand = slot.brand ? ` ${slot.brand}` : '';
+                return (
+                  <span key={i} className="w-3 h-3 rounded-full border border-gray-600"
+                    title={`${label}${brand}${remain}`}
+                    style={{ backgroundColor: hex }} />
+                );
+              })}
             </div>
-            <div className="text-[10px] text-gray-500 mt-0.5 flex justify-between">
-              <span>{Math.round(status.progress * 100)}%</span>
-              {status.layer !== undefined && status.totalLayers !== undefined && (
+          );
+        })()}
+
+        {/* Progress — render whenever printing or paused, even at 0%. */}
+        {((state === 'printing' || state === 'paused') && connection === 'connected') && (
+          <div className="mt-2">
+            <div className="h-1.5 bg-gray-700 rounded overflow-hidden">
+              <div
+                className={`h-full transition-[width] duration-500 ${state === 'paused' ? 'bg-yellow-500' : 'bg-blue-500'}`}
+                style={{ width: `${Math.min(100, Math.round((status?.progress ?? 0) * 100))}%` }}
+              />
+            </div>
+            <div className="text-[10px] text-gray-500 mt-0.5 flex justify-between gap-2">
+              <span>{status?.progress !== undefined ? `${Math.round(status.progress * 100)}%` : '—'}</span>
+              {status?.layer !== undefined && status?.totalLayers !== undefined && (
                 <span>L{status.layer}/{status.totalLayers}</span>
               )}
-              {status.etaSec !== undefined && status.etaSec > 0 && (
-                <span>ETA {formatDurationShort(status.etaSec)}</span>
+              {status?.etaSec !== undefined && status.etaSec > 0 ? (
+                <span>~{formatDurationShort(status.etaSec)} left</span>
+              ) : (
+                <span className="text-gray-600">ETA —</span>
               )}
             </div>
           </div>

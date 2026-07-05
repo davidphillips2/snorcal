@@ -2,7 +2,8 @@ import { useMemo, useState } from 'react';
 import { analyzeGcodeTime, formatDuration, parseSlicerEstimatedTime, typeColor } from '../../lib/gcode-stats';
 
 interface GcodeTimeBreakdownProps {
-  gcode: string;
+  /** Accept a pre-split line array to avoid re-splitting large gcodes. */
+  gcode: string | string[];
 }
 
 /**

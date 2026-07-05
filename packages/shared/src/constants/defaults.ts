@@ -5,7 +5,7 @@
  * The format is a flat JSON with string values (and arrays for multi-extruder).
  * This is the slicer's native "project settings" format.
  *
- * Settings base: Snapmaker Orca exported defaults
+ * Settings base: OrcaSlicer exported defaults
  * Override for: Snapmaker U1 (0.4 nozzle) + Snapmaker PLA SnapSpeed + 0.20 Better Standard
  */
 
@@ -64,7 +64,7 @@ export const PROJECT_SETTING_OVERRIDES: Record<string, string | string[]> = {
   close_fan_the_first_x_layers: ['1'],
 };
 
-/** Process presets for Snapmaker Orca */
+/** Process presets */
 export const PROCESS_PRESETS: Record<string, Record<string, string | string[]>> = {
   '0.20 Better Standard': {
     exclude_object: '1',
