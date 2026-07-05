@@ -87,6 +87,11 @@ export function setupQueue(db: Db): { queue: Queue; worker: Worker } | null {
     });
 
     console.log('[Queue] Connected to Redis — slicing ready');
+  }).catch((err) => {
+    // Without this catch, any throw inside the .then callback (e.g. IORedis/
+    // Queue/Worker construction) became an unhandled promise rejection that
+    // could crash or destabilize the process with no log.
+    console.error('[Queue] setup failed:', err instanceof Error ? err.message : err);
   });
 
   // Return null synchronously; queue will be set up asynchronously

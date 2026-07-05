@@ -75,6 +75,10 @@ export class SlicerExecutor {
   private child: ChildProcess | null = null;
   private sidecarUrl: string | null = null;
   private cancelled = false;
+  // AbortController for the in-flight sidecar slice fetch. Set in executeHttp,
+  // aborted in cancel(). Without this, cancelling a sidecar slice only set a
+  // flag — the fetch kept running until the sidecar finished on its own.
+  private abortController: AbortController | null = null;
 
   async execute(cmd: SliceCommand, onProgress?: ProgressCallback): Promise<SliceResult> {
     const url = getSidecarUrl(cmd.engine);
@@ -151,7 +155,17 @@ export class SlicerExecutor {
 
     onProgress?.(2, 'Submitting to sidecar…');
 
-    const sliceRes = await fetch(`${baseUrl}/slice`, { method: 'POST', body: form });
+    // Wire an AbortController so cancel() can abort the in-flight slice fetch.
+    // Combined with a generous timeout so a hung sidecar still fails eventually.
+    this.abortController = new AbortController();
+    const timeoutSignal = AbortSignal.timeout(10 * 60 * 1000); // 10 min ceiling
+    const signal = AbortSignal.any([this.abortController.signal, timeoutSignal]);
+    let sliceRes: Response;
+    try {
+      sliceRes = await fetch(`${baseUrl}/slice`, { method: 'POST', body: form, signal });
+    } finally {
+      this.abortController = null;
+    }
     if (!resOk(sliceRes)) {
       const errText = await safeText(sliceRes);
       return { gcodePath: '', gcodeSize: 0, exitCode: 1, stdout: '', stderr: `Sidecar sync slice failed: HTTP ${sliceRes.status} ${errText}` };
@@ -186,8 +200,6 @@ export class SlicerExecutor {
       stderr: '',
     };
   }
-
-  private cancelHttp: (() => void) | null = null;
 
   private async executeLocal(cmd: SliceCommand, onProgress?: ProgressCallback): Promise<SliceResult> {
     const binary = getSlicerBinary(cmd.engine, cmd.binaryOverridePath);
@@ -328,20 +340,26 @@ export class SlicerExecutor {
   }
 
   cancel() {
-    // HTTP/sidecar mode: sync fetch has no abort signal wired here — set the
-    // flag so any later code can detect cancellation, but the in-flight slice
-    // keeps running on the sidecar until it finishes. We just abandon it.
+    // HTTP/sidecar mode: abort the in-flight slice fetch. The fetch rejects
+    // with an AbortError, which propagates to runSliceJob's catch (cleans up
+    // the workDir) and runSliceDirect's catch (marks the job cancelled).
     if (this.sidecarUrl) {
       this.cancelled = true;
+      this.abortController?.abort();
       return;
     }
+    // Local mode: SIGTERM the child, escalate to SIGKILL after 5s.
     if (this.child && !this.child.killed) {
+      this.cancelled = true;
       this.child.kill('SIGTERM');
       setTimeout(() => {
         if (this.child && !this.child.killed) this.child.kill('SIGKILL');
       }, 5000);
     }
   }
+
+  /** True if cancel() was called for this executor. */
+  wasCancelled(): boolean { return this.cancelled; }
 
   private buildArgs(cmd: SliceCommand): string[] {
     const args: string[] = [];

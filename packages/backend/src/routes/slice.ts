@@ -12,6 +12,12 @@ import { findGcodeFile } from '../services/gcode-utils.js';
 import type { SliceRequest, SliceJobData, MultiMaterialConfig, FilamentSlot } from '@snorcal/shared';
 import os from 'node:os';
 
+// In-flight slicer executors keyed by jobId, so the cancel route can abort a
+// running slice. Populated in runSliceJob, cleared in its finally. Without
+// this, the cancel route could only reach the BullMQ queue (not the executor)
+// and a direct-mode (no-Redis) slice was uncancellable.
+const runningExecutors = new Map<string, SlicerExecutor>();
+
 // Load the full default project settings template (slicer-exported defaults)
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const defaultProjectSettingsRaw = JSON.parse(
@@ -432,8 +438,13 @@ export async function sliceRoutes(app: FastifyInstance, options: { db: Db }) {
       const bullJob = await queue.getJob(req.params.id);
       if (bullJob) await bullJob.discard();
     } catch {
-      // Queue not available
+      // Queue not available (direct mode) — fall through to executor cancel.
     }
+
+    // Abort the in-flight slice directly. This works in both queue mode and
+    // direct (no-Redis) mode. Without it, cancelling a running slice only
+    // discarded the queued BullMQ job — the actual slicer kept running.
+    runningExecutors.get(req.params.id)?.cancel();
 
     db.updateJobStatus(req.params.id, 'cancelled');
     return { ok: true };
@@ -909,16 +920,21 @@ export async function runSliceJob(
   db.updateJobProgress(jobId, 5, 'Building 3MF...');
   onProgress?.(5, 'Building 3MF...');
 
-  const threemfBuffer = await buildSliceInput3MF(body, db, modelFilePath);
+  // Register the executor so the cancel route can reach it (see POST
+  // /api/jobs/:id/cancel below). Cleared in the finally.
+  runningExecutors.set(jobId, executor);
 
-  const input3mfPath = path.join(workDir, 'input.3mf');
-  fs.writeFileSync(input3mfPath, threemfBuffer);
+  try {
+    const threemfBuffer = await buildSliceInput3MF(body, db, modelFilePath);
 
-  const outputDir = path.join(workDir, 'output');
-  fs.mkdirSync(outputDir, { recursive: true });
+    const input3mfPath = path.join(workDir, 'input.3mf');
+    fs.writeFileSync(input3mfPath, threemfBuffer);
 
-  db.updateJobProgress(jobId, 15, 'Spawning slicer...');
-  onProgress?.(15, 'Spawning slicer...');
+    const outputDir = path.join(workDir, 'output');
+    fs.mkdirSync(outputDir, { recursive: true });
+
+    db.updateJobProgress(jobId, 15, 'Spawning slicer...');
+    onProgress?.(15, 'Spawning slicer...');
 
       // Build bambuddy-style profile stubs from the user's picker choices.
       // Sidecar walks `inherits` against its bundled slicer presets and
@@ -988,6 +1004,16 @@ export async function runSliceJob(
           db.updateJobEstimates(jobId, estimates);
         }
       }
+  } catch (err) {
+    // Failure (non-zero exit, spawn error, abort from cancel, 3MF build
+    // failure) — remove the workDir so failed slices don't accumulate on
+    // disk. Success path keeps the dir (holds output gcode; removed later by
+    // DELETE /api/jobs/:id). Mirrors models.ts clean-on-failure pattern.
+    try { fs.rmSync(workDir, { recursive: true, force: true }); } catch { /* best effort */ }
+    throw err;
+  } finally {
+    runningExecutors.delete(jobId);
+  }
 }
 
 /**
@@ -1004,6 +1030,14 @@ export function runSliceDirect(
   db: Db,
 ) {
   runSliceJob(jobId, body, modelFilePath, modelName, workDir, db).catch((err) => {
+    // When a slice is cancelled (executor.cancel() → fetch abort → AbortError),
+    // the cancel route has already marked the job 'cancelled'. Don't overwrite
+    // that with 'failed' — just log and leave the status alone.
+    const isAbort = err instanceof Error && (err.name === 'AbortError' || /abort/i.test(err.message));
+    if (isAbort) {
+      console.log(`[slice] job ${jobId} aborted by cancel`);
+      return;
+    }
     const message = err instanceof Error ? `${err.message}\n${err.stack?.slice(0, 500)}` : String(err);
     db.updateJobStatus(jobId, 'failed', { errorMessage: message });
   });
