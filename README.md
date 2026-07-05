@@ -164,7 +164,7 @@ In Snorcal: Add Printer → Bambu Lab (LAN) → enter IP, port 8883, serial, acc
 |---------------|------------------------|--------|
 | OrcaSlicer    | Universal (most mods)  | ✓      |
 | BambuStudio   | Bambu Lab native       | ✓      |
-| PrusaSlicer   | Prusa + generic Marlin | ✓      |
+| PrusaSlicer   | Prusa + generic Marlin | experimental (engine wired, not fully tested) |
 | Cura          | UltiMaker              | ✗ Phase 5 |
 
 Snapmaker machines (U1 etc.) slice via the **OrcaSlicer** engine with Snapmaker
