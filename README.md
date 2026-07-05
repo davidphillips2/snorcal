@@ -69,6 +69,7 @@ You need slicer binaries installed locally. Set env vars pointing to them:
 ```bash
 export SLICER_PATH_ORCASLICER=/Applications/OrcaSlicer.app/Contents/MacOS/OrcaSlicer
 export SLICER_PATH_BAMBUSTUDIO=/Applications/BambuStudio.app/Contents/MacOS/BambuStudio
+export SLICER_PATH_PRUSASLICER=/Applications/PrusaSlicer.app/Contents/MacOS/PrusaSlicer   # optional
 ```
 
 Without these, slicing will fail with "slicer binary not found" but the rest
@@ -163,9 +164,11 @@ In Snorcal: Add Printer → Bambu Lab (LAN) → enter IP, port 8883, serial, acc
 |---------------|------------------------|--------|
 | OrcaSlicer    | Universal (most mods)  | ✓      |
 | BambuStudio   | Bambu Lab native       | ✓      |
-| Snapmaker Orca| Snapmaker machines     | ✓ (shares OrcaSlicer binary, different datadir) |
-| PrusaSlicer   | Prusa + generic Marlin | ✗ Phase 5 |
+| PrusaSlicer   | Prusa + generic Marlin | ✓      |
 | Cura          | UltiMaker              | ✗ Phase 5 |
+
+Snapmaker machines (U1 etc.) slice via the **OrcaSlicer** engine with Snapmaker
+printer/filament profiles — there is no separate "Snapmaker Orca" engine.
 
 ### Profiles
 
