@@ -130,12 +130,34 @@ export function SettingsPanel({
     api.getProfiles(engine).then(setProfiles).catch(() => setProfiles([]));
   }, [engine]);
 
+  // When engine changes (or profile list refreshes), drop selections that no
+  // longer exist in the current engine's profile set. Without this, switching
+  // engine leaves a stale machine/process name in state that points at a
+  // profile the new engine doesn't have → silent fallback to defaults at slice
+  // time. Also auto-pick first filament if none selected.
+  useEffect(() => {
+    if (profiles.length === 0) return;
+    const names = new Set(profiles.map(p => p.name));
+    const updates: Partial<SelectedProfiles> = {};
+    if (selectedProfiles.machine && !names.has(selectedProfiles.machine)) {
+      updates.machine = undefined;
+    }
+    if (selectedProfiles.process && !names.has(selectedProfiles.process)) {
+      updates.process = undefined;
+    }
+    if (Object.keys(updates).length > 0) {
+      onProfilesChange({ ...selectedProfiles, ...updates });
+    }
+    // Filament slots: each slot.profile is also engine-scoped. Clear any that
+    // no longer resolve to a real filament profile in the new engine's set.
+    if (filamentSlots.some(s => s.profile && !names.has(s.profile))) {
+      onFilamentSlotsChange(filamentSlots.map(s => (s.profile && !names.has(s.profile) ? { ...s, profile: undefined } : s)));
+    }
+  }, [profiles, selectedProfiles.machine, selectedProfiles.process]);
+
   useEffect(() => {
     api.listPrinters().then(setPrinters).catch(() => setPrinters([]));
   }, []);
-
-  const machineProfilesAll = profiles.filter(p => p.profile_type === 'machine');
-  const filamentProfiles = profiles.filter(p => p.profile_type === 'filament');
 
   // Filter machine dropdown to profiles matching the TARGET printer's `model`.
   // Falls back to union of all connected printers' models when no target set
@@ -145,6 +167,34 @@ export function SettingsPanel({
     (effectiveModel ? [effectiveModel] : printers.map(p => p.model))
       .filter((m): m is string => !!m && m.trim().length > 0)
   ));
+
+  const machineProfilesAll = profiles.filter(p => p.profile_type === 'machine');
+  const filamentProfilesAll = profiles.filter(p => p.profile_type === 'filament');
+
+  // Filament filter: match filament profile names against printer model tokens
+  // (e.g. "Bambu PLA Basic @BBL P1S 0.4 nozzle" matches tokens from "Bambu Lab
+  // P1S"). Falls back to all filaments when no printer tokens — preserves the
+  // "no printer selected, show generic" path.
+  const printerTokens = extractModelTokens(effectiveModel ?? printerModels.join(' '));
+  const filamentByPrinter = printerTokens.length === 0
+    ? filamentProfilesAll
+    : filamentProfilesAll.filter(p => {
+        const n = p.name.toLowerCase();
+        return printerTokens.some(tok => n.includes(tok));
+      });
+  const filamentProfiles = filamentByPrinter.length > 0 ? filamentByPrinter : filamentProfilesAll;
+
+  // Filament slot clearer (printer-scope): when target printer changes, drop
+  // any slot.profile that isn't in the printer-filtered filament list. Same
+  // idea as the engine-scope clearer but keyed off the derived filament set.
+  useEffect(() => {
+    if (filamentByPrinter.length === 0) return; // no narrowing to do
+    const allowed = new Set(filamentByPrinter.map(p => p.name));
+    if (filamentSlots.some(s => s.profile && !allowed.has(s.profile))) {
+      onFilamentSlotsChange(filamentSlots.map(s => (s.profile && !allowed.has(s.profile) ? { ...s, profile: undefined } : s)));
+    }
+  }, [filamentByPrinter]);
+
   const machineFiltered = printerModels.length === 0
     ? machineProfilesAll
     : machineProfilesAll.filter(p =>
@@ -189,17 +239,34 @@ export function SettingsPanel({
   }, [effectiveModel, machineProfilesAll.length, selectedProfiles.machine]);
 
   // Process filter: key off the SELECTED machine profile, not all printers.
-  // Extract distinctive tokens (drop brand words + pure numbers) and match process names.
+  // Extract distinctive tokens (drop brand words + pure numbers) and match
+  // process names. STRICT — no fallback to all profiles when nothing matches.
+  // Empty result = no compatible process preset for the current machine,
+  // surfaced via empty-state hint in renderProfileSelect.
   const selectedMachine = selectedProfiles.machine;
   const processTokens = extractModelTokens(selectedMachine);
   const processProfilesAll = profiles.filter(p => p.profile_type === 'process');
-  const processMatched = processTokens.length === 0
-    ? processProfilesAll
+  const processProfiles = processTokens.length === 0
+    ? []
     : processProfilesAll.filter(p => {
         const n = p.name.toLowerCase();
         return processTokens.some(tok => n.includes(tok));
       });
-  const processProfiles = processMatched.length > 0 ? processMatched : processProfilesAll;
+
+  // Auto-select a compatible process ONLY when none is selected yet. We do NOT
+  // overwrite an existing selection even if it falls outside the machine-filtered
+  // list — process settings encode print intent (layer height, infill, walls)
+  // that should survive a printer switch. The dropdown surfaces an out-of-filter
+  // selection with a warning badge so the user knows it's not native to the
+  // current machine and can re-pick if they want to.
+  useEffect(() => {
+    if (processProfiles.length === 0) return;
+    const current = selectedProfiles.process;
+    if (current) return; // keep the user's (or embedded-settings) selection
+    const prefer02Standard = processProfiles.find(p => /0\.2.*standard/i.test(p.name));
+    const preferStandard = processProfiles.find(p => /standard/i.test(p.name));
+    onProfilesChange({ ...selectedProfiles, process: (prefer02Standard ?? preferStandard ?? processProfiles[0]).name });
+  }, [processProfiles, selectedProfiles.process]);
 
   const updateSetting = useCallback((key: string, value: string) => {
     onSettingsChange({ ...settings, [key]: value });
@@ -253,32 +320,54 @@ export function SettingsPanel({
     label: string,
     type: keyof SelectedProfiles,
     options: ProfileInfo[],
-  ) => (
-    <div className="space-y-1">
-      <label className="block text-xs font-medium text-gray-400">{label}</label>
-      <div className="flex gap-1">
-        <select
-          value={selectedProfiles[type] || ''}
-          onChange={(e) => onProfilesChange({ ...selectedProfiles, [type]: e.target.value || undefined })}
-          className="flex-1 bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-xs text-white min-w-0"
-        >
-          <option value="">Default</option>
-          {options.map(p => (
-            <option key={p.name} value={p.name}>{p.name}</option>
-          ))}
-        </select>
-        {selectedProfiles[type] && (
-          <button
-            onClick={() => handleDeleteProfile(type, selectedProfiles[type]!)}
-            className="px-1.5 py-1 text-xs text-red-400 hover:text-red-300 hover:bg-gray-700 rounded"
-            title="Delete profile"
+  ) => {
+    // If the current selection isn't in the (machine-filtered) options list,
+    // surface it as an explicit "out-of-filter" option so the <select> shows
+    // the actual value rather than blank, and warn that it's not native to the
+    // current printer. The selection is preserved on purpose — see the process
+    // auto-select useEffect above.
+    const current = selectedProfiles[type];
+    const inOptions = !current || options.some(o => o.name === current);
+    return (
+      <div className="space-y-1">
+        <label className="block text-xs font-medium text-gray-400">{label}</label>
+        <div className="flex gap-1">
+          <select
+            value={current || ''}
+            onChange={(e) => onProfilesChange({ ...selectedProfiles, [type]: e.target.value || undefined })}
+            className="flex-1 bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-xs text-white min-w-0"
           >
-            &times;
-          </button>
+            <option value="">Default</option>
+            {options.map(p => (
+              <option key={p.name} value={p.name}>{p.name}</option>
+            ))}
+            {!inOptions && current && (
+              <option value={current}>{current} (not native to this printer)</option>
+            )}
+          </select>
+          {current && (
+            <button
+              onClick={() => handleDeleteProfile(type, current)}
+              className="px-1.5 py-1 text-xs text-red-400 hover:text-red-300 hover:bg-gray-700 rounded"
+              title="Delete profile"
+            >
+              &times;
+            </button>
+          )}
+        </div>
+        {options.length === 0 && (
+          <p className="text-[10px] text-amber-400">
+            No matching profiles for this slicer + printer combo. Use “Import profiles” in App Settings for the local slicer, or pick a different printer.
+          </p>
+        )}
+        {!inOptions && current && (
+          <p className="text-[10px] text-amber-400">
+            “{current}” is from a different printer — kept for its process intent. Speed/accel may exceed this printer’s limits; re-pick below if needed.
+          </p>
         )}
       </div>
-    </div>
-  );
+    );
+  };
 
   // Filter groups by search and/or diff-mode
   const searchLower = search.toLowerCase();
@@ -413,18 +502,7 @@ export function SettingsPanel({
         ))}
       </div>
 
-      {/* Advanced toggle */}
-      <button
-        onClick={() => setShowAdvanced(s => !s)}
-        className="w-full flex items-center justify-between text-xs font-medium text-gray-400 uppercase tracking-wider py-1 hover:text-gray-200"
-      >
-        <span>Advanced</span>
-        <span className="text-gray-500 text-xs">{showAdvanced ? '\u2212' : '+'}</span>
-      </button>
-
-      {showAdvanced && (
-        <>
-      {/* Profile selectors */}
+      {/* Profile selectors — always visible (Machine/Process are core, not Advanced) */}
       <div className="space-y-2">
         <div className="flex items-center justify-between">
           <span className="text-sm font-medium text-gray-300">Profiles</span>
@@ -454,6 +532,17 @@ export function SettingsPanel({
         {renderProfileSelect('Process', 'process', processProfiles)}
       </div>
 
+      {/* Advanced toggle */}
+      <button
+        onClick={() => setShowAdvanced(s => !s)}
+        className="w-full flex items-center justify-between text-xs font-medium text-gray-400 uppercase tracking-wider py-1 hover:text-gray-200"
+      >
+        <span>Advanced</span>
+        <span className="text-gray-500 text-xs">{showAdvanced ? '\u2212' : '+'}</span>
+      </button>
+
+      {showAdvanced && (
+        <>
       {/* Multi-Material Support */}
       <div className="space-y-2">
         <label className="flex items-center gap-2 cursor-pointer">

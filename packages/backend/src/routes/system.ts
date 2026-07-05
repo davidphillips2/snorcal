@@ -4,7 +4,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import type { Db } from '../db/index.js';
+import type { Db, DbJob, DbModel } from '../db/index.js';
 import { getDataDir } from '../services/model-parser.js';
 import { isQueueAvailable } from '../jobs/queue.js';
 import { SLICER_BINARIES, getSlicerBinary } from '@snorcal/shared';
@@ -111,6 +111,27 @@ async function pingUrl(url: string): Promise<'ok' | 'down'> {
 export async function systemRoutes(app: FastifyInstance, options: { db: Db }) {
   const { db } = options;
 
+  /**
+   * Read DB-backed per-engine binary path overrides. Shape: JSON object
+   * keyed by SlicerEngine → absolute binary path. Returns `{}` on any parse
+   * error or missing key (never throws).
+   */
+  function readSlicerOverrides(): Record<string, string> {
+    try {
+      const raw = db.getSetting('slicer_path_overrides');
+      if (!raw) return {};
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object') {
+        const out: Record<string, string> = {};
+        for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+          if (typeof v === 'string' && v.trim()) out[k] = v.trim();
+        }
+        return out;
+      }
+    } catch { /* malformed JSON in DB — ignore */ }
+    return {};
+  }
+
   // GET /api/system/info — app/server config + runtime status (read-only)
   app.get('/api/system/info', async () => {
     const dataDir = getDataDir();
@@ -139,12 +160,30 @@ export async function systemRoutes(app: FastifyInstance, options: { db: Db }) {
     const redisPort = parseInt(process.env.REDIS_PORT || '6379');
 
     // Per-engine sidecar URLs (bambuddy-style separate services per slicer).
-    const sidecars: Record<string, { url: string | null; local: boolean; binaryExists: boolean }> = {};
+    const overrides = readSlicerOverrides();
+    const sidecars: Record<string, {
+      url: string | null;
+      local: boolean;
+      binaryExists: boolean;
+      overridePath: string | null;
+      defaultPath: string;
+    }> = {};
     for (const engine of Object.keys(SLICER_BINARIES)) {
       const url = getSidecarUrl(engine);
+      const override = overrides[engine];
       let binaryExists = false;
-      try { binaryExists = fs.existsSync(getSlicerBinary(engine).binaryPath); } catch { /* unknown engine */ }
-      sidecars[engine] = { url, local: !url, binaryExists };
+      try { binaryExists = fs.existsSync(getSlicerBinary(engine, override).binaryPath); } catch { /* unknown engine */ }
+      // Default path = resolved path WITHOUT override (env-var + platform only).
+      // Used by the UI as the input placeholder.
+      let defaultPath = '';
+      try { defaultPath = getSlicerBinary(engine).binaryPath; } catch { /* unknown engine */ }
+      sidecars[engine] = {
+        url,
+        local: !url,
+        binaryExists,
+        overridePath: override || null,
+        defaultPath,
+      };
     }
 
     const modelCount = db.listModels().length;
@@ -218,18 +257,173 @@ export async function systemRoutes(app: FastifyInstance, options: { db: Db }) {
 
   // GET /api/system/engines — engines actually usable on this host.
   // An engine is available when EITHER its sidecar URL is configured OR the
-  // local binary exists on disk.
+  // local binary exists on disk (honoring DB-backed path overrides).
   app.get('/api/system/engines', async () => {
+    const overrides = readSlicerOverrides();
     const engines = (Object.keys(SLICER_BINARIES) as SlicerEngine[]).filter(engine => {
       if (getSidecarUrl(engine)) return true;
       try {
-        return fs.existsSync(getSlicerBinary(engine).binaryPath);
+        return fs.existsSync(getSlicerBinary(engine, overrides[engine]).binaryPath);
       } catch {
         return false;
       }
     });
     return { ok: true, data: { engines } };
   });
+
+  // POST /api/system/test-slicer-path — validate a user-entered binary path
+  // before saving as override. No DB writes; pure pre-save check.
+  // Body: { engine: string, path: string }
+  app.post<{ Body: { engine: string; path: string } }>('/api/system/test-slicer-path', async (req, reply) => {
+    const { engine, path: binaryPath } = req.body ?? {};
+    if (!engine || !(engine in SLICER_BINARIES)) {
+      return reply.status(400).send({ ok: false, error: `Unknown engine: ${engine}` });
+    }
+    if (typeof binaryPath !== 'string' || !binaryPath.trim()) {
+      return reply.status(400).send({ ok: false, error: 'path required' });
+    }
+    const trimmed = binaryPath.trim();
+    let exists = false;
+    let executable = false;
+    let error: string | undefined;
+    try {
+      exists = fs.existsSync(trimmed);
+      if (!exists) {
+        error = 'file does not exist';
+      } else {
+        try {
+          fs.accessSync(trimmed, fs.constants.X_OK);
+          executable = true;
+        } catch {
+          error = 'file exists but not executable';
+        }
+      }
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e);
+    }
+    return { ok: true, data: { exists, executable, error } };
+  });
+
+  // POST /api/system/cleanup — bulk-purge old jobs + orphaned models.
+  // Two-step: caller MUST call with dryRun=true first to preview. When dryRun
+  // is false, performs the actual delete (DB rows + on-disk dirs). Refuses to
+  // delete running/queued jobs (returns 409).
+  //
+  // Modes:
+  //   completed_jobs    — jobs in status completed/failed/cancelled older than N days
+  //   all_jobs          — all jobs older than N days (any status; running/queued refused)
+  //   orphaned_models   — models with no jobs in last N days (days=0 = no jobs at all)
+  //   all               — jobs + models older than N days (running/queued still refused)
+  type CleanupMode = 'completed_jobs' | 'all_jobs' | 'orphaned_models' | 'all';
+  app.post<{ Body: { mode: CleanupMode; olderThanDays: number; dryRun: boolean } }>(
+    '/api/system/cleanup',
+    async (req, reply) => {
+      const { mode, olderThanDays, dryRun } = req.body ?? {};
+      const validModes: CleanupMode[] = ['completed_jobs', 'all_jobs', 'orphaned_models', 'all'];
+      if (!validModes.includes(mode)) {
+        return reply.status(400).send({ ok: false, error: `Unknown mode: ${mode}` });
+      }
+      const days = Math.max(0, Math.floor(Number(olderThanDays) || 0));
+      if (typeof dryRun !== 'boolean') {
+        return reply.status(400).send({ ok: false, error: 'dryRun (boolean) required' });
+      }
+
+      // Gather candidate sets based on mode.
+      const jobCandidates: DbJob[] = [];
+      const modelCandidates: DbModel[] = [];
+      if (mode === 'completed_jobs') {
+        jobCandidates.push(...db.listJobsOlderThan(days, ['completed', 'failed', 'cancelled']));
+      } else if (mode === 'all_jobs') {
+        jobCandidates.push(...db.listJobsOlderThan(days));
+      } else if (mode === 'orphaned_models') {
+        modelCandidates.push(...db.listOrphanedModels(days));
+      } else { // all
+        jobCandidates.push(...db.listJobsOlderThan(days));
+        modelCandidates.push(...db.listModelsOlderThan(days));
+      }
+
+      // Refuse to delete running/queued jobs — would corrupt active slices.
+      const active = jobCandidates.filter(j => j.status === 'running' || j.status === 'queued');
+      if (active.length > 0) {
+        return reply.status(409).send({
+          ok: false,
+          error: `Refusing to delete ${active.length} running/queued job(s). Wait for completion or cancel first.`,
+        });
+      }
+
+      // When purging models, their job workDirs must be fs-cleaned too
+      // (db.deleteModel cascades the DB rows but not disk files). Pre-compute
+      // the full list of job dirs to remove per model so we don't lose them
+      // when the model row is deleted.
+      const modelJobDirs: string[] = [];
+      for (const model of modelCandidates) {
+        const jobs = db.listJobsByModel(model.id);
+        for (const job of jobs) {
+          if (job.output_dir) modelJobDirs.push(path.dirname(job.output_dir));
+        }
+      }
+
+      // Sum reclaimable bytes (best-effort, never throw).
+      let bytesReclaimable = 0;
+      for (const job of jobCandidates) {
+        if (job.output_dir) {
+          try { bytesReclaimable += dirSize(path.dirname(job.output_dir)); } catch { /* missing */ }
+        }
+      }
+      for (const model of modelCandidates) {
+        try { bytesReclaimable += dirSize(path.dirname(model.file_path)); } catch { /* missing */ }
+      }
+      for (const dir of modelJobDirs) {
+        try { bytesReclaimable += dirSize(dir); } catch { /* missing */ }
+      }
+
+      // Dry run: return counts + samples, no mutation.
+      if (dryRun) {
+        return {
+          ok: true,
+          data: {
+            mode, olderThanDays: days, dryRun: true,
+            jobCount: jobCandidates.length,
+            modelCount: modelCandidates.length,
+            bytesReclaimable,
+            jobIds: jobCandidates.slice(0, 50).map(j => j.id),
+            modelIds: modelCandidates.slice(0, 50).map(m => m.id),
+          },
+        };
+      }
+
+      // Execute purge: jobs first (fs + DB row), then models (cascade handles
+      // any remaining job DB rows; their workDirs were pre-cleaned above).
+      for (const job of jobCandidates) {
+        if (job.output_dir) {
+          const wd = path.dirname(job.output_dir);
+          try { fs.rmSync(wd, { recursive: true, force: true }); } catch { /* ignore */ }
+        }
+        try { db.deleteJob(job.id); } catch { /* may already be gone */ }
+      }
+      for (const dir of modelJobDirs) {
+        try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
+      }
+      for (const model of modelCandidates) {
+        try { fs.rmSync(path.dirname(model.file_path), { recursive: true, force: true }); } catch { /* ignore */ }
+        try { db.deleteModel(model.id); } catch { /* ignore */ }
+      }
+
+      console.log(`[cleanup] mode=${mode} days=${days} purged jobs=${jobCandidates.length} models=${modelCandidates.length} bytes=${bytesReclaimable}`);
+
+      return {
+        ok: true,
+        data: {
+          mode, olderThanDays: days, dryRun: false,
+          jobCount: jobCandidates.length,
+          modelCount: modelCandidates.length,
+          bytesReclaimable,
+          jobIds: jobCandidates.slice(0, 50).map(j => j.id),
+          modelIds: modelCandidates.slice(0, 50).map(m => m.id),
+        },
+      };
+    },
+  );
 
   // GET /api/system/check-update — fetch latest tag from GitHub, compare to current version.
   app.get('/api/system/check-update', async (_req: FastifyRequest, reply: FastifyReply) => {

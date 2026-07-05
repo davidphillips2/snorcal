@@ -175,6 +175,8 @@ export const DEFAULT_VALUES: Record<string, string> = {
   wipe: '0',
   wipe_distance: '1',
   enable_prime_tower: '0',
+  wipe_tower_x: '165',
+  wipe_tower_y: '217',
   prime_tower_width: '60',
   prime_tower_brim_width: '3',
   prime_volume: '45',
@@ -269,9 +271,29 @@ function containsAny(val: string, substrings: string[]): boolean {
 
 export const SETTING_GROUPS: SettingGroup[] = [
   {
+    // Curated shortcuts for the most-frequently-tweaked keys. Each key also
+    // lives in its "real" group below; both bind to the same `settings[key]`
+    // state, so editing in Frequent updates the original tab and vice versa.
+    id: 'frequent',
+    label: 'Frequent',
+    defaultCollapsed: false,
+    settings: [
+      { key: 'layer_height', label: 'Layer Height (mm)', type: 'number', step: '0.05' },
+      { key: 'wall_loops', label: 'Wall Loops', type: 'number', step: '1' },
+      { key: 'top_shell_layers', label: 'Top Solid Layers', type: 'number', step: '1' },
+      { key: 'bottom_shell_layers', label: 'Bottom Solid Layers', type: 'number', step: '1' },
+      { key: 'sparse_infill_density', label: 'Infill Density (%)', type: 'text' },
+      { key: 'sparse_infill_pattern', label: 'Infill Pattern', type: 'select', options: ['crosshatch', 'gyroid', 'honeycomb', 'adaptivecubic', 'lightning', 'triangles', 'grid', 'line', 'cubic'] },
+      { key: 'enable_support', label: 'Enable Support', type: 'toggle' },
+      { key: 'brim_type', label: 'Brim Type', type: 'select', options: ['auto_brim', 'brim_ears', 'outer', 'inner', 'outer_and_inner', 'no_brim'] },
+      { key: 'brim_width', label: 'Brim Width (mm)', type: 'number', step: '1' },
+      { key: 'skirt_loops', label: 'Skirt Loops', type: 'number', step: '1' },
+    ],
+  },
+  {
     id: 'quality',
     label: 'Quality',
-    defaultCollapsed: false,
+    defaultCollapsed: true,
     settings: [
       { key: 'layer_height', label: 'Layer Height (mm)', type: 'number', step: '0.05' },
       { key: 'adaptive_layer_height', label: 'Adaptive Layer Height', type: 'toggle' },
@@ -490,6 +512,8 @@ export const SETTING_GROUPS: SettingGroup[] = [
       { key: 'ooze_prevention', label: 'Ooze Prevention', type: 'toggle' },
       // Prime Tower
       { key: 'enable_prime_tower', label: 'Enable Prime Tower', type: 'toggle' },
+      { key: 'wipe_tower_x', label: 'Tower X (mm)', type: 'number', step: '1', showWhen: { key: 'enable_prime_tower', value: '1' } },
+      { key: 'wipe_tower_y', label: 'Tower Y (mm)', type: 'number', step: '1', showWhen: { key: 'enable_prime_tower', value: '1' } },
       { key: 'prime_tower_width', label: 'Tower Width (mm)', type: 'number', step: '1', showWhen: { key: 'enable_prime_tower', value: '1' } },
       { key: 'prime_tower_brim_width', label: 'Tower Brim Width (mm)', type: 'number', step: '1', showWhen: { key: 'enable_prime_tower', value: '1' } },
       { key: 'prime_tower_brim_chamfer', label: 'Tower Brim Chamfer', type: 'toggle', showWhen: { key: 'enable_prime_tower', value: '1' } },

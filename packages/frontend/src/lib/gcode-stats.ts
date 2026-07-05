@@ -43,13 +43,15 @@ export function typeColor(type: string): string {
   return TYPE_COLORS[type.toLowerCase()] ?? '#9ca3af';
 }
 
-export function analyzeGcodeTime(gcode: string): TypeBreakdownEntry[] {
-  const lines = gcode.split('\n');
+export function analyzeGcodeTime(gcode: string | string[]): TypeBreakdownEntry[] {
+  // Accept a pre-split line array to avoid re-splitting large gcodes (the
+  // preview path already has the array; callers without one pass a string).
+  const lines = Array.isArray(gcode) ? gcode : gcode.split('\n');
 
   let currentType = 'custom';
   let feedMmS = 0;
   let x = 0, y = 0, z = 0, e = 0;
-  let absoluteE = false; // M82 default in many slicers; Snapmaker Orca uses M83
+  let absoluteE = false; // M82 default in many slicers; OrcaSlicer uses M83
   let absoluteXYZ = true; // G90 default
 
   const typeSeconds = new Map<string, number>();
@@ -126,8 +128,11 @@ export function analyzeGcodeTime(gcode: string): TypeBreakdownEntry[] {
  * header. Returns null if not found. Used as the authoritative total since
  * the parser-based sum ignores acceleration/jerk and undercounts ~40%.
  */
-export function parseSlicerEstimatedTime(gcode: string): number | null {
-  const m = gcode.match(/;\s*estimated printing time[^=\n]*=\s*(\d+h)?\s*(\d+m)?\s*(\d+s)?/i);
+export function parseSlicerEstimatedTime(gcode: string | string[]): number | null {
+  // The estimate lives in the slicer header (first ~30 lines). For a line
+  // array, scan only the prefix; for a string, regex the whole thing.
+  const haystack = Array.isArray(gcode) ? gcode.slice(0, 40).join('\n') : gcode;
+  const m = haystack.match(/;\s*estimated printing time[^=\n]*=\s*(\d+h)?\s*(\d+m)?\s*(\d+s)?/i);
   if (!m) return null;
   const h = parseInt(m[1] ?? '0', 10) || 0;
   const min = parseInt(m[2] ?? '0', 10) || 0;
@@ -159,7 +164,7 @@ export function formatDurationShort(sec: number): string {
  * `;TYPE:` that follows until the next layer marker. Used by the layer
  * filmstrip to color ticks by section.
  */
-export function extractLayerTypes(gcode: string): Map<number, string> {
+export function extractLayerTypes(gcode: string | string[]): Map<number, string> {
   const out = new Map<number, string>();
   const typeCounts = new Map<string, number>();
   let currentLayer = 0;
@@ -175,7 +180,8 @@ export function extractLayerTypes(gcode: string): Map<number, string> {
     typeCounts.clear();
   };
 
-  for (const rawLine of gcode.split('\n')) {
+  const lines = Array.isArray(gcode) ? gcode : gcode.split('\n');
+  for (const rawLine of lines) {
     const line = rawLine.trim();
     if (!line.startsWith(';')) {
       // Count ;TYPE: only matters for non-comment moves; we just need the current type

@@ -109,11 +109,16 @@ export function AmsEditor({ printerId, slot, onClose, onSaved }: Props) {
                 className="mt-1 w-full bg-gray-800 border border-gray-600 rounded px-2 py-1.5 text-sm text-white"
               >
                 <option value="">— pick a spool —</option>
-                {sortedSpools.map(s => (
-                  <option key={s.id} value={s.id}>
-                    {s.name}{s.material ? ` · ${s.material}` : ''}{s.remainingWeightG ? ` · ${Math.round(s.remainingWeightG)}g` : ''}
-                  </option>
-                ))}
+                {sortedSpools.map(s => {
+                  const hex = s.color ? `#${(s.color.replace(/^#/, '').slice(0, 6))}` : null;
+                  return (
+                    <option key={s.id} value={s.id}
+                      style={hex ? { backgroundColor: hex } : undefined}
+                    >
+                      {s.name}{s.material ? ` · ${s.material}` : ''}{hex ? ` · ${hex.toUpperCase()}` : ''}{s.remainingWeightG ? ` · ${Math.round(s.remainingWeightG)}g` : ''}
+                    </option>
+                  );
+                })}
               </select>
             </label>
           )}

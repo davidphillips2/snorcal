@@ -9,6 +9,10 @@ const RETRYABLE_STATUS = new Set([502, 503, 504]);
 const MAX_RETRIES = 5;
 const BASE_DELAY_MS = 300;
 
+// Notified on any 401 so the AuthGate can flip back to the login screen.
+let onUnauthorized: (() => void) | null = null;
+export function setUnauthorizedHandler(cb: () => void) { onUnauthorized = cb; }
+
 function sleep(ms: number) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
@@ -17,7 +21,16 @@ async function apiFetch(path: string, options?: RequestInit) {
   let lastErr: unknown;
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     try {
-      const res = await fetch(`${API_BASE}${path}`, options);
+      // credentials:'include' so the same-origin auth cookie rides along
+      // (same-origin in both prod — backend serves bundle — and dev — Vite proxy).
+      const res = await fetch(`${API_BASE}${path}`, { credentials: 'include', ...options });
+      // 401 = session expired/missing. Don't retry; surface to AuthGate.
+      if (res.status === 401) {
+        try { onUnauthorized?.(); } catch {}
+        let msg = 'Unauthorized';
+        try { const t = await res.text(); if (t) msg = t; } catch {}
+        throw new Error(msg);
+      }
       // Retry transient proxy/gateway errors (backend mid-restart)
       if (RETRYABLE_STATUS.has(res.status) && attempt < MAX_RETRIES) {
         await sleep(BASE_DELAY_MS * Math.pow(2, attempt));
@@ -47,6 +60,38 @@ async function apiFetch(path: string, options?: RequestInit) {
     }
   }
   throw lastErr;
+}
+
+// --- Auth ---
+
+export interface AuthStatus {
+  disabled: boolean;
+  requiresSetup: boolean;
+  authenticated: boolean;
+}
+
+export async function getAuthStatus(): Promise<AuthStatus> {
+  return apiFetch('/auth/status') as Promise<AuthStatus>;
+}
+
+export async function login(password: string): Promise<void> {
+  await apiFetch('/auth/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ password }),
+  });
+}
+
+export async function logout(): Promise<void> {
+  await apiFetch('/auth/logout', { method: 'POST' });
+}
+
+export async function setupPassword(password: string): Promise<void> {
+  await apiFetch('/auth/setup', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ password }),
+  });
 }
 
 export interface NegativePartMeta {
@@ -90,10 +135,13 @@ export async function getModel(id: string) {
   return apiFetch(`/models/${id}`);
 }
 
+/**
+ * Fetch a model's embedded project_settings.config. Throws on network/server
+ * errors; the caller distinguishes benign "no settings" (404) from real
+ * failures. We deliberately don't swallow here — silent failure hid import bugs.
+ */
 export async function getModelSourceSettings(id: string): Promise<Record<string, unknown> | null> {
-  try {
-    return await apiFetch(`/models/${id}/source-settings`);
-  } catch { return null; }
+  return apiFetch(`/models/${id}/source-settings`);
 }
 
 export async function saveFaceColors(modelId: string, faceColors: Uint8Array, plate?: number) {
@@ -262,6 +310,21 @@ export async function deleteProfile(engine: string, type: string, name: string) 
   return apiFetch(`/settings/${engine}/profiles/${type}/${encodeURIComponent(name)}`, { method: 'DELETE' });
 }
 
+/**
+ * Synthesize machine/process/filament profiles from an embedded 3MF
+ * project_settings blob, named by their `*_settings_id` keys. Returns the
+ * names to select in the dropdowns. Idempotent on the backend.
+ */
+export async function synthesizeEmbeddedProfiles(
+  engine: string,
+  blob: Record<string, unknown>,
+): Promise<{ machine?: string; process?: string; filament?: string }> {
+  return apiFetch(`/settings/${engine}/embedded-profiles`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(blob),
+  });
+}
+
 export async function testPrinterConnection(printerIp: string, printerPort?: number) {
   return apiFetch('/printers/test', {
     method: 'POST',
@@ -354,6 +417,10 @@ export async function deletePrinter(id: string) {
 
 export async function reconnectPrinter(id: string) {
   return apiFetch(`/printers/${id}/reconnect`, { method: 'POST' });
+}
+
+export async function disconnectPrinter(id: string) {
+  return apiFetch(`/printers/${id}/disconnect`, { method: 'POST' });
 }
 
 export async function sendPrinterCommand(printerId: string, command: string, args?: Record<string, unknown>) {
@@ -566,7 +633,8 @@ export function makerworldThumbnailUrl(url: string): string {
 
 export async function getCloudTokenHint(): Promise<string | null> {
   try {
-    const data = await apiFetch('/settings/key/bambu_cloud_token') as { value: string | null; hint: string | null };
+    // Secret keys return only { hint } — value is intentionally withheld.
+    const data = await apiFetch('/settings/key/bambu_cloud_token') as { hint?: string | null; value?: string | null };
     return data.hint ?? data.value ?? null;
   } catch { return null; }
 }
@@ -612,7 +680,13 @@ export interface SystemInfo {
   counts: { models: number; jobs: number; printers: number };
   queue: { state: 'connected' | 'fallback'; redisHost: string; redisPort: number };
   slicer: {
-    sidecars: Record<string, { url: string | null; local: boolean; binaryExists?: boolean }>;
+    sidecars: Record<string, {
+      url: string | null;
+      local: boolean;
+      binaryExists?: boolean;
+      overridePath?: string | null;
+      defaultPath?: string;
+    }>;
     local: boolean;
   };
   host: {
@@ -644,6 +718,89 @@ export async function getAvailableEngines(): Promise<string[]> {
     const data = await apiFetch('/system/engines') as { engines: string[] };
     return Array.isArray(data.engines) ? data.engines : [];
   } catch { return []; }
+}
+
+/**
+ * Per-engine binary path overrides (DB-backed via app_settings). Shape:
+ * `{ orcaslicer: "/path", bambustudio: "/path" }`. Missing/invalid returns `{}`.
+ */
+export async function getSlicerPathOverrides(): Promise<Record<string, string>> {
+  try {
+    const data = await apiFetch('/settings/key/slicer_path_overrides') as { value: string | null; hint: string | null };
+    if (!data.value) return {};
+    const parsed = JSON.parse(data.value);
+    if (parsed && typeof parsed === 'object') {
+      const out: Record<string, string> = {};
+      for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+        if (typeof v === 'string' && v.trim()) out[k] = v.trim();
+      }
+      return out;
+    }
+  } catch { /* malformed or missing */ }
+  return {};
+}
+
+/** Persist the full overrides map (replaces existing). Removes key when undefined. */
+export async function setSlicerPathOverrides(overrides: Record<string, string>): Promise<void> {
+  await apiFetch('/settings/key/slicer_path_overrides', {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ value: JSON.stringify(overrides) }),
+  });
+}
+
+export interface SlicerPathTestResult {
+  exists: boolean;
+  executable: boolean;
+  error?: string;
+}
+
+/** Validate a user-entered binary path before saving. No DB writes. */
+export async function testSlicerPath(engine: string, binaryPath: string): Promise<SlicerPathTestResult> {
+  return apiFetch('/system/test-slicer-path', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ engine, path: binaryPath }),
+  }) as Promise<SlicerPathTestResult>;
+}
+
+export type CleanupMode = 'completed_jobs' | 'all_jobs' | 'orphaned_models' | 'all';
+
+export interface CleanupResult {
+  mode: CleanupMode;
+  olderThanDays: number;
+  dryRun: boolean;
+  jobCount: number;
+  modelCount: number;
+  bytesReclaimable: number;
+  jobIds: string[];
+  modelIds: string[];
+}
+
+/**
+ * Bulk-purge old jobs + orphaned models. Caller MUST call with dryRun=true
+ * first to preview; same call with dryRun=false performs the delete (DB rows
+ * + on-disk dirs). Server refuses to delete running/queued jobs (HTTP 409).
+ */
+export async function cleanupStorage(body: {
+  mode: CleanupMode;
+  olderThanDays: number;
+  dryRun: boolean;
+}): Promise<CleanupResult> {
+  return apiFetch('/system/cleanup', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  }) as Promise<CleanupResult>;
+}
+
+export interface LocalProfileImportResult {
+  scanned: number;
+  imported: Record<string, number>;
+  skippedCount: number;
+  errorCount: number;
+  errors: { file: string; error: string }[];
+}
+
+export async function importLocalProfiles(engine: string): Promise<LocalProfileImportResult> {
+  return apiFetch(`/settings/${encodeURIComponent(engine)}/import-local`, { method: 'POST' }) as Promise<LocalProfileImportResult>;
 }
 
 export interface CheckUpdateResult {

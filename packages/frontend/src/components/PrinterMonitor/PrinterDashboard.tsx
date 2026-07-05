@@ -189,18 +189,23 @@ function PrinterCard({ printer, status, expanded, onToggle, onDelete, onReconnec
               )}
             </div>
           )}
-          {status?.progress !== undefined && status.progress > 0 && (
+          {((state === 'printing' || state === 'paused') && connection === 'connected') && (
             <div className="mt-2">
               <div className="h-1.5 bg-gray-700 rounded overflow-hidden">
-                <div className="h-full bg-blue-500" style={{ width: `${Math.round(status.progress * 100)}%` }} />
+                <div
+                  className={`h-full transition-[width] duration-500 ${state === 'paused' ? 'bg-yellow-500' : 'bg-blue-500'}`}
+                  style={{ width: `${Math.min(100, Math.round((status?.progress ?? 0) * 100))}%` }}
+                />
               </div>
               <div className="text-xs text-gray-400 mt-1">
-                {Math.round(status.progress * 100)}%
-                {status.layer !== undefined && status.totalLayers !== undefined && (
+                {status?.progress !== undefined ? `${Math.round(status.progress * 100)}%` : '—'}
+                {status?.layer !== undefined && status?.totalLayers !== undefined && (
                   <span className="ml-2">Layer {status.layer}/{status.totalLayers}</span>
                 )}
-                {status.etaSec !== undefined && status.etaSec > 0 && (
+                {status?.etaSec !== undefined && status.etaSec > 0 ? (
                   <span className="ml-2">ETA {formatDuration(status.etaSec)}</span>
+                ) : (
+                  <span className="ml-2 text-gray-600">ETA —</span>
                 )}
               </div>
             </div>

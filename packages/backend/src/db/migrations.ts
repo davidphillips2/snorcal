@@ -137,6 +137,12 @@ export function runSchemaMigrations(db: Database.Database) {
     if (!cols.some(c => c.name === 'printer_id')) {
       db.exec("ALTER TABLE jobs ADD COLUMN printer_id TEXT REFERENCES printers(id) ON DELETE SET NULL");
     }
+    // Denormalized printer name snapshot at slice time. Survives printer
+    // renames + deletions and covers jobs sliced with no DB printer (only
+    // a machine profile name in body.profiles.machine).
+    if (!cols.some(c => c.name === 'printer_name')) {
+      db.exec("ALTER TABLE jobs ADD COLUMN printer_name TEXT");
+    }
   } catch {
     // Migration not needed or already applied
   }

@@ -17,12 +17,15 @@ import { systemRoutes } from './routes/system.js';
 import { setupQueue } from './jobs/queue.js';
 import { printerManager } from './services/printer-manager.js';
 import { ensureDir, getDataDir } from './services/model-parser.js';
+import { authRoutes, makeAuthGuard, getAuthState } from './plugins/auth.js';
 
 export async function buildApp() {
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
   // bodyLimit covers JSON payloads (face-color PUT can reach several MB on
   // high-poly models). Multipart has its own 500MB limit below.
-  const app = Fastify({ logger: true, bodyLimit: 50 * 1024 * 1024 });
+  // trustProxy: respect X-Forwarded-Proto so secure cookies work behind
+  // `tailscale serve`, nginx, or any TLS-terminating reverse proxy.
+  const app = Fastify({ logger: true, bodyLimit: 50 * 1024 * 1024, trustProxy: true });
 
   // Ensure data directories exist
   const dataDir = getDataDir();
@@ -39,12 +42,33 @@ export async function buildApp() {
   }
   const db = new Db(dbPath);
 
+  // Auth state boot log — make open/setup modes loudly visible so a misconfigured
+  // deploy doesn't silently run with no auth.
+  const authState = getAuthState(db);
+  if (authState.disabled) {
+    app.log.warn('AUTH DISABLED (SNORCAL_AUTH_DISABLED=1). Running open — do not expose to untrusted networks.');
+  } else if (authState.requiresSetup) {
+    app.log.warn('AUTH: setup required — first run must configure a password via /api/auth/setup.');
+  } else {
+    app.log.info('AUTH: password configured.');
+  }
+
   // Plugins
-  await app.register(cors, { origin: true });
+  // CORS: frontend is same-origin in prod (this server serves the bundle) and
+  // in dev (Vite proxies /api). `origin: false` declines to send any
+  // Access-Control-Allow-Origin, blocking credentialed cross-site requests
+  // and cross-site WebSocket hijacking. credentials:true so the SameSite=lax
+  // auth cookie is honored on same-origin top-level navigations.
+  await app.register(cors, { origin: false, credentials: true });
   await app.register(multipart, {
     limits: { fileSize: 500 * 1024 * 1024 },
     attachFieldsToBody: false,
   });
+
+  // Auth guard — runs before every route handler. Public endpoints
+  // (/api/auth/*, /api/health) are skipped. Registered after cors/multipart
+  // but before route plugins so it sees all /api requests.
+  app.addHook('onRequest', makeAuthGuard(db));
 
   // Job queue (graceful when Redis unavailable — queue connects async)
   setupQueue(db);
@@ -53,6 +77,7 @@ export async function buildApp() {
   printerManager.init(db);
 
   // Routes
+  app.register(authRoutes, { db });
   app.register(modelRoutes, { db });
   app.register(sliceRoutes, { db });
   app.register(settingsRoutes, { db });

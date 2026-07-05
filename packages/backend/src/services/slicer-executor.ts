@@ -17,6 +17,13 @@ export interface SliceCommand {
   workDir: string;
   dataDir?: string;
   /**
+   * Optional DB-backed per-engine binary path override (highest priority).
+   * When set, `executeLocal` passes it to `getSlicerBinary(engine, override)`
+   * so the spawn target follows the user's App Settings override. Sidecar
+   * path ignores this (HTTP uploads don't need a local binary).
+   */
+  binaryOverridePath?: string;
+  /**
    * Optional profile stubs for bambuddy sidecar sync `/slice` endpoint
    * (slice_with_profiles path). Each entry is a JSON string shaped as
    * `{name, inherits: name, from: "system", type}`. Sidecar walks the
@@ -183,7 +190,7 @@ export class SlicerExecutor {
   private cancelHttp: (() => void) | null = null;
 
   private async executeLocal(cmd: SliceCommand, onProgress?: ProgressCallback): Promise<SliceResult> {
-    const binary = getSlicerBinary(cmd.engine);
+    const binary = getSlicerBinary(cmd.engine, cmd.binaryOverridePath);
 
     fs.mkdirSync(cmd.outputDir, { recursive: true });
 
@@ -287,6 +294,19 @@ export class SlicerExecutor {
         const gcodeResult = this.findGcode(cmd.outputDir);
 
         if (exitCode !== 0) {
+          // OrcaSlicer/BambuStudio sometimes emit non-zero exit codes (e.g.
+          // 154) even when slicing fully succeeded and a valid gcode file is
+          // sitting in the output directory — observed during multi-color
+          // slices with Snapmaker U1 profile overlays where a downstream
+          // validation step (extruder-type lookup, flush-matrix check) fires
+          // after gcode generation. Treat gcode-present as success so we
+          // don't throw away a usable slice. Bambuddy parity: sidecar
+          // endpoint does the same.
+          if (gcodeResult && gcodeResult.size > 1024) {
+            console.warn(`[SlicerExecutor] Slicer exited ${exitCode} but gcode present (${gcodeResult.size} bytes) — treating as success`);
+            resolve({ gcodePath: gcodeResult.path, gcodeSize: gcodeResult.size, exitCode: 0, stdout, stderr });
+            return;
+          }
           resolve({
             gcodePath: gcodeResult?.path ?? '',
             gcodeSize: gcodeResult?.size ?? 0,
@@ -326,8 +346,11 @@ export class SlicerExecutor {
   private buildArgs(cmd: SliceCommand): string[] {
     const args: string[] = [];
 
-    // Point to slicer's data dir (contains system profiles cache)
-    if (cmd.dataDir) {
+    // Point to slicer's data dir (contains system profiles cache).
+    // OrcaSlicer-class CLIs accept --datadir; BambuStudio-class CLIs reject
+    // it ("Invalid option --datadir", exit 254). Bambu uses --load-settings
+    // / --load-filaments + reads bundled presets from its resource bundle.
+    if (cmd.dataDir && !isBambuStudioClass(cmd.engine)) {
       args.push('--datadir', cmd.dataDir);
     }
 
@@ -339,10 +362,10 @@ export class SlicerExecutor {
       '--debug', '2',
     );
 
-    if (isBambuStudioClass(cmd.engine)) {
-      args.push('--skip_useless_pick');
-    }
-
+    // --skip_useless_pick was previously gated on isBambuStudioClass. Local
+    // BambuStudio.app CLI rejects it ("Invalid option --skip_useless_pick",
+    // exit 254). Sidecar (HTTP mode) builds its own args server-side and is
+    // unaffected by anything we drop here.
     args.push(cmd.input3mf);
     return args;
   }

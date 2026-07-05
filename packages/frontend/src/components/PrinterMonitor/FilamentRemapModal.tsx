@@ -42,9 +42,9 @@ export function FilamentRemapModal({
         const slots = buildSlots(printerProtocol, printerManualSlots, printerStatus?.ams, printerManualFilaments);
         const initial = shown.map(gcodeFil => {
           const gcodeColor = hexNormalize(gcodeFil.color);
-          if (!gcodeColor) return 0;
+          if (!gcodeColor) return -1;
           const match = slots.find(s => hexNormalize(s.color) === gcodeColor);
-          return match?.value ?? 0;
+          return match?.value ?? -1;
         });
         setMapping(initial);
       })
@@ -114,11 +114,11 @@ export function FilamentRemapModal({
               </div>
               <span className="text-gray-500 text-sm">→</span>
               <select
-                value={mapping[i] ?? 0}
+                value={mapping[i] ?? -1}
                 onChange={e => setMapping(prev => prev.map((v, idx) => idx === i ? Number(e.target.value) : v))}
                 className="flex-1 bg-gray-800 border border-gray-600 rounded px-2 py-1.5 text-sm text-white"
               >
-                <option value={0}>— skip —</option>
+                <option value={-1}>— skip —</option>
                 {slots.map(s => (
                   <option key={`${s.source}-${s.value}`} value={s.value}>
                     {s.label}

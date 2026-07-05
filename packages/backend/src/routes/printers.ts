@@ -10,7 +10,42 @@ import { findGcodeFile, extractGcodeFrom3mf, prepareKlipperGcode } from '../serv
 import { parseGcodeFilaments } from '../services/gcode-filaments.js';
 import { rewriteGcodeToolMapping, mappingIsNoop } from '../services/gcode-rewriter.js';
 import { getJobsDir, ensureDir } from '../services/model-parser.js';
+import { assertSafeUrl } from '../services/ssrf.js';
 import type { PrinterCommand, PrinterProtocol, PrintOptions } from '@snorcal/shared';
+
+/**
+ * Bare hostname/IP sanity check for the test-connection `printerIp` input.
+ * Rejects anything with a scheme, port, path, query, or whitespace — those
+ * can't be a printer address and could be an attempt to smuggle a URL into
+ * the `http://${ip}:...` template. Allows IPv4, IPv6, and DNS names.
+ */
+function isBareHost(s: string): boolean {
+  if (!s || s.length > 253) return false;
+  if (/\s/.test(s)) return false;
+  if (/[/?:#]/.test(s)) return false;        // no path/query/fragment
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(s)) return false; // no scheme://
+  // Bracketed IPv6 ok; otherwise only host-label chars + dots + hyphens.
+  if (s.startsWith('[') && s.endsWith(']')) return true;
+  return /^[a-z0-9._:-]+$/i.test(s);
+}
+
+/**
+ * Validate a user-supplied camera URL. Empty/null is allowed (clears the
+ * field). Non-empty must be http(s) — blocks javascript:, data:, file: which
+ * would otherwise reach <img src> in the frontend (XSS) or fetch() (SSRF).
+ */
+function validCameraUrl(s: string | null | undefined): true {
+  if (s == null || s.trim() === '') return true;
+  try {
+    const u = new URL(s);
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') {
+      throw new Error('must be http(s)');
+    }
+    return true;
+  } catch {
+    throw new Error('invalid camera URL (must be http/https)');
+  }
+}
 
 function toPrinterRecord(row: any) {
   return {
@@ -20,8 +55,11 @@ function toPrinterRecord(row: any) {
     ip: row.ip,
     port: row.port,
     serial: row.serial,
-    accessCode: row.access_code,
-    apiKey: row.api_key,
+    // NOTE: access_code / api_key intentionally omitted — never return printer
+    // secrets over the wire. EditPrinterModal sends new values only when the
+    // operator types them; absent = keep existing (PATCH supports partial).
+    accessCode: null,
+    apiKey: null,
     cameraStreamUrl: row.camera_stream_url,
     cameraSnapshotUrl: row.camera_snapshot_url,
     model: row.model,
@@ -130,7 +168,10 @@ async function testPrinterConnection(ip: string, port?: number): Promise<{ ok: b
 
   for (const attempt of httpProbes) {
     try {
-      const res = await fetch(`http://${ip}:${attempt.port}${attempt.path}`, { signal: AbortSignal.timeout(3000) });
+      // assertSafeUrl with allowPrivate:true: printers live on LAN/Tailscale,
+      // but we still block metadata hosts and require a well-formed URL.
+      await assertSafeUrl(`http://${ip}:${attempt.port}${attempt.path}`, { allowPrivate: true });
+      const res = await fetch(`http://${ip}:${attempt.port}${attempt.path}`, { signal: AbortSignal.timeout(3000), redirect: 'manual' });
       if (!res.ok) continue;
       const json = await res.json() as any;
 
@@ -181,6 +222,9 @@ export async function printerRoutes(app: FastifyInstance, options: { db: Db }) {
   app.post('/api/printers/test', async (req: FastifyRequest, reply: FastifyReply) => {
     const { printerIp, printerPort } = req.body as PrinterTestBody;
     if (!printerIp) return reply.status(400).send({ ok: false, error: 'printerIp required' });
+    if (!isBareHost(printerIp)) {
+      return reply.status(400).send({ ok: false, error: 'printerIp must be a hostname or IP' });
+    }
     const result = await testPrinterConnection(printerIp, printerPort);
     if (!result.ok) return reply.send({ ok: false, error: result.error });
     return reply.send({ ok: true, data: { info: result.info } });
@@ -229,6 +273,13 @@ export async function printerRoutes(app: FastifyInstance, options: { db: Db }) {
     if (body.protocol === 'bambu' && (!body.serial || !body.accessCode)) {
       return reply.status(400).send({ ok: false, error: 'serial and accessCode required for bambu' });
     }
+    // Reject non-http(s) camera URLs — they'd reach <img src> (XSS) / fetch (SSRF).
+    try {
+      validCameraUrl(body.cameraStreamUrl);
+      validCameraUrl(body.cameraSnapshotUrl);
+    } catch (e) {
+      return reply.status(400).send({ ok: false, error: e instanceof Error ? e.message : String(e) });
+    }
     const id = randomUUID();
     const port = body.port ?? (body.protocol === 'bambu' ? 8883 : 7125);
     db.insertPrinter({
@@ -269,6 +320,13 @@ export async function printerRoutes(app: FastifyInstance, options: { db: Db }) {
     };
     const row = db.getPrinter(req.params.id);
     if (!row) return reply.status(404).send({ ok: false, error: 'Printer not found' });
+
+    try {
+      validCameraUrl(body.camera_stream_url);
+      validCameraUrl(body.camera_snapshot_url);
+    } catch (e) {
+      return reply.status(400).send({ ok: false, error: e instanceof Error ? e.message : String(e) });
+    }
 
     db.updatePrinterFields(req.params.id, body);
     const updated = db.getPrinter(req.params.id)!;
@@ -350,6 +408,19 @@ export async function printerRoutes(app: FastifyInstance, options: { db: Db }) {
     }
   });
 
+  // POST /api/printers/:id/disconnect — tear down adapter so other clients
+  // (OrcaSlicer, BambuStudio, bambuddy) can take over MQTT/FTP on the printer.
+  // User clicks Reconnect to resume snorcal's connection.
+  app.post<{ Params: { id: string } }>('/api/printers/:id/disconnect', async (req, reply) => {
+    try {
+      await printerManager.stopAdapter(req.params.id);
+      return reply.send({ ok: true });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return reply.send({ ok: false, error: message });
+    }
+  });
+
   // POST /api/printers/:id/command
   app.post<{ Params: { id: string } }>('/api/printers/:id/command', async (req, reply) => {
     const body = req.body as { command: string; args?: Record<string, unknown> };
@@ -414,7 +485,11 @@ export async function printerRoutes(app: FastifyInstance, options: { db: Db }) {
     if (!url) return reply.status(400).send({ ok: false, error: 'Camera not available' });
 
     try {
-      const upstream = await fetch(url, { signal: AbortSignal.timeout(8000) });
+      // Cameras are user-configured URLs that may point at LAN/Tailscale hosts,
+      // so allowPrivate:true; assertSafeUrl still blocks metadata hosts and
+      // non-http(s) schemes. redirect:'manual' prevents retargeting to internals.
+      assertSafeUrl(url, { allowPrivate: true });
+      const upstream = await fetch(url, { signal: AbortSignal.timeout(8000), redirect: 'manual' });
       reply.raw.writeHead(200, {
         'Content-Type': upstream.headers.get('content-type') || 'multipart/x-mixed-replace; boundary=boundarydonotcross',
         'Cache-Control': 'no-store',
@@ -459,11 +534,15 @@ export async function printerRoutes(app: FastifyInstance, options: { db: Db }) {
     }
 
     try {
+      // WebRTC stream URL is user-configured (LAN/Tailscale camera) — allowPrivate
+      // but still block metadata hosts and non-http(s) schemes.
+      assertSafeUrl(streamUrl, { allowPrivate: true });
       const upstream = await fetch(streamUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
         signal: AbortSignal.timeout(10000),
+        redirect: 'manual',
       });
       const text = await upstream.text();
       if (!upstream.ok) {

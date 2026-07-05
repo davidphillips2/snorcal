@@ -79,6 +79,12 @@ export function PrinterDetail({ id, onBack }: Props) {
     }
   };
 
+  const onDisconnect = async () => {
+    try { await api.disconnectPrinter(printer.id); } catch (e) {
+      alert(`Disconnect failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  };
+
   const hasJog = printer.protocol === 'moonraker';
 
   return (
@@ -94,10 +100,13 @@ export function PrinterDetail({ id, onBack }: Props) {
           <span className="text-xs text-gray-400 capitalize px-2 py-0.5 bg-gray-800 rounded">{state}</span>
           <span className="text-xs text-gray-500">{printer.protocol} · {printer.ip}</span>
           <div className="ml-auto flex gap-2">
-            {(connection === 'disconnected' || connection === 'error') && (
-              <button onClick={onReconnect}
-                className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 rounded text-sm text-white">Reconnect</button>
+            {connection === 'connected' && (
+              <button onClick={onDisconnect}
+                className="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-sm text-gray-300"
+                title="Disconnect so OrcaSlicer/BambuStudio/bambuddy can connect">Disconnect</button>
             )}
+            <button onClick={onReconnect}
+              className="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-sm text-gray-300">Reconnect</button>
             <button onClick={() => setShowEdit(true)}
               className="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-sm text-white">Edit</button>
           </div>
@@ -108,22 +117,31 @@ export function PrinterDetail({ id, onBack }: Props) {
           <CameraView printer={printer} expanded />
         </div>
 
-        {/* Job progress (if printing) */}
-        {status?.progress !== undefined && status.progress > 0 && (
+        {/* Job progress — render whenever printing or paused, even at 0%. */}
+        {((state === 'printing' || state === 'paused') && connection === 'connected') && (
           <div className="bg-gray-800 border border-gray-700 rounded-lg p-4">
-            <div className="flex items-center justify-between text-sm text-gray-300 mb-2">
-              <span className="truncate">{status.file ?? 'printing'}</span>
-              <span className="ml-2 flex-shrink-0">{Math.round(status.progress * 100)}%</span>
+            <div className="flex items-center justify-between text-sm text-gray-300 mb-2 gap-2">
+              <span className="truncate">{status?.file ?? 'printing'}</span>
+              <span className="flex-shrink-0 font-mono">
+                {status?.progress !== undefined ? `${Math.round(status.progress * 100)}%` : '—'}
+              </span>
             </div>
-            <div className="h-2 bg-gray-700 rounded overflow-hidden">
-              <div className="h-full bg-blue-500" style={{ width: `${Math.round(status.progress * 100)}%` }} />
+            <div className="h-2.5 bg-gray-700 rounded overflow-hidden">
+              <div
+                className={`h-full transition-[width] duration-500 ${state === 'paused' ? 'bg-yellow-500' : 'bg-blue-500'}`}
+                style={{ width: `${Math.min(100, Math.round((status?.progress ?? 0) * 100))}%` }}
+              />
             </div>
-            <div className="flex gap-4 mt-2 text-xs text-gray-400">
-              {status.layer !== undefined && status.totalLayers !== undefined && (
+            <div className="flex gap-4 mt-2 text-xs text-gray-400 flex-wrap">
+              {status?.layer !== undefined && status?.totalLayers !== undefined ? (
                 <span>Layer {status.layer}/{status.totalLayers}</span>
-              )}
-              {status.etaSec !== undefined && status.etaSec > 0 && (
-                <span>ETA {formatDurationShort(status.etaSec)}</span>
+              ) : status?.layer !== undefined ? (
+                <span>Layer {status.layer}</span>
+              ) : null}
+              {status?.etaSec !== undefined && status.etaSec > 0 ? (
+                <span>~{formatDurationShort(status.etaSec)} left</span>
+              ) : (
+                <span className="text-gray-600">ETA —</span>
               )}
             </div>
           </div>
@@ -154,10 +172,14 @@ export function PrinterDetail({ id, onBack }: Props) {
                   onClick={() => setEditingSlot(slot)}
                   className="bg-gray-800 hover:bg-gray-700 rounded p-2 flex items-center gap-2 text-left transition-colors"
                 >
-                  <span className="w-6 h-6 rounded border border-gray-600 flex-shrink-0"
-                    style={{ backgroundColor: slot.color ? `#${slot.color.slice(0, 6)}` : '#444' }} />
+                  <span className="w-8 h-8 rounded border border-gray-600 flex-shrink-0"
+                    style={{ backgroundColor: slot.color ? `#${slot.color.slice(0, 6)}` : '#444' }}
+                    title={slot.color ? `#${slot.color.slice(0, 6)}` : 'unknown'} />
                   <div className="min-w-0 flex-1">
-                    <div className="text-xs text-white truncate">{slot.type ?? 'unknown'}</div>
+                    <div className="text-xs text-white truncate">
+                      <span className="text-gray-500 mr-1">T{Number(slot.trayId) + 1}</span>
+                      {slot.type ?? 'unknown'}
+                    </div>
                     <div className="text-[10px] text-gray-500 truncate">
                       {slot.brand && <span>{slot.brand} </span>}
                       {slot.remain !== undefined && <span>{slot.remain}%</span>}

@@ -12,8 +12,13 @@ export function EditPrinterModal({ printer, onClose, onSaved }: Props) {
   const [name, setName] = useState(printer.name);
   const [ip, setIp] = useState(printer.ip);
   const [port, setPort] = useState<number | ''>(printer.port);
-  const [accessCode, setAccessCode] = useState(printer.accessCode ?? '');
-  const [apiKey, setApiKey] = useState(printer.apiKey ?? '');
+  // Secrets are never returned by the backend, so the fields start empty.
+  // A `dirty` flag tracks whether the operator typed a new value — only then
+  // is it included in the PATCH (omitting = keep the existing secret).
+  const [accessCode, setAccessCode] = useState('');
+  const [accessCodeDirty, setAccessCodeDirty] = useState(false);
+  const [apiKey, setApiKey] = useState('');
+  const [apiKeyDirty, setApiKeyDirty] = useState(false);
   const [cameraStreamUrl, setCameraStreamUrl] = useState(printer.cameraStreamUrl ?? '');
   const [cameraSnapshotUrl, setCameraSnapshotUrl] = useState(printer.cameraSnapshotUrl ?? '');
   const [submitting, setSubmitting] = useState(false);
@@ -23,8 +28,8 @@ export function EditPrinterModal({ printer, onClose, onSaved }: Props) {
     setName(printer.name);
     setIp(printer.ip);
     setPort(printer.port);
-    setAccessCode(printer.accessCode ?? '');
-    setApiKey(printer.apiKey ?? '');
+    setAccessCode(''); setAccessCodeDirty(false);
+    setApiKey(''); setApiKeyDirty(false);
     setCameraStreamUrl(printer.cameraStreamUrl ?? '');
     setCameraSnapshotUrl(printer.cameraSnapshotUrl ?? '');
   }, [printer.id]);
@@ -38,8 +43,10 @@ export function EditPrinterModal({ printer, onClose, onSaved }: Props) {
         name: name.trim(),
         ip: ip.trim(),
         port: port === '' ? undefined : Number(port),
-        accessCode: accessCode.trim() || null,
-        apiKey: apiKey.trim() || null,
+        // Only send secrets when the user typed a value — otherwise omit so
+        // the backend keeps the existing one (PATCH is partial).
+        ...(accessCodeDirty ? { accessCode: accessCode.trim() || null } : {}),
+        ...(apiKeyDirty ? { apiKey: apiKey.trim() || null } : {}),
         cameraStreamUrl: cameraStreamUrl.trim() || null,
         cameraSnapshotUrl: cameraSnapshotUrl.trim() || null,
       });
@@ -81,15 +88,25 @@ export function EditPrinterModal({ printer, onClose, onSaved }: Props) {
 
         {isBambu && (
           <Field label="LAN Access Code">
-            <input value={accessCode} onChange={(e) => setAccessCode(e.target.value)}
-              className="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-white" />
+            <input
+              type="password"
+              value={accessCode}
+              onChange={(e) => { setAccessCode(e.target.value); setAccessCodeDirty(true); }}
+              placeholder={accessCodeDirty ? '' : '•••••• (leave blank to keep current)'}
+              className="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-white"
+            />
           </Field>
         )}
 
         {!isBambu && (
           <Field label="API key (optional)">
-            <input value={apiKey} onChange={(e) => setApiKey(e.target.value)}
-              className="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-white" />
+            <input
+              type="password"
+              value={apiKey}
+              onChange={(e) => { setApiKey(e.target.value); setApiKeyDirty(true); }}
+              placeholder={apiKeyDirty ? '' : '•••••• (leave blank to keep current)'}
+              className="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-white"
+            />
           </Field>
         )}
 

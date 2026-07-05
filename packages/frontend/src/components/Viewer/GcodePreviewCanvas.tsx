@@ -14,16 +14,18 @@ interface GcodePreviewCanvasProps {
   onLayerCountReady?: (count: number) => void;
 }
 
-// Tubes create ~100 vertices per segment; 100K segments ≈ 10M vertices ≈ OOM threshold.
-// Mobile Safari tabs crash past ~300MB — drop the limit aggressively there.
-const isMobile = typeof navigator !== 'undefined'
-  && /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
-const isSmallScreen = typeof window !== 'undefined' && Math.min(window.innerWidth, window.innerHeight) < 600;
-const mobileOrSmall = isMobile || isSmallScreen;
-const TUBE_SEGMENT_LIMIT = mobileOrSmall ? 8_000 : 100_000;
-// Mobile cap on extrusion moves: above this, refuse to render preview and
-// show a warning instead of OOM-crashing the tab.
-const MOBILE_RENDER_LIMIT = 60_000;
+// Tubes create ~100 vertices per segment vs ~2 for plain lines. The old
+// desktop tube limit (100k) was itself the OOM threshold, so big real-world
+// files (150k–210k extrusion moves) crashed even after falling back to line
+// mode — because the gcode was being copied/re-split multiple times. With the
+// split-once rewrite below, line mode now holds for those sizes; tubes are
+// reserved for small/medium files where they're safe.
+const TUBE_SEGMENT_LIMIT = 40_000;
+// Hard cap above which we refuse to render at all (any platform) and show a
+// "preview disabled" message instead of OOM-crashing the tab. 300k covers the
+// largest normal prints (~multi-day, dense toolpaths) while refusing the
+// pathological cases that would OOM even in line mode.
+const MAX_MOVES = 300_000;
 
 // OrcaSlicer-style line-type colors
 // Speed color ramp (mm/s): blue → cyan → green → yellow → orange → red
@@ -39,10 +41,13 @@ function speedToColor(mms: number): string {
   return '#dc2626';
 }
 
-function countExtrusionMoves(gcode: string): number {
+/** Count G1 extrusion moves from a pre-split line array (no string copy). */
+function countExtrusionMoves(lines: readonly string[]): number {
   let count = 0;
-  for (const line of gcode.split('\n')) {
-    if (line.match(/^G1\s/)?.input && /E-?\d/.test(line)) count++;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (line.charCodeAt(0) === 71 /* G */ && line.charCodeAt(1) === 49 /* 1 */
+      && /E-?\d/.test(line)) count++;
   }
   return count;
 }
@@ -53,10 +58,12 @@ function countExtrusionMoves(gcode: string): number {
  * speed coloring. Original T0/Tn commands (filament swaps) are stripped
  * since we only care about per-segment color in these modes.
  *
- * Returns the rewritten gcode plus a toolColors map indexed by tool number.
+ * Operates on and returns a **line array** — never re-joins to a string —
+ * so the result can be passed straight to processGCode(string[]) without a
+ * second full copy of the gcode.
  */
-function rewriteForColorMode(gcode: string, mode: GcodeColorMode): {
-  gcode: string;
+function rewriteForColorMode(lines: readonly string[], mode: GcodeColorMode): {
+  lines: string[];
   toolColors: Record<number, string>;
 } {
   const toolColors: Record<number, string> = { 0: '#ffffff' };
@@ -65,13 +72,15 @@ function rewriteForColorMode(gcode: string, mode: GcodeColorMode): {
   let nextTool = 1;
   let currentTool = 0;
 
-  const lines = gcode.split('\n');
+  // Copy so we can append T<n> entries in place without mutating the caller's array.
+  const out: string[] = new Array(lines.length);
   let currentType = '';
   let currentFMmMin = 0;
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     const trimmed = line.trim();
+    out[i] = line;
 
     if (mode === 'lineType') {
       const typeMatch = trimmed.match(/^;TYPE:\s*(.+)/i);
@@ -84,7 +93,7 @@ function rewriteForColorMode(gcode: string, mode: GcodeColorMode): {
           toolColors[tool] = typeColor(currentType);
         }
         currentTool = tool;
-        lines[i] = `${line}\nT${currentTool}`;
+        out[i] = `${line}\nT${currentTool}`;
         continue;
       }
     }
@@ -106,13 +115,13 @@ function rewriteForColorMode(gcode: string, mode: GcodeColorMode): {
             toolColors[tool] = speedToColor(bucket);
           }
           currentTool = tool;
-          lines[i] = `${line}\nT${currentTool}`;
+          out[i] = `${line}\nT${currentTool}`;
         }
       }
     }
   }
 
-  return { gcode: lines.join('\n'), toolColors };
+  return { lines: out, toolColors };
 }
 
 export function GcodePreviewCanvas({
@@ -128,38 +137,46 @@ export function GcodePreviewCanvas({
   const previewRef = useRef<WebGLPreview | null>(null);
   const [usingTubes, setUsingTubes] = useState(true);
 
-  // Rewrite gcode for non-filament color modes (memoized)
+  // Split the gcode into lines ONCE and reuse the array everywhere. This is
+  // the central memory fix: previously the gcode string was re-split (and, in
+  // lineType/speed modes, re-joined) in countExtrusionMoves, rewriteForColorMode,
+  // processGCode's internal parse, and both gcode-stats parsers — holding ~3
+  // full copies of a 6MB gcode simultaneously. The single array is shared by
+  // all of them now, and processGCode accepts string[] so the library skips
+  // its own split.
+  const baseLines = useMemo(() => (gcode ? gcode.split('\n') : null), [gcode]);
+
+  // Rewrite for non-filament color modes (operates on the line array, no re-join).
   const processed = useMemo(() => {
-    if (!gcode) return null;
-    if (colorMode === 'filament') return { gcode, toolColors: undefined as Record<number, string> | undefined };
-    return rewriteForColorMode(gcode, colorMode);
-  }, [gcode, colorMode]);
+    if (!baseLines) return null;
+    if (colorMode === 'filament') return { lines: baseLines, toolColors: undefined as Record<number, string> | undefined };
+    return rewriteForColorMode(baseLines, colorMode);
+  }, [baseLines, colorMode]);
 
-  const effectiveGcode = processed?.gcode ?? gcode;
+  const effectiveLines = processed?.lines ?? baseLines;
 
-  // Mobile guard: bail out entirely if the gcode is large enough to OOM the tab.
-  // Bigger gcodes still parse fine on desktop.
+  // Single extrusion-move count — computed once, reused by both the OOM guard
+  // and the tube-vs-line decision (was computed twice before).
   const moveCount = useMemo(
-    () => effectiveGcode ? countExtrusionMoves(effectiveGcode) : 0,
-    [effectiveGcode],
+    () => effectiveLines ? countExtrusionMoves(effectiveLines) : 0,
+    [effectiveLines],
   );
-  const mobileBlocked = mobileOrSmall && moveCount > MOBILE_RENDER_LIMIT;
+  // Hard cap (all platforms): refuse to render past this to avoid OOM-crashing
+  // the tab. Replaces the old mobile-only block.
+  const blocked = moveCount > MAX_MOVES;
 
   useEffect(() => {
     if (!canvasRef.current) return;
-    if (mobileBlocked) return; // skip init entirely on mobile OOM risk
+    if (blocked) return; // skip init entirely when over the hard cap
 
     const colors = extrusionColors?.length
       ? extrusionColors
       : ['#ff3333', '#ffcc00', '#33cc33', '#00cccc', '#6699ff'];
 
-    // Auto-disable tubes for large gcode to prevent OOM
-    let useTubes = true;
-    if (effectiveGcode) {
-      const moves = countExtrusionMoves(effectiveGcode);
-      useTubes = moves < TUBE_SEGMENT_LIMIT;
-      setUsingTubes(useTubes);
-    }
+    // Tubes are ~50× heavier per segment than lines; only use them for small/
+    // medium files. `moveCount` is already computed above (no recount).
+    const useTubes = moveCount < TUBE_SEGMENT_LIMIT;
+    setUsingTubes(useTubes);
 
     const preview = init({
       canvas: canvasRef.current,
@@ -196,20 +213,22 @@ export function GcodePreviewCanvas({
       preview.dispose();
       previewRef.current = null;
     };
-  }, [effectiveGcode, extrusionColors, buildVolume, processed, mobileBlocked]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [moveCount, extrusionColors, buildVolume, processed, blocked]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     const preview = previewRef.current;
-    if (!preview || !effectiveGcode) return;
-    if (mobileBlocked) return; // do not processGcode on mobile when over limit
+    if (!preview || !effectiveLines) return;
+    if (blocked) return; // do not processGcode when over the hard cap
 
     preview.clear();
-    preview.processGCode(effectiveGcode);
+    // Pass the line array directly — the library accepts string[] and skips
+    // its own internal split, avoiding another full copy of the gcode.
+    preview.processGCode(effectiveLines);
     preview.endLayer = preview.layers.length;
     preview.render();
 
     onLayerCountReady?.(preview.layers.length);
-  }, [effectiveGcode, onLayerCountReady, mobileBlocked]);
+  }, [effectiveLines, onLayerCountReady, blocked]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     const preview = previewRef.current;
@@ -226,18 +245,18 @@ export function GcodePreviewCanvas({
       <canvas
         ref={canvasRef}
         className="absolute inset-0 w-full h-full"
-        style={{ display: (gcode && !mobileBlocked) ? 'block' : 'none' }}
+        style={{ display: (gcode && !blocked) ? 'block' : 'none' }}
       />
-      {!usingTubes && gcode && !mobileBlocked && (
+      {!usingTubes && gcode && !blocked && (
         <div className="absolute bottom-2 left-1/2 -translate-x-1/2 bg-gray-900/80 text-gray-400 text-xs px-3 py-1 rounded pointer-events-none">
           Line mode (large gcode)
         </div>
       )}
-      {mobileBlocked && gcode && (
+      {blocked && gcode && (
         <div className="absolute inset-0 flex items-center justify-center p-6 text-center">
           <div className="bg-gray-900/90 text-gray-300 text-sm px-4 py-3 rounded max-w-xs">
-            G-code preview disabled on this device to avoid crashing the tab.
-            Open on desktop to view.
+            G-code preview disabled — this file has {moveCount.toLocaleString()} extrusion moves,
+            above the {MAX_MOVES.toLocaleString()}-move render limit to avoid crashing the tab.
           </div>
         </div>
       )}

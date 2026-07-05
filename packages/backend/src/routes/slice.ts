@@ -31,6 +31,25 @@ function buildProfileStub(name: string, type: 'machine' | 'process' | 'filament'
   return JSON.stringify({ name, inherits: name, from: 'system', type });
 }
 
+/**
+ * Read a single engine's binary path override from the DB-backed
+ * `slicer_path_overrides` app setting (set via App Settings UI). Returns
+ * undefined when no override is set for the engine or the JSON is malformed.
+ * Spawn path passes this into `getSlicerBinary(engine, override)`.
+ */
+function readBinaryOverride(db: Db, engine: string): string | undefined {
+  try {
+    const raw = db.getSetting('slicer_path_overrides');
+    if (!raw) return undefined;
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object') {
+      const v = (parsed as Record<string, unknown>)[engine];
+      if (typeof v === 'string' && v.trim()) return v.trim();
+    }
+  } catch { /* malformed — ignore */ }
+  return undefined;
+}
+
 /** Get default slicer datadir for the current platform and engine */
 function getDefaultDataDir(engine: string): string {
   const home = os.homedir();
@@ -38,10 +57,7 @@ function getDefaultDataDir(engine: string): string {
     const macDirs: Record<string, string> = {
       orcaslicer: 'OrcaSlicer',
       bambustudio: 'BambuStudio',
-      crealityprint: 'CrealityPrint',
       prusaslicer: 'PrusaSlicer',
-      elegooslicer: 'ElegooSlicer',
-      snapmakerorca: 'Snapmaker Orca',
     };
     return path.join(home, 'Library', 'Application Support', macDirs[engine] ?? 'OrcaSlicer');
   }
@@ -49,10 +65,7 @@ function getDefaultDataDir(engine: string): string {
   const linuxDirs: Record<string, string> = {
     orcaslicer: 'OrcaSlicer',
     bambustudio: 'BambuStudio',
-    crealityprint: 'CrealityPrint',
     prusaslicer: 'PrusaSlicer',
-    elegooslicer: 'ElegooSlicer',
-    snapmakerorca: 'SnapmakerOrca',
   };
   return path.join(home, '.config', linuxDirs[engine] ?? 'OrcaSlicer');
 }
@@ -181,7 +194,7 @@ export async function sliceRoutes(app: FastifyInstance, options: { db: Db }) {
       }
     }
 
-    const validEngines: string[] = ['orcaslicer', 'bambustudio', 'crealityprint', 'prusaslicer', 'elegooslicer', 'snapmakerorca'];
+    const validEngines: string[] = ['orcaslicer', 'bambustudio', 'prusaslicer'];
     if (!validEngines.includes(body.engine)) {
       return reply.status(400).send({ ok: false, error: `Invalid engine: ${body.engine}` });
     }
@@ -193,12 +206,27 @@ export async function sliceRoutes(app: FastifyInstance, options: { db: Db }) {
     const primaryModelId = body.modelId || body.models?.[0]?.modelId || '';
     const primaryModel = body.modelId ? db.getModel(body.modelId) : db.getModel(primaryModelId);
 
+    // Snapshot printer name at slice time. Prefer DB record by printerId;
+    // fall back to the machine profile name (e.g. "Snapmaker U1 (0.4 nozzle)")
+    // when user has no DB printer registered. Stored denormalized so the job
+    // card can render without a JOIN and survives printer renames/deletes.
+    let snapshotPrinterName: string | null = null;
+    if (body.printerId) {
+      const p = db.getPrinter(body.printerId);
+      if (p?.name) snapshotPrinterName = p.name;
+    }
+    if (!snapshotPrinterName && body.profiles?.machine) {
+      snapshotPrinterName = body.profiles.machine;
+    }
+
     db.insertJob({
       id: jobId,
       modelId: primaryModelId,
       engine: body.engine,
       settings: JSON.stringify(body.settings),
       outputDir: path.join(workDir, 'output'),
+      printerId: body.printerId ?? null,
+      printerName: snapshotPrinterName,
     });
 
     // Try BullMQ queue first, fall back to direct execution
@@ -236,6 +264,11 @@ export async function sliceRoutes(app: FastifyInstance, options: { db: Db }) {
   app.get('/api/jobs', async (req) => {
     const { status } = req.query as { status?: string };
     const jobs = db.listJobs(status);
+    // Batch-fetch printers once to map printer_id → name (avoids N+1 queries).
+    // Falls back to printer_settings_id embedded in settings JSON for jobs
+    // sliced before printer_id column existed.
+    const printers = db.listPrinters();
+    const printerNameById = new Map(printers.map(p => [p.id, p.name]));
     // SQLite datetime('now') returns UTC "YYYY-MM-DD HH:MM:SS" with no zone
     // suffix. Frontend Date constructor treats that as local time, shifting
     // displayed time by the user's UTC offset. Append Z so it parses as UTC.
@@ -243,20 +276,37 @@ export async function sliceRoutes(app: FastifyInstance, options: { db: Db }) {
       s && /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(s) ? s.replace(' ', 'T') + 'Z' : (s ?? null);
     return {
       ok: true,
-      data: jobs.map((j) => ({
-        id: j.id,
-        modelId: j.model_id,
-        modelName: j.model_name,
-        engine: j.engine,
-        status: j.status,
-        progress: j.progress,
-        currentStep: j.current_step,
-        gcodeSize: j.gcode_size,
-        estimatedTime: j.estimated_time,
-        filamentUsedG: j.filament_used_g,
-        filamentCost: j.filament_cost,
-        createdAt: toIso(j.created_at),
-      })),
+      data: jobs.map((j) => {
+        // Prefer denormalized snapshot (covers no-printer-DB case via
+        // body.profiles.machine). Then DB printer by id. Then embedded
+        // settings.printer_settings_id for very old jobs.
+        let printerName: string | null = j.printer_name ?? null;
+        if (!printerName && j.printer_id) {
+          printerName = printerNameById.get(j.printer_id) ?? null;
+        }
+        if (!printerName) {
+          try {
+            const s = JSON.parse(j.settings);
+            const m = s?.printer_settings_id;
+            if (typeof m === 'string' && m) printerName = m;
+          } catch { /* ignore */ }
+        }
+        return {
+          id: j.id,
+          modelId: j.model_id,
+          modelName: j.model_name,
+          engine: j.engine,
+          status: j.status,
+          progress: j.progress,
+          currentStep: j.current_step,
+          gcodeSize: j.gcode_size,
+          estimatedTime: j.estimated_time,
+          filamentUsedG: j.filament_used_g,
+          filamentCost: j.filament_cost,
+          printerName,
+          createdAt: toIso(j.created_at),
+        };
+      }),
     };
   });
 
@@ -527,6 +577,13 @@ export async function buildSliceInput3MF(
   if (body.filamentSlots && body.filamentSlots.length > 1) {
     projectSettings['filament_colour'] = body.filamentSlots.map(s => s.color);
     projectSettings['filament_type'] = body.filamentSlots.map(s => s.type);
+    // Propagate rich filament metadata (extracted at 3MF load) into the slice
+    // 3MF so the slicer and downstream tools see vendor/density/diameter/cost.
+    // Defaults match the slicer template when a slot lacks the field.
+    projectSettings['filament_vendor'] = body.filamentSlots.map(s => s.vendor ?? '');
+    projectSettings['filament_diameter'] = body.filamentSlots.map(s => s.diameter ?? '1.75');
+    projectSettings['filament_density'] = body.filamentSlots.map(s => s.density ?? '1.26');
+    projectSettings['filament_cost'] = body.filamentSlots.map(s => s.cost ?? '0');
   }
 
   if (body.settings?.process) {
@@ -736,12 +793,13 @@ export async function buildSliceInput3MF(
   // Verified against OrcaSlicer 2.4 + BambuStudio 02.07 sidecar range checks
   // (exit 238 with `raft_first_layer_expansion: -1 not in range [0, MAX]`
   //  + `solid_infill_filament: 0 not in range [1, MAX]`).
-  sanitizeSentinelsAndZeroFilaments(projectSettings);
+  sanitizeSentinelsAndZeroFilaments(projectSettings, body.engine);
 
   return build3MF({
     models: buildModels,
     projectSettings,
     buildVolume: body.buildVolume,
+    engine: body.engine,
   });
 }
 
@@ -758,7 +816,7 @@ export async function buildSliceInput3MF(
  * decision (the latter was based on the assumption that bambuddy sidecar
  * strips them upstream — it does NOT for the sync /slice path snorcal uses).
  */
-function sanitizeSentinelsAndZeroFilaments(settings: Record<string, unknown>): void {
+function sanitizeSentinelsAndZeroFilaments(settings: Record<string, unknown>, engine?: string): void {
   const fixScalar = (v: unknown): unknown => {
     if (typeof v !== 'string') return v;
     if (v === '-1') return '0';
@@ -776,6 +834,64 @@ function sanitizeSentinelsAndZeroFilaments(settings: Record<string, unknown>): v
         settings[key] = '1';
       }
     }
+  }
+  // Strip compatibility-list fields. These are preset-store hints used by the
+  // slicer to gate "process X compatible with printer Y" checks when settings
+  // are loaded from named system presets. Snorcal embeds full resolved
+  // settings inline, so the check is redundant AND actively harmful when the
+  // user picks a printer whose model isn't in a list inherited from default
+  // profiles (e.g. Snapmaker U1 not in default `print_compatible_printers`
+  // Bambu-only list → exit 239 "process not compatible with printer").
+  delete settings.print_compatible_printers;
+  delete settings.compatible_printers;
+  delete settings.compatible_printers_condition;
+  delete settings.upward_compatible_machine;
+
+  // Force-clear inherits_group — OrcaSlicer/BambuStudio load named library
+  // presets via this key and overlay their values on top of the embedded
+  // project_settings, overriding snorcal's resolved values (filament_colour,
+  // filament_settings_id, etc). Pad/truncate to match filament_colour length
+  // so array stays consistent.
+  const fg = settings.inherits_group;
+  if (Array.isArray(fg)) {
+    settings.inherits_group = fg.map(() => '');
+  } else if (fg !== undefined) {
+    settings.inherits_group = [''];
+  }
+
+  // Clear preset-identity fields so the slicer doesn't try to resolve named
+  // system presets. Snorcal embeds full resolved settings inline, so named
+  // lookups are redundant AND can fail when the user-selected printer isn't
+  // in the slicer's bundled vendor folder (exit 1). filament_settings_id is
+  // left alone because it carries per-slot identity used by the slicer's
+  // filament-output naming.
+  settings.printer_settings_id = '';
+  settings.print_settings_id = '';
+  settings.printer_model = '';
+
+  // OrcaSlicer/BambuStudio exit 205: "Ooze prevention is only supported with
+  // the wipe tower when 'single_extruder_multi_material' is off". Error fires
+  // whenever ooze_prevention=1 AND single_extruder_multi_material=1, regardless
+  // of prime tower state. User-imported profiles can drag ooze_prevention=1 in
+  // even though snorcal defaults to 0. Force off universally — snorcal never
+  // emits the AMS-only ooze-prevention mode that would make this useful.
+  settings.ooze_prevention = '0';
+
+  // OrcaSlicer/BambuStudio exit 205 (second variant): "Relative extruder
+  // addressing requires resetting the extruder position at each layer to
+  // prevent loss of floating point accuracy. Add 'G92 E0' to layer_gcode."
+  // Snorcal forces use_relative_e_distances=1, so the slicer requires G92 E0
+  // at every layer transition. Prepend to both before_layer_change_gcode and
+  // layer_change_gcode (slicer checks either) unless user already has it.
+  // Skip if user already wrote G92 E0 / G92E0 (case/space variants).
+  const g92Pattern = /G92\s*E0/i;
+  const blc = typeof settings.before_layer_change_gcode === 'string' ? settings.before_layer_change_gcode : '';
+  if (!g92Pattern.test(blc)) {
+    settings.before_layer_change_gcode = `G92 E0\n${blc}`.trimStart();
+  }
+  const lc = typeof settings.layer_change_gcode === 'string' ? settings.layer_change_gcode : '';
+  if (!g92Pattern.test(lc)) {
+    settings.layer_change_gcode = `G92 E0\n${lc}`.trimStart();
   }
 }
 
@@ -835,6 +951,7 @@ export async function runSliceJob(
           workDir,
           dataDir: process.env.SLICER_DATADIR || getDefaultDataDir(body.engine),
           profileStubs: Object.keys(profileStubs).length > 0 ? profileStubs : undefined,
+          binaryOverridePath: readBinaryOverride(db, body.engine),
         },
         (progress: number, step: string) => {
           const mapped = Math.max(15, Math.min(95, progress));

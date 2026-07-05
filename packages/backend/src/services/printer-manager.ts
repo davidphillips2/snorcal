@@ -3,6 +3,7 @@ import type { PrinterCommand, PrinterStatus } from '@snorcal/shared';
 import type { PrinterAdapter } from './adapters/adapter.js';
 import { MoonrakerAdapter } from './adapters/moonraker-adapter.js';
 import { BambuAdapter } from './adapters/bambu-adapter.js';
+import { decryptSecret } from './secret-crypto.js';
 import { emitPrinterStatus, emitPrinterConnected, emitPrinterDisconnected } from './event-bus.js';
 
 class PrinterManager {
@@ -21,12 +22,14 @@ class PrinterManager {
   }
 
   private createAdapter(p: DbPrinter): PrinterAdapter {
+    // Secrets are stored encrypted; decrypt for the adapter (transparent for
+    // legacy plaintext — decryptSecret returns it unchanged if no enc: prefix).
     if (p.protocol === 'moonraker') {
       return new MoonrakerAdapter({
         printerId: p.id,
         ip: p.ip,
         port: p.port,
-        apiKey: p.api_key ?? undefined,
+        apiKey: (p.api_key ? decryptSecret(p.api_key) : undefined),
         streamUrl: p.camera_stream_url ?? undefined,
         snapshotUrl: p.camera_snapshot_url ?? undefined,
       });
@@ -37,7 +40,7 @@ class PrinterManager {
         ip: p.ip,
         port: p.port,
         serial: p.serial ?? '',
-        accessCode: p.access_code ?? '',
+        accessCode: (p.access_code ? decryptSecret(p.access_code) : ''),
         cameraIp: p.camera_ip ?? undefined,
       });
     }

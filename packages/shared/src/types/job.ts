@@ -12,6 +12,13 @@ export interface FilamentSlot {
   color: string;
   type: string;
   profile?: string;
+  // Rich filament metadata extracted from a 3MF's project_settings.config.
+  // All strings to match the slicer schema exactly (avoids float-format drift).
+  // Populated on 3MF load; optional so old persisted slots still load.
+  vendor?: string;      // filament_vendor  (e.g. "eSUN")
+  diameter?: string;    // filament_diameter (e.g. "1.75")
+  density?: string;     // filament_density  (e.g. "1.25")
+  cost?: string;        // filament_cost     (e.g. "22.99")
 }
 
 export interface Rotation3D {
@@ -52,6 +59,7 @@ export interface SliceRequest {
   rotation?: Rotation3D;
   positionOffset?: { x: number; y: number; z: number };
   buildVolume?: { x: number; y: number; z: number };
+  printerId?: string;
 }
 
 export interface SliceJobData {

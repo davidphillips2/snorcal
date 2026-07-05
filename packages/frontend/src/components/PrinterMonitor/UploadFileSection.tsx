@@ -52,14 +52,14 @@ export function UploadFileSection({ printer, printerStatus }: Props) {
       const res = await api.stageFileToPrinter(printer.id, f);
       setStage(res);
       setPlate(res.plates[0] ?? 1);
-      // Pre-pick slot by color match; fall back to slot index (or 0 = skip)
+      // Pre-pick slot by color match; fall back to slot index (or -1 = skip)
       const initial = res.filaments.map((gf, i) => {
         const c = hexNormalize(gf.color);
         if (c) {
           const m = slots.find(s => hexNormalize(s.color) === c);
           if (m) return m.value;
         }
-        return slots[i]?.value ?? 0;
+        return slots[i]?.value ?? -1;
       });
       setMapping(initial);
       setPhase('remap');
@@ -141,11 +141,11 @@ export function UploadFileSection({ printer, printerStatus }: Props) {
                       <div className="text-[10px] text-gray-500 truncate">{gf.type ?? 'unknown'}</div>
                     </div>
                     <select
-                      value={mapping[i] ?? 0}
+                      value={mapping[i] ?? -1}
                       onChange={e => setMapping(prev => prev.map((v, idx) => idx === i ? Number(e.target.value) : v))}
                       className="bg-gray-700 border border-gray-600 rounded px-1.5 py-1 text-[11px] text-white"
                     >
-                      <option value={0}>— skip —</option>
+                      <option value={-1}>— skip —</option>
                       {slots.map(s => (
                         <option key={`${s.source}-${s.value}`} value={s.value}>{s.label}</option>
                       ))}
