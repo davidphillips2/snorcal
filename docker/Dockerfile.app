@@ -59,6 +59,8 @@ ENV DEBIAN_FRONTEND=noninteractive
 # redis-cli + curl for entrypoint wait loops; Xvfb + GL/GTK libs the slicer
 # needs at runtime (the binary bundles most .so deps, but GL/GTK/Xvfb are
 # system-level and must be present for headless rendering).
+# Package names are Debian 12 (bookworm) — node:20-bookworm-slim base.
+# (libjpeg62-turbo, not Ubuntu's libjpeg-turbo8; libwebkit2gtk-4.1-0 exists in bookworm.)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     redis-tools \
     curl \
@@ -72,7 +74,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libcurl4 \
     libtiff6 \
     libpng16-16 \
-    libjpeg-turbo8 \
+    libjpeg62-turbo \
     locales \
     && locale-gen en_US.UTF-8 \
     && rm -rf /var/lib/apt/lists/*
