@@ -55,10 +55,17 @@ First run will download ~2 GB of images (Snorcal + two slicer sidecars). Coffee 
 
 Browser → <http://localhost:3000>
 
-You'll be prompted to add a printer. Have ready:
+**First launch sets a password.** Pick one, then you'll be prompted to add a
+printer. Have ready:
 
 - **Bambu Lab** (X1/P1/A1): printer's IP address, LAN access code (on the printer's LCD: Settings → Network), and serial number.
 - **Klipper/Moonraker** (Voron, RatRig, Snapmaker, Creality Hi / Spark X i7, anything running Klipper): printer's IP address. That's it.
+
+To skip the password screen on a headless/redeployed box, pre-set
+`SNORCAL_PASSWORD_HASH` under `app.environment` in the compose file (generate
+the hash with `pnpm --filter backend exec tsx scripts/hash-password.ts` from a
+checkout). See the main README's [Authentication](../README.md#authentication)
+section.
 
 You can try "Scan Network" but on Mac/Windows Docker Desktop it usually won't find anything (multicast doesn't traverse the Docker VM). Just type the IP directly — the printer's IP from its LCD/settings page.
 

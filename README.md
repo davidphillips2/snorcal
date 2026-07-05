@@ -4,7 +4,8 @@ Self-hosted slicing hub for 3D printers. Upload STL/3MF, paint faces, configure
 printer/filament/process profiles, slice with OrcaSlicer or BambuStudio, and
 send straight to a Klipper or Bambu Lab printer on your LAN.
 
-Single-user, no auth. Designed to run on a home server or mini PC.
+Single-user, password-protected. Designed to run on a home server or mini PC
+on your LAN — **not for internet exposure**.
 
 ---
 
@@ -18,8 +19,9 @@ cd snorcal/docker
 docker compose up --build -d
 ```
 
-Open http://localhost:3000. On first load, the setup wizard runs automatically
-to discover your printer and pick a profile.
+Open http://localhost:3000. On first load you'll set a password (see
+[Authentication](#authentication)), then the setup wizard runs to discover
+your printer and pick a profile.
 
 Three containers spin up:
 
@@ -219,11 +221,52 @@ Backup: `docker compose stop app && tar czf snorcal-backup.tgz /var/lib/docker/v
 
 ---
 
+## Authentication
+
+Snorcal is **password-protected by default**. On first launch (with no password
+configured) the UI shows a one-time setup screen to pick a password. After that,
+every request needs a signed session cookie. Cookies are httpOnly + SameSite=Lax,
+secure-when-served-over-HTTPS, valid 30 days.
+
+To preconfigure the password (headless deploys, reprovisioning), generate a hash
+and set it as an env var:
+
+```bash
+pnpm --filter backend exec tsx scripts/hash-password.ts
+# → SNORCAL_PASSWORD_HASH=scrypt$N=32768$r=8$p=1$...
+```
+
+Set `SNORCAL_PASSWORD_HASH` in the environment (e.g. `docker-compose.yml` under
+`app.environment`, or `~/.snorcal/snorcal.env` for bare-metal). When set, the
+setup screen is skipped.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `SNORCAL_PASSWORD_HASH` | _(unset → setup screen on first launch)_ | scrypt hash of the login password. Skips setup if set. |
+| `SNORCAL_SESSION_SECRET` | _(auto-generated, persisted in DB)_ | Signs session cookies. Set explicitly to rotate/invalidate all sessions. |
+| `SNORCAL_AUTH_DISABLED` | `0` | `1` disables auth entirely (**dangerous** — every route open). Only for fully trusted isolated networks. |
+
+See `.env.example` for the full list.
+
+---
+
 ## Security
 
-- **No auth.** Single-user assumption. Do NOT expose port 3000 to the internet.
-- Use a reverse proxy (Caddy / Traefik / nginx) with basic auth + TLS if you need remote access.
-- Restrict Docker port binding to LAN: change `"${PORT:-3000}:3000"` to `"127.0.0.1:3000:3000"` in `docker-compose.yml`.
+- **LAN-only by design.** Snorcal assumes a trusted home/LAN network. Auth
+  prevents accidental access, not a determined attacker — **do not expose
+  port 3000 to the internet.** Use Tailscale / WireGuard / a VPN for remote
+  access, not a public port forward.
+- **Secrets encrypted at rest.** Printer access codes, API keys, and the Bambu
+  cloud token are AES-256-GCM encrypted in the SQLite DB, keyed off a DEK file
+  at `/data/.secret-key` (chmod 600). Protects DB backups/copies; not a defense
+  against full host compromise.
+- **SSRF-hardened.** Camera / WebRTC / connection-test endpoints validate URLs
+  and block cloud-metadata hosts. Printer endpoints allow LAN/Tailscale IPs
+  (printers live there) but reject `javascript:`/`data:`/`file:` schemes.
+- **Reverse proxy optional.** For TLS, put Caddy / Traefik / nginx in front.
+  `trustProxy` is enabled so secure cookies work behind a TLS-terminating proxy.
+  To restrict Docker port binding to loopback, change `"${PORT:-3000}:3000"`
+  to `"127.0.0.1:3000:3000"` in `docker-compose.yml`.
 
 ---
 

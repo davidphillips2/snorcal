@@ -21,7 +21,9 @@ Install these yourself (installer checks and will warn if missing):
 
 ## Environment overrides
 
-All optional.
+All optional. Set these in `~/.snorcal/snorcal.env` (mac/linux) or
+`%USERPROFILE%\.snorcal\snorcal.env` (windows) — sourced by the launcher
+before `node` exec.
 
 | Variable | Default | Purpose |
 |---|---|---|
@@ -29,6 +31,13 @@ All optional.
 | `SNORCAL_PORT` | `3000` | Backend listen port |
 | `SNORCAL_DATA_DIR` | `~/.snorcal/data` (mac/linux only — Windows always `%USERPROFILE%\.snorcal\data`) | SQLite DB, models, jobs |
 | `SNORCAL_LOG_DIR` | `~/.snorcal/logs` (mac/linux) | Log output location |
+| `SNORCAL_PASSWORD_HASH` | _(unset)_ | scrypt hash of the login password. If unset, the UI shows a one-time setup screen on first launch. Generate with `pnpm --filter backend exec tsx scripts/hash-password.ts`. |
+| `SNORCAL_SESSION_SECRET` | _(auto-generated, persisted in DB)_ | Signs session cookies. Set to rotate/invalidate all sessions. |
+| `SNORCAL_AUTH_DISABLED` | `0` | `1` disables auth entirely (**dangerous** — every route open, including system update/restart). Only for fully trusted isolated networks. |
+
+Auth is on by default. The DEK file (`~/.snorcal/data/.secret-key`) encrypts
+printer access codes / API keys / cloud token at rest — keep it alongside your
+DB backups; losing it makes encrypted secrets unrecoverable.
 
 ## Default paths
 
@@ -165,5 +174,8 @@ Restart the service after editing.
 - **better-sqlite3 native build.** If pnpm install fails on linux with a
   compiler error, install build-essential / make / g++ and re-run.
 - **Port 3000 conflict.** Override with `SNORCAL_PORT=xxxx`.
-- **Reverse proxy.** The service listens on `0.0.0.0:3000` (HTTP). Put your own
-  nginx / Caddy / Traefik in front for HTTPS or auth.
+- **Reverse proxy.** The service listens on `0.0.0.0:3000` (HTTP). Snorcal has
+  built-in password auth (see above), but for HTTPS put your own nginx / Caddy
+  / Traefik in front. `trustProxy` is enabled so secure cookies work behind a
+  TLS-terminating proxy. **Do not expose the port directly to the internet** —
+  use Tailscale/WireGuard or bind to loopback and proxy.

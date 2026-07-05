@@ -16,6 +16,10 @@ services:
       - NODE_ENV=production
       - SLICER_URL_ORCASLICER=http://orca-slicer-api:3003
       - SLICER_URL_BAMBUSTUDIO=http://bambu-studio-api:3001
+      # Auth is ON by default — first launch shows a setup screen to pick a
+      # password. Pre-set the hash to skip it (headless deploys).
+      # - SNORCAL_PASSWORD_HASH=scrypt$N=32768$r=8$p=1$...
+      # - SNORCAL_AUTH_DISABLED=0  # 1 = DANGER, every route open
     restart: unless-stopped
     deploy:
       resources:
