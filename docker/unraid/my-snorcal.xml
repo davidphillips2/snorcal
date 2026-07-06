@@ -17,7 +17,7 @@ Slicing uses the same executeLocal code path as bare-metal â€” no HTTP sidecar â
 &#13;
 Memory: give it 4G. Slicer + node + Xvfb need headroom.</Overview>
   <Category>Productivity: Tools:</Category>
-  <WebUI>http://[IP]:[PORT:3000]</WebUI>
+  <WebUI>http://[IP]:[PORT:3654]</WebUI>
   <TemplateURL>https://raw.githubusercontent.com/davidphillips2/snorcal/main/docker/unraid/my-snorcal.xml</TemplateURL>
   <Icon>https://github.com/davidphillips2/snorcal/blob/main/logo.png</Icon>
   <ExtraParams/>
@@ -27,7 +27,7 @@ Memory: give it 4G. Slicer + node + Xvfb need headroom.</Overview>
   <DonateText/>
   <DonateLink/>
   <Requires>None. Single container with bundled Xvfb + GL/GTK libs. Slicer fetched at first boot. Redis optional (in-process slicing by default).</Requires>
-  <Config Name="PORT" Target="PORT" Default="3000" Mode="" Description="Port the backend listens on. Default 3000. Pick a free host port if 3000 is taken." Type="Variable" Display="always" Required="true" Mask="false">3000</Config>
+  <Config Name="PORT" Target="PORT" Default="3654" Mode="" Description="Port the backend listens on. Default 3654. Pick a free host port if 3000 is taken." Type="Variable" Display="always" Required="true" Mask="false">3654</Config>
   <Config Name="App Data" Target="/data" Default="/mnt/user/appdata/snorcal" Mode="rw" Description="Persistent storage: SQLite DB, models, gcode, print photos, AND the cached slicer binaries (/data/slicers/). Wiping this loses everything." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/snorcal</Config>
   <Config Name="SLICER_ENGINE" Target="SLICER_ENGINE" Default="orca" Mode="" Description="Which slicer(s) to fetch on first boot: orca | bambu | both. Default orca. Cached in /data/slicers/. Change env + clear the subdir to re-fetch." Type="Variable" Display="always" Required="true" Mask="false">orca</Config>
   <Config Name="SNORCAL_PASSWORD_HASH" Target="SNORCAL_PASSWORD_HASH" Default="" Mode="" Description="OPTIONAL. scrypt hash of the login password. If unset, first launch shows a setup screen to pick one. Generate with: pnpm --filter backend exec tsx scripts/hash-password.ts" Type="Variable" Display="always" Required="false" Mask="true"/>
