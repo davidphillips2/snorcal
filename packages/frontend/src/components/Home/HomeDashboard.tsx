@@ -46,7 +46,10 @@ export function HomeDashboard({ onSlice, onOpenJob, onOpenPrinter, onImportMaker
   useEffect(() => { refresh(); }, []);
 
   useEffect(() => {
-    const es = new EventSource('/api/events');
+    let es: EventSource | null = null;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let closed = false;
+    let firstOpen = true;
     const onMsg = (type: string, event: MessageEvent) => {
       try {
         const data = JSON.parse(event.data);
@@ -58,10 +61,34 @@ export function HomeDashboard({ onSlice, onOpenJob, onOpenPrinter, onImportMaker
         }
       } catch {}
     };
-    for (const t of ['printer:status', 'job:progress', 'job:completed', 'job:failed']) {
-      es.addEventListener(t, (e) => onMsg(t, e as MessageEvent));
-    }
-    return () => es.close();
+    const connect = () => {
+      if (closed) return;
+      es = new EventSource('/api/events');
+      // Resync live status after a reconnect gap (first open is covered by the
+      // mount effect, so skip it to avoid a redundant fetch).
+      es.onopen = () => {
+        if (firstOpen) { firstOpen = false; return; }
+        refresh();
+      };
+      for (const t of ['printer:status', 'job:progress', 'job:completed', 'job:failed']) {
+        es.addEventListener(t, (e) => onMsg(t, e as MessageEvent));
+      }
+      // Native EventSource auto-reconnects, but gives up silently after the
+      // browser's internal cap (esp. after a backend restart). Force a fresh
+      // connection so tiles don't freeze at stale status.
+      es.onerror = () => {
+        try { es?.close(); } catch {}
+        es = null;
+        if (!closed) reconnectTimer = setTimeout(connect, 2000);
+      };
+    };
+    connect();
+    return () => {
+      closed = true;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      try { es?.close(); } catch {}
+      es = null;
+    };
   }, []);
 
   const printingCount = Object.values(statuses).filter(s => s.state === 'printing').length;

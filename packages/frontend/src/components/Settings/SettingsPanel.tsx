@@ -459,8 +459,18 @@ export function SettingsPanel({
               <select
                 value={slot.type}
                 onChange={(e) => {
+                  const newType = e.target.value;
                   const next = [...filamentSlots];
-                  next[i] = { ...next[i], type: e.target.value };
+                  // Auto-pick a matching filament profile when type changes.
+                  // Slicer inherits material behavior (temps, fan, cooling)
+                  // from the filament profile, NOT the filament_type string —
+                  // leaving the old PLA profile while changing type to PETG
+                  // sliced as PLA. If no name match, clear profile so backend
+                  // falls back to the global filament profile selection.
+                  const match = filamentProfiles.find(p =>
+                    p.name.toUpperCase().includes(newType.toUpperCase())
+                  );
+                  next[i] = { ...next[i], type: newType, profile: match?.name || undefined };
                   onFilamentSlotsChange(next);
                 }}
                 className="flex-1 bg-gray-700 border border-gray-600 rounded px-2 py-1 text-xs text-white min-w-0"
@@ -480,7 +490,20 @@ export function SettingsPanel({
               value={slot.profile || ''}
               onChange={(e) => {
                 const next = [...filamentSlots];
-                next[i] = { ...next[i], profile: e.target.value || undefined };
+                const profileName = e.target.value;
+                // Derive material type from profile name when user picks a
+                // profile — otherwise slot.type stays at the old value (e.g.
+                // PLA from embedded 3MF) while the slicer reads settings_id
+                // from the new PETG profile. Slicer inherits behavior from
+                // filament_settings_id (correct), but filament_type string
+                // drives metadata + slicer estimates + user-visible labels.
+                const upper = profileName.toUpperCase();
+                const derived = MATERIAL_TYPES.find(t => upper.includes(t.toUpperCase()));
+                next[i] = {
+                  ...next[i],
+                  profile: profileName || undefined,
+                  type: derived ?? next[i].type,
+                };
                 onFilamentSlotsChange(next);
               }}
               className="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1 text-xs text-white"
@@ -530,6 +553,19 @@ export function SettingsPanel({
         </div>
         {renderProfileSelect('Machine', 'machine', machineFiltered)}
         {renderProfileSelect('Process', 'process', processProfiles)}
+        <div className="flex items-center gap-2">
+          <span className="text-[11px] text-gray-400 w-20 shrink-0">Bed Type</span>
+          <select
+            value={settings.curr_bed_type || 'Cool Plate'}
+            onChange={(e) => onSettingsChange({ ...settings, curr_bed_type: e.target.value })}
+            className="flex-1 bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-xs text-white min-w-0"
+          >
+            <option>Cool Plate</option>
+            <option>Hot Plate</option>
+            <option>High Temp Plate</option>
+            <option>Textured PEI Plate</option>
+          </select>
+        </div>
       </div>
 
       {/* Advanced toggle */}

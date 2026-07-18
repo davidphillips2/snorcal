@@ -78,3 +78,113 @@ export function prepareKlipperGcode(localPath: string, opts?: PrintOptions): str
   fs.writeFileSync(modifiedPath, Buffer.concat([prefix, orig]));
   return modifiedPath;
 }
+
+/**
+ * Wrap raw gcode into a Bambu-style `.gcode.3mf` ZIP container.
+ *
+ * OrcaSlicer/BambuStudio CLI only outputs raw `.gcode` — the `.gcode.3mf`
+ * format (a 3MF zip with the gcode at `Metadata/plate_<N>.gcode` plus
+ * minimal 3MF metadata) is a GUI-only "Export plate sliced file" action.
+ * Bambu printers and bambuddy's archive upload require the 3MF container,
+ * so we synthesize one from the raw gcode here.
+ *
+ * The wrapper parses the gcode header block (`; HEADER_BLOCK_START..END`)
+ * for `total layer number`, `max_z_height`, filament info, etc. and writes
+ * a proper XML `slice_info.config` matching OrcaSlicer's format. The P1S
+ * firmware reads layer count from `slice_info.config`, NOT from gcode
+ * comments — so without this the printer reports `total_layer_num: 0`.
+ */
+function parseGcodeHeader(gcode: string): Record<string, string> {
+  const header: Record<string, string> = {};
+  const lines = gcode.split('\n');
+  let inHeader = false;
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (line === '; HEADER_BLOCK_START') { inHeader = true; continue; }
+    if (line === '; HEADER_BLOCK_END') break;
+    if (!inHeader) continue;
+    const m = line.match(/^;\s*([^:]+?)\s*:\s*(.+?)\s*$/);
+    if (m) {
+      // Normalise: lowercase, underscores for spaces
+      header[m[1].toLowerCase().replace(/\s+/g, '_')] = m[2];
+    }
+  }
+  return header;
+}
+
+export async function wrapGcodeAs3mf(
+  gcodePath: string,
+  plateNum: number = 1,
+): Promise<{ buffer: Buffer; filename: string }> {
+  const gcode = fs.readFileSync(gcodePath, 'utf-8');
+  const baseName = path.basename(gcodePath).replace(/\.gcode$/i, '');
+  const hdr = parseGcodeHeader(gcode);
+
+  const totalLayers = hdr.total_layer_number ? parseInt(hdr.total_layer_number, 10) : 0;
+  const maxZ = hdr.max_z_height ? parseFloat(hdr.max_z_height) : 0;
+  const prediction = hdr.estimated_printing_time || '';
+  const weight = hdr.total_filament_weight ? parseFloat(hdr.total_filament_weight) : 0;
+
+  // Parse filaments from header: ; filament_diameter: 1.75,1.75
+  // ; filament_type: PLA,PETG ; filament_density: 1.26,1.26
+  const fTypes = (hdr.filament_type || '').split(',');
+  const fColors = (hdr.filament_colour || hdr.filament_color || '').split(',');
+
+  const zip = new JSZip();
+  zip.file('[Content_Types].xml',
+    '<?xml version="1.0" encoding="UTF-8"?>\n'
+    + '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">\n'
+    + '  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>\n'
+    + '  <Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml"/>\n'
+    + '  <Default Extension="gcode" ContentType="application/vnd.bambu.gcode"/>\n'
+    + '  <Override PartName="/Metadata/slice_info.config" ContentType="application/vnd.bambu.slice_info+xml"/>\n'
+    + '  <Override PartName="/Metadata/plate_' + plateNum + '.gcode" ContentType="application/vnd.bambu.gcode"/>\n'
+    + '</Types>\n');
+
+  zip.file('_rels/.rels',
+    '<?xml version="1.0" encoding="UTF-8"?>\n'
+    + '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">\n'
+    + '  <Relationship Target="/Metadata/slice_info.config" Id="rel0" Type="http://schemas.bambu.com/package/2022/sliceinfo"/>\n'
+    + '</Relationships>\n');
+
+  // Build XML slice_info.config matching OrcaSlicer's format. The P1S reads
+  // layer count, print time, and filament info from here — without it the
+  // printer reports total_layer_num=0 and layer_num=0 over MQTT.
+  let si = '<?xml version="1.0" encoding="UTF-8"?>\n<config>\n';
+  si += '  <header>\n';
+  si += '    <header_item key="X-BBL-Client-Type" value="slicer"/>\n';
+  si += '    <header_item key="X-BBL-Client-Version" value="snorcal"/>\n';
+  si += '  </header>\n';
+  si += `  <plate>\n`;
+  si += `    <metadata key="index" value="${plateNum}"/>\n`;
+  si += `    <metadata key="prediction" value="${prediction}"/>\n`;
+  if (weight > 0) si += `    <metadata key="weight" value="${weight}"/>\n`;
+  // Filament entries
+  const fCount = fTypes.length > 0 && fTypes[0] ? fTypes.length : 0;
+  for (let i = 0; i < fCount; i++) {
+    const t = fTypes[i] || 'PLA';
+    const c = (fColors[i] || '#FFFFFFFF').replace(/^#/, '').padEnd(8, 'F');
+    si += `    <filament id="${i + 1}" type="${t}" color="#${c}"/>\n`;
+  }
+  // layer_filament_lists — the P1S computes total_layer_num from the max
+  // value in layer_ranges. Without this the printer reports layer 0/0.
+  // Single-filament print: one range covering all layers, filament_list="0".
+  if (totalLayers > 0) {
+    si += `    <layer_filament_lists>\n`;
+    si += `      <layer_filament_list filament_list="0" layer_ranges="0 ${totalLayers - 1}"/>\n`;
+    si += `    </layer_filament_lists>\n`;
+  }
+  si += `  </plate>\n`;
+  si += `</config>\n`;
+
+  zip.file('Metadata/slice_info.config', si);
+  zip.file(`Metadata/plate_${plateNum}.gcode`, gcode);
+
+  const buffer = await zip.generateAsync({
+    type: 'nodebuffer',
+    compression: 'DEFLATE',
+    compressionOptions: { level: 6 },
+  });
+
+  return { buffer, filename: `${baseName}.gcode.3mf` };
+}

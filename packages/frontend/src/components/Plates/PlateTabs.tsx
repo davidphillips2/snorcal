@@ -4,6 +4,9 @@ export interface PlateEntry {
   id: string;
   name: string;
   modelCount: number;
+  /** Optional summary of object names — shown as subtitle/tooltip so user
+   *  can tell plates apart without opening each one. */
+  summary?: string;
 }
 
 interface PlateTabsProps {
@@ -15,6 +18,10 @@ interface PlateTabsProps {
   onDelete: (id: string) => void;
   onReorder: (fromIdx: number, toIdx: number) => void;
   onAdd: () => void;
+  /** Clear all plates + their pms in one shot. Optional — only wired in
+   *  contexts where a full reset makes sense (e.g. user imported the wrong
+   *  file and wants to start over without picking plates off one by one). */
+  onClearAll?: () => void;
 }
 
 /**
@@ -22,7 +29,7 @@ interface PlateTabsProps {
  * Delete disabled when only one plate remains.
  */
 export function PlateTabs({
-  plates, activePlateId, onSelect, onRename, onDuplicate, onDelete, onReorder, onAdd,
+  plates, activePlateId, onSelect, onRename, onDuplicate, onDelete, onReorder, onAdd, onClearAll,
 }: PlateTabsProps) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [menuId, setMenuId] = useState<string | null>(null);
@@ -79,10 +86,18 @@ export function PlateTabs({
                   className="bg-gray-900 border border-gray-500 rounded px-1 py-0 text-xs text-white w-20 outline-none"
                 />
               ) : (
-                <span onDoubleClick={(e) => { e.stopPropagation(); setEditingId(p.id); setDraftName(p.name); }}>
+                <span
+                  onDoubleClick={(e) => { e.stopPropagation(); setEditingId(p.id); setDraftName(p.name); }}
+                  title={p.summary || p.name}
+                >
                   {p.name}
                   {plates.length > 1 && (
                     <span className={`ml-1 ${isActive ? 'text-blue-200' : 'text-gray-400'}`}>{p.modelCount}</span>
+                  )}
+                  {p.summary && (
+                    <span className={`block text-[10px] font-normal leading-tight max-w-[180px] ${isActive ? 'text-blue-200' : 'text-gray-500'}`} style={{ whiteSpace: 'normal' }}>
+                      {p.summary}
+                    </span>
                   )}
                 </span>
               )}
@@ -151,6 +166,17 @@ export function PlateTabs({
         <button onClick={onAdd} className="px-2 py-1 rounded text-xs bg-gray-700 text-gray-400 hover:bg-gray-600 hover:text-white transition shrink-0">
           + Plate
         </button>
+        {onClearAll && plates.length > 1 && (
+          <button
+            onClick={() => {
+              if (confirm('Clear all plates and objects? Uploaded models stay in the library.')) onClearAll();
+            }}
+            className="px-2 py-1 rounded text-xs bg-gray-700 text-red-400 hover:bg-red-900/40 hover:text-red-300 transition shrink-0"
+            title="Remove all plates and start fresh"
+          >
+            Clear all
+          </button>
+        )}
       </div>
     </div>
   );

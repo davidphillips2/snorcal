@@ -35,19 +35,53 @@ export function PrinterDetail({ id, onBack }: Props) {
   useEffect(() => { loadPrinter(); }, [id]);
 
   useEffect(() => {
-    const es = new EventSource('/api/events');
+    let es: EventSource | null = null;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let closed = false;
+    let firstOpen = true;
     const onMsg = (type: string, event: MessageEvent) => {
       try {
         const data = JSON.parse(event.data);
-        if (type === 'printer:status' && data.printerId === id) {
+        if (data.printerId !== id) return;
+        if (type === 'printer:status') {
           setStatus(data);
+        } else if (type === 'printer:connected') {
+          // No payload beyond printerId — mark connected locally and resync
+          // the full status via REST so state/temps recover.
+          setStatus(prev => prev ? { ...prev, connection: 'connected' } : prev);
+          loadPrinter();
+        } else if (type === 'printer:disconnected') {
+          setStatus(prev => prev ? { ...prev, connection: 'disconnected' } : prev);
         }
       } catch {}
     };
-    for (const t of ['printer:status', 'printer:connected', 'printer:disconnected']) {
-      es.addEventListener(t, (e) => onMsg(t, e as MessageEvent));
-    }
-    return () => es.close();
+    const connect = () => {
+      if (closed) return;
+      es = new EventSource('/api/events');
+      // Resync full status after a reconnect gap (initial load is covered by
+      // the mount effect, so skip the first open).
+      es.onopen = () => {
+        if (firstOpen) { firstOpen = false; return; }
+        loadPrinter();
+      };
+      for (const t of ['printer:status', 'printer:connected', 'printer:disconnected']) {
+        es.addEventListener(t, (e) => onMsg(t, e as MessageEvent));
+      }
+      // Native EventSource gives up silently after the browser's internal cap.
+      // Force a fresh connection so the dot/state don't freeze at stale data.
+      es.onerror = () => {
+        try { es?.close(); } catch {}
+        es = null;
+        if (!closed) reconnectTimer = setTimeout(connect, 2_000);
+      };
+    };
+    connect();
+    return () => {
+      closed = true;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      try { es?.close(); } catch {}
+      es = null;
+    };
   }, [id]);
 
   const connection = status?.connection ?? 'disconnected';
@@ -163,37 +197,41 @@ export function PrinterDetail({ id, onBack }: Props) {
               ? `${status.layer}/${status.totalLayers}` : '—'} />
         </div>
 
-        {/* Filaments — live AMS for bambu, editable manual slots otherwise */}
-        {printer.protocol === 'bambu' && status?.ams && status.ams.length > 0 ? (
-          <Section title="AMS">
+        {/* Filaments — live AMS when adapter reports slots, editable manual slots otherwise */}
+        {status?.ams && status.ams.length > 0 ? (
+          <Section title={printer.protocol === 'bambu' ? 'AMS' : 'Filament slots'}>
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-              {status.ams.map((slot, i) => (
-                <button key={i}
-                  onClick={() => setEditingSlot(slot)}
-                  className="bg-gray-800 hover:bg-gray-700 rounded p-2 flex items-center gap-2 text-left transition-colors"
-                >
-                  <span className="w-8 h-8 rounded border border-gray-600 flex-shrink-0"
-                    style={{ backgroundColor: slot.color ? `#${slot.color.slice(0, 6)}` : '#444' }}
-                    title={slot.color ? `#${slot.color.slice(0, 6)}` : 'unknown'} />
-                  <div className="min-w-0 flex-1">
-                    <div className="text-xs text-white truncate">
-                      <span className="text-gray-500 mr-1">T{Number(slot.trayId) + 1}</span>
-                      {slot.type ?? 'unknown'}
+              {status.ams.map((slot, i) => {
+                const editable = printer.protocol === 'bambu';
+                return (
+                  <button key={i}
+                    onClick={() => editable && setEditingSlot(slot)}
+                    disabled={!editable}
+                    className={`rounded p-2 flex items-center gap-2 text-left transition-colors ${editable ? 'bg-gray-800 hover:bg-gray-700' : 'bg-gray-800 cursor-default'}`}
+                  >
+                    <span className="w-8 h-8 rounded border border-gray-600 flex-shrink-0"
+                      style={{ backgroundColor: slot.color ? `#${slot.color.slice(0, 6)}` : '#444' }}
+                      title={slot.color ? `#${slot.color.slice(0, 6)}` : 'unknown'} />
+                    <div className="min-w-0 flex-1">
+                      <div className="text-xs text-white truncate">
+                        <span className="text-gray-500 mr-1">T{Number(slot.trayId) + 1}</span>
+                        {slot.type ?? 'unknown'}
+                      </div>
+                      <div className="text-[10px] text-gray-500 truncate">
+                        {slot.brand && <span>{slot.brand} </span>}
+                        {slot.remain !== undefined && <span>{slot.remain}%</span>}
+                      </div>
                     </div>
-                    <div className="text-[10px] text-gray-500 truncate">
-                      {slot.brand && <span>{slot.brand} </span>}
-                      {slot.remain !== undefined && <span>{slot.remain}%</span>}
-                    </div>
-                  </div>
-                  <span className="text-gray-600 text-xs">✎</span>
-                </button>
-              ))}
+                    {editable && <span className="text-gray-600 text-xs">✎</span>}
+                  </button>
+                );
+              })}
             </div>
           </Section>
         ) : null}
 
-        {/* Manual filaments (Moonraker / Klipper / Erproust CFS etc.) */}
-        {printer.protocol !== 'bambu' && (
+        {/* Manual filaments fallback — non-bambu without live ams */}
+        {printer.protocol !== 'bambu' && !(status?.ams && status.ams.length > 0) && (
           <Section title="Filament slots">
             <ManualFilamentsEditor printer={printer} onSaved={loadPrinter} />
           </Section>

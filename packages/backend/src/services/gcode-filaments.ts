@@ -70,10 +70,11 @@ export function parseGcodeFilaments(gcodePath: string): FilamentInfo[] {
   // live at end of file). Combine for parsers that may match in either.
   const combinedStr = headerStr + '\n' + tailStr;
 
-  // Accept both `:` and ` = ` separators. Value may be scalar, JSON array,
-  // or bracketed bareword list.
-  const types = parseValueList(headerStr, /; ?filament_type\s*[:=]\s*(.+)/);
-  const colors = parseValueList(headerStr, /; ?filament_colour\s*[:=]\s*(.+)/);
+  // Filament type/colour may appear in the header (OrcaSlicer sometimes)
+  // or in the footer summary block (single-filament gcode puts these at the
+  // end of the file). Search both.
+  const types = parseValueList(combinedStr, /; ?filament_type\s*[:=]\s*(.+)/);
+  const colors = parseValueList(combinedStr, /; ?filament_colour\s*[:=]\s*(.+)/);
   const weights = parseValueList(combinedStr, /; ?filament used \[g\]\s*[:=]\s*(.+)/)
     ?.map(s => {
       const n = parseFloat(s.replace(/[^0-9.]/g, ''));

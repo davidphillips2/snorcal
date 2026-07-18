@@ -120,6 +120,7 @@ export async function uploadModel(file: File) {
     bounds: { x: number; y: number; z: number };
     boundsMin?: { x: number; y: number; z: number };
     boundsMax?: { x: number; y: number; z: number };
+    plates?: Array<{ index: number; faceCount: number; bounds: { x: number; y: number; z: number }; objectNames?: string[] }>;
     negativeParts?: NegativePartMeta[];
     parts?: PrintablePartMeta[];
   }>;
@@ -379,6 +380,10 @@ export async function updatePrinter(id: string, patch: {
   model?: string | null;
   manualSlots?: number;
   manualFilaments?: Array<{ color: string; type: string; brand?: string; remain?: number }>;
+  connectionMode?: 'direct' | 'bambuddy' | null;
+  bambuddyUrl?: string | null;
+  bambuddyPrinterId?: number | null;
+  bambuddyApiKey?: string | null;
 }) {
   // Snake-case keys for backend PATCH body
   const body: Record<string, unknown> = {};
@@ -392,6 +397,10 @@ export async function updatePrinter(id: string, patch: {
   if (patch.model !== undefined) body.model = patch.model;
   if (patch.manualSlots !== undefined) body.manual_slots = patch.manualSlots;
   if (patch.manualFilaments !== undefined) body.manual_filaments = JSON.stringify(patch.manualFilaments);
+  if (patch.connectionMode !== undefined) body.connection_mode = patch.connectionMode;
+  if (patch.bambuddyUrl !== undefined) body.bambuddy_url = patch.bambuddyUrl;
+  if (patch.bambuddyPrinterId !== undefined) body.bambuddy_printer_id = patch.bambuddyPrinterId;
+  if (patch.bambuddyApiKey !== undefined) body.bambuddy_api_key = patch.bambuddyApiKey;
   return apiFetch(`/printers/${id}`, {
     method: 'PATCH', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -404,6 +413,10 @@ export async function createPrinter(p: {
   cameraStreamUrl?: string; cameraSnapshotUrl?: string;
   model?: string;
   manualSlots?: number;
+  connectionMode?: 'direct' | 'bambuddy';
+  bambuddyUrl?: string;
+  bambuddyPrinterId?: number;
+  bambuddyApiKey?: string;
 }) {
   return apiFetch('/printers', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },

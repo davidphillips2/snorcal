@@ -24,6 +24,10 @@ export interface PrinterRecord {
   manualSlots?: number;
   manualFilaments?: Array<{ color: string; type: string; brand?: string; remain?: number }>;
   bedVolume?: { x: number; y: number; z: number } | null;
+  /** Bambu printers can connect direct (MQTT) or via a bambuddy proxy (WS). */
+  connectionMode?: PrinterConnectionMode | null;
+  bambuddyUrl?: string | null;
+  bambuddyPrinterId?: number | null;
   status?: PrinterStatus | null;
   lastStatus?: string | null;
   lastSeen?: string | null;
@@ -31,6 +35,9 @@ export interface PrinterRecord {
 }
 
 export type PrinterProtocol = 'moonraker' | 'bambu';
+
+/** How a Bambu printer is reached. null/'direct' = native MQTT; 'bambuddy' = HTTP proxy. */
+export type PrinterConnectionMode = 'direct' | 'bambuddy';
 
 export type PrinterConnectionState =
   | 'disconnected'

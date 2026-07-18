@@ -21,6 +21,11 @@ export function EditPrinterModal({ printer, onClose, onSaved }: Props) {
   const [apiKeyDirty, setApiKeyDirty] = useState(false);
   const [cameraStreamUrl, setCameraStreamUrl] = useState(printer.cameraStreamUrl ?? '');
   const [cameraSnapshotUrl, setCameraSnapshotUrl] = useState(printer.cameraSnapshotUrl ?? '');
+  const [bambuddyMode, setBambuddyMode] = useState(printer.connectionMode === 'bambuddy');
+  const [bambuddyUrl, setBambuddyUrl] = useState(printer.bambuddyUrl ?? '');
+  const [bambuddyPrinterId, setBambuddyPrinterId] = useState<number | ''>(printer.bambuddyPrinterId ?? '');
+  const [bambuddyApiKey, setBambuddyApiKey] = useState('');
+  const [bambuddyApiKeyDirty, setBambuddyApiKeyDirty] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -32,6 +37,10 @@ export function EditPrinterModal({ printer, onClose, onSaved }: Props) {
     setApiKey(''); setApiKeyDirty(false);
     setCameraStreamUrl(printer.cameraStreamUrl ?? '');
     setCameraSnapshotUrl(printer.cameraSnapshotUrl ?? '');
+    setBambuddyMode(printer.connectionMode === 'bambuddy');
+    setBambuddyUrl(printer.bambuddyUrl ?? '');
+    setBambuddyPrinterId(printer.bambuddyPrinterId ?? '');
+    setBambuddyApiKey(''); setBambuddyApiKeyDirty(false);
   }, [printer.id]);
 
   const submit = async () => {
@@ -49,6 +58,14 @@ export function EditPrinterModal({ printer, onClose, onSaved }: Props) {
         ...(apiKeyDirty ? { apiKey: apiKey.trim() || null } : {}),
         cameraStreamUrl: cameraStreamUrl.trim() || null,
         cameraSnapshotUrl: cameraSnapshotUrl.trim() || null,
+        // Connection mode + bambuddy config. Always send mode so toggling back
+        // to direct persists; send proxy fields when in bambuddy mode.
+        connectionMode: isBambu ? (bambuddyMode ? 'bambuddy' : 'direct') : null,
+        ...(isBambu ? {
+          bambuddyUrl: bambuddyMode ? (bambuddyUrl.trim() || null) : null,
+          bambuddyPrinterId: bambuddyMode && bambuddyPrinterId !== '' ? Number(bambuddyPrinterId) : null,
+        } : {}),
+        ...(bambuddyApiKeyDirty ? { bambuddyApiKey: bambuddyApiKey.trim() || null } : {}),
       });
       onSaved();
     } catch (e) {
@@ -87,15 +104,51 @@ export function EditPrinterModal({ printer, onClose, onSaved }: Props) {
         </div>
 
         {isBambu && (
-          <Field label="LAN Access Code">
-            <input
-              type="password"
-              value={accessCode}
-              onChange={(e) => { setAccessCode(e.target.value); setAccessCodeDirty(true); }}
-              placeholder={accessCodeDirty ? '' : '•••••• (leave blank to keep current)'}
-              className="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-white"
-            />
-          </Field>
+          <>
+            {/* Connection mode toggle */}
+            <div className="flex gap-2">
+              {([false, true] as const).map(mode => (
+                <button key={String(mode)} type="button" onClick={() => setBambuddyMode(mode)}
+                  className={`flex-1 px-3 py-1.5 rounded text-xs ${
+                    bambuddyMode === mode ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                  }`}>
+                  {mode ? 'Bambuddy proxy' : 'Direct LAN (MQTT)'}
+                </button>
+              ))}
+            </div>
+
+            {!bambuddyMode ? (
+              <Field label="LAN Access Code">
+                <input
+                  type="password"
+                  value={accessCode}
+                  onChange={(e) => { setAccessCode(e.target.value); setAccessCodeDirty(true); }}
+                  placeholder={accessCodeDirty ? '' : '•••••• (leave blank to keep current)'}
+                  className="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-white"
+                />
+              </Field>
+            ) : (
+              <>
+                <Field label="Bambuddy URL">
+                  <input value={bambuddyUrl} onChange={(e) => setBambuddyUrl(e.target.value)}
+                    placeholder="http://100.122.105.27:8000"
+                    className="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-white" />
+                </Field>
+                <Field label="Bambuddy Printer ID">
+                  <input type="number" min={1} value={bambuddyPrinterId}
+                    onChange={(e) => setBambuddyPrinterId(e.target.value === '' ? '' : Number(e.target.value))}
+                    placeholder="1"
+                    className="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-white" />
+                </Field>
+                <Field label="Bambuddy API Key (optional)">
+                  <input type="password" value={bambuddyApiKey}
+                    onChange={(e) => { setBambuddyApiKey(e.target.value); setBambuddyApiKeyDirty(true); }}
+                    placeholder={bambuddyApiKeyDirty ? '' : 'bb_... (leave blank to keep current)'}
+                    className="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-white" />
+                </Field>
+              </>
+            )}
+          </>
         )}
 
         {!isBambu && (

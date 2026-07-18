@@ -195,6 +195,32 @@ export function runSchemaMigrations(db: Database.Database) {
     // Migration not needed or already applied
   }
 
+  // Bambuddy proxy connection mode for Bambu printers. Direct MQTT and the
+  // bambuddy proxy both hold a Bambu MQTT client; the printer broker drops
+  // concurrent connections with the same bblp/access-code, so when bambuddy
+  // owns the printer we route through its HTTP/WS API instead.
+  //   connection_mode: 'direct' (default null) | 'bambuddy'
+  //   bambuddy_url: base URL e.g. http://bambuddy:8000
+  //   bambuddy_printer_id: integer printer id on the bambuddy side
+  //   bambuddy_api_key: encrypted API key (bb_...) or null if auth disabled
+  try {
+    const cols = db.prepare("PRAGMA table_info(printers)").all() as { name: string }[];
+    if (!cols.some(c => c.name === 'connection_mode')) {
+      db.exec("ALTER TABLE printers ADD COLUMN connection_mode TEXT");
+    }
+    if (!cols.some(c => c.name === 'bambuddy_url')) {
+      db.exec("ALTER TABLE printers ADD COLUMN bambuddy_url TEXT");
+    }
+    if (!cols.some(c => c.name === 'bambuddy_printer_id')) {
+      db.exec("ALTER TABLE printers ADD COLUMN bambuddy_printer_id INTEGER");
+    }
+    if (!cols.some(c => c.name === 'bambuddy_api_key')) {
+      db.exec("ALTER TABLE printers ADD COLUMN bambuddy_api_key TEXT");
+    }
+  } catch {
+    // Migration not needed or already applied
+  }
+
   // Spools inventory (filament tracking)
   try {
     db.exec(`

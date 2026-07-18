@@ -5,7 +5,6 @@ import { randomUUID } from 'node:crypto';
 import type { Db } from '../db/index.js';
 import { discoverDevices } from '../services/ssdp-discovery.js';
 import { printerManager } from '../services/printer-manager.js';
-import { BambuAdapter } from '../services/adapters/bambu-adapter.js';
 import { findGcodeFile, extractGcodeFrom3mf, prepareKlipperGcode } from '../services/gcode-utils.js';
 import { parseGcodeFilaments } from '../services/gcode-filaments.js';
 import { rewriteGcodeToolMapping, mappingIsNoop } from '../services/gcode-rewriter.js';
@@ -66,6 +65,10 @@ function toPrinterRecord(row: any) {
     manualSlots: row.manual_slots ?? 0,
     manualFilaments: parseManualFilaments(row.manual_filaments),
     bedVolume: resolveBedVolume(dbForResolver, row.model),
+    connectionMode: (row.connection_mode === 'bambuddy' ? 'bambuddy' : 'direct') as 'direct' | 'bambuddy',
+    bambuddyUrl: row.bambuddy_url ?? null,
+    bambuddyPrinterId: row.bambuddy_printer_id ?? null,
+    // NOTE: bambuddy_api_key intentionally omitted — never return secrets.
     lastStatus: row.last_status,
     lastSeen: row.last_seen,
     createdAt: row.created_at,
@@ -266,12 +269,25 @@ export async function printerRoutes(app: FastifyInstance, options: { db: Db }) {
       cameraSnapshotUrl?: string;
       model?: string;
       manualSlots?: number;
+      connectionMode?: string;
+      bambuddyUrl?: string;
+      bambuddyPrinterId?: number;
+      bambuddyApiKey?: string;
     };
     if (!body.name || !body.protocol || !body.ip) {
       return reply.status(400).send({ ok: false, error: 'name, protocol, ip required' });
     }
-    if (body.protocol === 'bambu' && (!body.serial || !body.accessCode)) {
-      return reply.status(400).send({ ok: false, error: 'serial and accessCode required for bambu' });
+    // Direct-mode Bambu needs serial + access code for MQTT/FTP. Bambuddy
+    // proxy mode needs the proxy URL + printer id instead (no printer creds).
+    if (body.protocol === 'bambu' && body.connectionMode !== 'bambuddy') {
+      if (!body.serial || !body.accessCode) {
+        return reply.status(400).send({ ok: false, error: 'serial and accessCode required for bambu (direct mode)' });
+      }
+    }
+    if (body.protocol === 'bambu' && body.connectionMode === 'bambuddy') {
+      if (!body.bambuddyUrl || !body.bambuddyPrinterId) {
+        return reply.status(400).send({ ok: false, error: 'bambuddyUrl and bambuddyPrinterId required for bambuddy mode' });
+      }
     }
     // Reject non-http(s) camera URLs — they'd reach <img src> (XSS) / fetch (SSRF).
     try {
@@ -289,6 +305,10 @@ export async function printerRoutes(app: FastifyInstance, options: { db: Db }) {
       camera_snapshot_url: body.cameraSnapshotUrl || null,
       model: body.model || null,
       manual_slots: body.manualSlots ?? 0,
+      connection_mode: body.connectionMode ?? null,
+      bambuddy_url: body.bambuddyUrl || null,
+      bambuddy_printer_id: body.bambuddyPrinterId ?? null,
+      bambuddy_api_key: body.bambuddyApiKey || null,
     });
     const row = db.getPrinter(id)!;
     await printerManager.startAdapter(row).catch(err => {
@@ -317,6 +337,10 @@ export async function printerRoutes(app: FastifyInstance, options: { db: Db }) {
       model?: string | null;
       manual_slots?: number;
       manual_filaments?: string | null;
+      connection_mode?: string | null;
+      bambuddy_url?: string | null;
+      bambuddy_printer_id?: number | null;
+      bambuddy_api_key?: string | null;
     };
     const row = db.getPrinter(req.params.id);
     if (!row) return reply.status(404).send({ ok: false, error: 'Printer not found' });
@@ -324,6 +348,7 @@ export async function printerRoutes(app: FastifyInstance, options: { db: Db }) {
     try {
       validCameraUrl(body.camera_stream_url);
       validCameraUrl(body.camera_snapshot_url);
+      validCameraUrl(body.bambuddy_url);
     } catch (e) {
       return reply.status(400).send({ ok: false, error: e instanceof Error ? e.message : String(e) });
     }
@@ -331,8 +356,8 @@ export async function printerRoutes(app: FastifyInstance, options: { db: Db }) {
     db.updatePrinterFields(req.params.id, body);
     const updated = db.getPrinter(req.params.id)!;
 
-    // Reconnect if connection params changed (adapter picks up new IP/port/keys)
-    const connectionChanged = ['ip', 'port', 'access_code', 'api_key'].some(k => k in body);
+    // Reconnect if connection params changed (adapter picks up new IP/port/keys/mode)
+    const connectionChanged = ['ip', 'port', 'access_code', 'api_key', 'connection_mode', 'bambuddy_url', 'bambuddy_printer_id', 'bambuddy_api_key'].some(k => k in body);
     if (connectionChanged) {
       try { await printerManager.reconnect(req.params.id); } catch {}
     }
@@ -444,10 +469,14 @@ export async function printerRoutes(app: FastifyInstance, options: { db: Db }) {
     if (!row) return reply.status(404).send({ ok: false, error: 'Printer not found' });
 
     if (row.protocol === 'bambu') {
-      // Snapshot poll: return single JPEG
+      // Snapshot poll: return single JPEG. Both BambuAdapter (direct, uses
+      // camera_ip HTTP override or port-6000 binary protocol) and
+      // BambuddyAdapter (proxy, fetches bambuddy snapshot endpoint) implement
+      // fetchCameraSnapshot(). Duck-type instead of instanceof so the proxy
+      // adapter isn't rejected.
       const adapter = printerManager.getAdapter(req.params.id);
-      if (!(adapter instanceof BambuAdapter)) {
-        return reply.status(400).send({ ok: false, error: 'Adapter not bambu' });
+      if (!adapter || typeof adapter.fetchCameraSnapshot !== 'function') {
+        return reply.status(400).send({ ok: false, error: 'Camera not available for this adapter' });
       }
       try {
         const jpeg = await adapter.fetchCameraSnapshot();
@@ -742,7 +771,7 @@ export async function printerRoutes(app: FastifyInstance, options: { db: Db }) {
         uploadPath = prepareKlipperGcode(uploadPath, printOptions);
       }
 
-      const printerPath = await printerManager.uploadFile(req.params.id, uploadPath, uploadFilename);
+      const printerPath = await printerManager.uploadFile(req.params.id, uploadPath, uploadFilename, plateNum);
 
       if (startPrint) {
         const startArgs: Record<string, unknown> = {};

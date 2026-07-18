@@ -129,9 +129,13 @@ export function analyzeGcodeTime(gcode: string | string[]): TypeBreakdownEntry[]
  * the parser-based sum ignores acceleration/jerk and undercounts ~40%.
  */
 export function parseSlicerEstimatedTime(gcode: string | string[]): number | null {
-  // The estimate lives in the slicer header (first ~30 lines). For a line
-  // array, scan only the prefix; for a string, regex the whole thing.
-  const haystack = Array.isArray(gcode) ? gcode.slice(0, 40).join('\n') : gcode;
+  // OrcaSlicer/BambuStudio emit the estimate in the FOOTER (~line 80k+ for
+  // big prints), not the header. Earlier code only scanned the first 40
+  // lines, so the regex never matched for real-world files → breakdown
+  // fell back to the parser sum (undercounts ~40% by ignoring accel/jerk).
+  // For a line array, scan the tail where the footer lives; for a string,
+  // regex the whole thing (estimate appears once per file).
+  const haystack = Array.isArray(gcode) ? gcode.slice(-200).join('\n') : gcode;
   const m = haystack.match(/;\s*estimated printing time[^=\n]*=\s*(\d+h)?\s*(\d+m)?\s*(\d+s)?/i);
   if (!m) return null;
   const h = parseInt(m[1] ?? '0', 10) || 0;

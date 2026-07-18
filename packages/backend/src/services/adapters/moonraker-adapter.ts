@@ -183,9 +183,16 @@ export class MoonrakerAdapter implements PrinterAdapter {
     const disp = this.objects.display_status;
     const fan = this.objects.fan;
 
-    const progress = vsd?.progress ?? disp?.progress ?? 0;
-    const etaSec = ps && vsd && vsd.progress > 0
-      ? Math.max(0, (ps.total_duration / vsd.progress) * (1 - vsd.progress))
+    // Prefer display_status.progress (M73-driven, time-accurate) over
+    // virtual_sdcard.progress (byte-position-based, misleading early in
+    // print due to varying gcode density). Fall back to vsd if no display.
+    const progress = disp?.progress ?? vsd?.progress ?? 0;
+    // ETA from print_duration (pure print time, excludes heat-up/level
+    // overhead). total_duration included heating + ABL which inflate ETA
+    // early in the print. Only compute when progress > 2% — before that
+    // the extrapolation is too noisy.
+    const etaSec = ps && progress > 0.02
+      ? Math.max(0, (ps.print_duration / progress) * (1 - progress))
       : undefined;
 
     // Build hotends array — only include hotends that the printer actually reports.

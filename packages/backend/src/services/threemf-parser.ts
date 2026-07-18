@@ -421,6 +421,9 @@ interface ModelSettings {
   partSubtypes: Map<string, string>;
   /** plate number → set of object IDs on that plate */
   plates: Map<number, Set<string>>;
+  /** object id → human-readable name (from <metadata key="name"> inside <object>).
+   *  Lets us label plates by what's actually on them instead of "Plate N". */
+  objectNames: Map<string, string>;
 }
 
 /**
@@ -432,6 +435,7 @@ async function parseModelSettings(zip: JSZip, parser: XMLParser): Promise<ModelS
     partExtruders: new Map(),
     partSubtypes: new Map(),
     plates: new Map(),
+    objectNames: new Map(),
   };
 
   const file = zip.file('Metadata/model_settings.config');
@@ -448,11 +452,14 @@ async function parseModelSettings(zip: JSZip, parser: XMLParser): Promise<ModelS
     for (const obj of objects) {
       const objId = String(obj['@_id'] || '');
 
-      // Object-level extruder
+      // Object-level metadata: extruder + name
       const objMetas = toArray(obj.metadata);
       for (const m of objMetas) {
         if (m['@_key'] === 'extruder') {
           result.objectExtruders.set(objId, parseInt(m['@_value'] || '1'));
+        } else if (m['@_key'] === 'name') {
+          const n = String(m['@_value'] || '').trim();
+          if (n) result.objectNames.set(objId, n);
         }
       }
 
@@ -794,6 +801,30 @@ export async function countPlates(buffer: Buffer): Promise<number> {
   const parser = new XMLParser(PARSER_OPTIONS);
   const settings = await parseModelSettings(zip, parser);
   return settings.plates.size > 0 ? settings.plates.size : 1;
+}
+
+/**
+ * Resolve plate labels for a 3MF: each plate → list of object names extracted
+ * from <metadata key="name"> inside <object>. Used to label plate tabs with
+ * what's actually on each plate ("Mickey1.step" beats "Plate 2").
+ * Returns one entry per plate (1-based index), names may be empty for plates
+ * whose objects lack a name metadata field.
+ */
+export async function getPlateObjectNames(buffer: Buffer): Promise<Array<{ index: number; names: string[] }>> {
+  const zip = await JSZip.loadAsync(buffer);
+  const parser = new XMLParser(PARSER_OPTIONS);
+  const settings = await parseModelSettings(zip, parser);
+  if (settings.plates.size === 0) return [];
+  const out: Array<{ index: number; names: string[] }> = [];
+  for (const [plateNum, objIds] of settings.plates) {
+    const names: string[] = [];
+    for (const objId of objIds) {
+      const n = settings.objectNames.get(objId);
+      if (n) names.push(n);
+    }
+    out.push({ index: plateNum, names });
+  }
+  return out.sort((a, b) => a.index - b.index);
 }
 
 /**

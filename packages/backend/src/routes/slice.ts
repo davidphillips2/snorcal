@@ -77,6 +77,118 @@ function getDefaultDataDir(engine: string): string {
 }
 
 /**
+ * Derive a canonical material type token (PLA, PETG, ABS, TPU, ...) from a
+ * filament profile name. Profile names follow slicer convention
+ * "<Vendor> <Material> @<Printer>", e.g. "SUNLU PETG @BBL X1C",
+ * "Bambu PLA Basic @BBL P1S". Returns the matched material or null.
+ */
+const MATERIAL_TOKENS = ['PETG', 'PLA', 'ABS', 'ASA', 'TPU', 'PA', 'PC', 'PVA', 'HIPS', 'PEEK', 'PEI', 'Nylon', 'CF', 'GF'] as const;
+function deriveMaterialFromProfileName(profile: string): string | null {
+  const upper = profile.toUpperCase();
+  // Longest-match first so "PA-CF" doesn't resolve to "PA" before "PA-CF".
+  // The current token list has no overlap so simple find works, but keep
+  // this sorted by length to harden against future additions.
+  const sorted = [...MATERIAL_TOKENS].sort((a, b) => b.length - a.length);
+  for (const t of sorted) {
+    if (upper.includes(t.toUpperCase())) return t;
+  }
+  return null;
+}
+
+/**
+ * Override nozzle_temperature / nozzle_temperature_initial_layer in
+ * project_settings when the user's chosen filament type differs from the
+ * type embedded in the 3MF. OrcaSlicer reads nozzle_temperature as a
+ * top-level scalar (not a filament_* key), so setting filament_type alone
+ * doesn't change the temp — the slicer uses whatever the 3MF embedded.
+ *
+ * Looks up the correct temp from the DB filament profile matching the
+ * user's type + printer model. Falls back to the first matching-type
+ * profile if no printer-specific one is found. Silently skips if no
+ * profile is found (keeps the embedded temp).
+ */
+/**
+ * Resolve a setting key by walking a filament profile's `inherits` chain.
+ * OrcaSlicer/BambuStudio profiles use `"inherits": "Parent Name"` — the
+ * child only carries overridden keys, so missing keys must be fetched from
+ * the parent (which may itself inherit). Depth-limited to 10 to prevent
+ * cycles.
+ */
+function resolveInherited(
+  engine: string,
+  profileName: string,
+  key: string,
+  db: Db,
+  depth: number = 0,
+): unknown {
+  if (depth > 10) return undefined;
+  const prof = db.getProfile(engine, 'filament', profileName);
+  if (!prof) return undefined;
+  let ps: Record<string, unknown>;
+  try { ps = JSON.parse(prof.settings); } catch { return undefined; }
+  if (ps[key] !== undefined && ps[key] !== null && ps[key] !== '') return ps[key];
+  const parent = typeof ps['inherits'] === 'string' ? ps['inherits'] as string : undefined;
+  if (parent) return resolveInherited(engine, parent, key, db, depth + 1);
+  return undefined;
+}
+
+function overrideNozzleTemps(
+  projectSettings: Record<string, unknown>,
+  slots: FilamentSlot[],
+  originalFilamentTypes: string[],
+  engine: string,
+  db: Db,
+): void {
+  for (let i = 0; i < slots.length; i++) {
+    const slotType = slots[i]?.type?.toUpperCase();
+    const embeddedType = originalFilamentTypes[i]?.toUpperCase();
+    if (!slotType || slotType === embeddedType) continue; // same type, no override needed
+
+    // Use the filament profile the user actually selected (stored in
+    // default_filament_profile by the profile-loading path above). This is
+    // the exact profile OrcaSlicer resolves — resolve its nozzle_temperature
+    // through the inherits chain. Falls back to slot.profile if present.
+    const defaultFilamentProfiles = Array.isArray(projectSettings['default_filament_profile'])
+      ? (projectSettings['default_filament_profile'] as string[])
+      : [];
+    const profileName = slots[i]?.profile ?? defaultFilamentProfiles[i];
+    if (!profileName) continue;
+
+    // Skip if the profile has no nozzle_temperature — nothing to override.
+    if (resolveInherited(engine, profileName, 'nozzle_temperature', db) === undefined) continue;
+
+    // Override nozzle + bed temperatures from the selected filament profile.
+    // OrcaSlicer expects these as string arrays (one per extruder). Scalar
+    // numbers cause "invalid json type" parse errors and the slicer silently
+    // falls back to the embedded (wrong) temp.
+    const colourCount = Array.isArray(projectSettings['filament_colour'])
+      ? (projectSettings['filament_colour'] as string[]).length : 1;
+    const setTempArray = (key: string, profileKey?: string) => {
+      const val = resolveInherited(engine, profileName, profileKey ?? key, db);
+      if (val === undefined) return;
+      const str = Array.isArray(val) ? String((val as unknown[])[0]) : String(val);
+      projectSettings[key] = Array(colourCount).fill(str);
+    };
+    setTempArray('nozzle_temperature');
+    setTempArray('nozzle_temperature_initial_layer');
+    // Bed temps are per plate type — override all so whichever plate type the
+    // user selected gets the correct temp for the new filament type.
+    setTempArray('cool_plate_temp');
+    setTempArray('cool_plate_temp_initial_layer');
+    setTempArray('cool_plate_temp_initial_layer');
+    setTempArray('eng_plate_temp');
+    setTempArray('eng_plate_temp_initial_layer');
+    setTempArray('hot_plate_temp');
+    setTempArray('hot_plate_temp_initial_layer');
+    setTempArray('textured_plate_temp');
+    setTempArray('textured_plate_temp_initial_layer');
+    setTempArray('supertack_plate_temp');
+    setTempArray('supertack_plate_temp_initial_layer');
+    break;
+  }
+}
+
+/**
  * Expand filament_* settings per user's filamentSlots.
  *
  * Bambuddy parity: NO padding, NO array-length forcing, NO SEMM/prime_tower
@@ -501,6 +613,48 @@ export async function buildSliceInput3MF(
     ...(defaultProjectSettingsRaw as Record<string, unknown>),
   };
 
+  // Detect printer protocol to choose the right machine start/end gcode.
+  // The default-project-settings.json end gcode is Bambu-specific (M620 AMS
+  // retract, M1002 judge_flag, M17 motor current) — harmless on Bambu firmware
+  // but wrong/ignored on Klipper. Klipper printers (Snapmaker U1, Voron, etc.)
+  // need simpler gcode that just lowers Z, moves the head, and turns off heaters.
+  const printerProtocol = (() => {
+    if (body.printerId) {
+      const p = db.getPrinter(body.printerId);
+      if (p?.protocol) return p.protocol;
+    }
+    // No printer selected — default to bambu (most users run Bambu
+    // firmware). Previously defaulted to 'moonraker', which forced the
+    // Klipper-style machine_start_gcode template below onto Bambu users
+    // and made OrcaSlicer reject the `{first_layer_bed_temperature}`
+    // placeholder as a vector reference (exit 156).
+    return 'bambu';
+  })();
+  if (printerProtocol === 'moonraker') {
+    // OrcaSlicer's gcode-template parser validates placeholders against
+    // a known variable list + rejects vector vars used in scalar context
+    // (exit 156). Two prior pitfalls:
+    //   1. {first_layer_bed_temperature} / {first_layer_temperature} are
+    //      VECTORS in multi-filament contexts → must use [0] index.
+    //   2. {bed_depth} is NOT a valid OrcaSlicer placeholder → "Not a
+    //      variable name" error. Drop the front-left move entirely;
+    //      G28 + Z-lift is enough for park-at-end behavior.
+    projectSettings['machine_end_gcode'] =
+      'M400 ; wait for buffer to clear\n'
+      + 'G91 ; relative positioning\n'
+      + 'G1 Z10 F600 ; lift nozzle\n'
+      + 'G90 ; absolute positioning\n'
+      + 'M104 S0 ; turn off hotend\n'
+      + 'M140 S0 ; turn off bed\n'
+      + 'M106 S0 ; turn off fan\n'
+      + 'M84 ; disable motors\n';
+    projectSettings['machine_start_gcode'] =
+      'M140 S{first_layer_bed_temperature[0]} ; set bed temp\n'
+      + 'M104 S{first_layer_temperature[0]} ; set hotend temp\n'
+      + 'G28 ; home all axes\n'
+      + 'G1 Z5 F5000 ; lift nozzle\n';
+  }
+
   // Merge selected profiles (machine → filament → process)
   if (body.profiles) {
     const engine = body.engine;
@@ -576,29 +730,106 @@ export async function buildSliceInput3MF(
     mergeFilamentProfiles(projectSettings, profile0Settings, profile1Settings, body.multiMaterial);
   }
 
-  // Multi-color filament slots: snorcal previously ran expandFilamentSlots
-  // here to overlay per-slot filament profiles onto project_settings arrays.
-  // That function truncated template (reference) arrays to slots.length,
-  // losing the AMS-slot padding BambuStudio expects → array OOB → SIGSEGV
-  // in load_nozzle_infos_with_compatibility. Per-slot profile differences
-  // are now handled by sidecar profile stub uploads (v0.1.19) resolved
-  // against bundled slicer presets via --load-filaments. Locally we set
-  // only the per-slot user-picked colors + types; the template carries
-  // correct full-length arrays for everything else.
-  if (body.filamentSlots && body.filamentSlots.length > 1) {
-    projectSettings['filament_colour'] = body.filamentSlots.map(s => s.color);
-    projectSettings['filament_type'] = body.filamentSlots.map(s => s.type);
+  // Apply the user's per-slot filament choices (colour, type, metadata).
+  // This runs for ALL slot counts (including single-filament) so that a
+  // user who picks "PETG" on a 3MF originally sliced for PLA actually gets
+  // PETG temperatures — OrcaSlicer reads nozzle_temperature from
+  // project_settings, not from the filament_type string, so we must also
+  // override the temperature when the type changes.
+  // Capture the ORIGINAL embedded filament_type before overriding —
+  // overrideNozzleTemps (called below) needs to know if the user changed it.
+  const originalFilamentTypes = Array.isArray(projectSettings['filament_type'])
+    ? [...(projectSettings['filament_type'] as string[])]
+    : [];
+  if (body.filamentSlots && body.filamentSlots.length > 0) {
+    const slots = body.filamentSlots;
+
+    projectSettings['filament_colour'] = slots.map(s => s.color);
+    // Filament type: prefer the material encoded in the user's picked
+    // profile name (e.g. "SUNLU PETG @BBL X1C" → "PETG"). Older slots set
+    // only slot.profile without updating slot.type, so slot.type carried the
+    // stale PLA default from the embedded 3MF and the slicer read
+    // filament_type=PLA while honoring PETG temps via the profile. Profile
+    // name is authoritative since it's what the user actually picked.
+    projectSettings['filament_type'] = slots.map(s => {
+      const fromProfile = s.profile ? deriveMaterialFromProfileName(s.profile) : null;
+      const result = fromProfile ?? s.type ?? 'PLA';
+      console.log(`[slice] slot.type=${s.type ?? '<none>'} profile=${s.profile ?? '<none>'} → filament_type=${result}`);
+      return result;
+    });
     // Propagate rich filament metadata (extracted at 3MF load) into the slice
     // 3MF so the slicer and downstream tools see vendor/density/diameter/cost.
     // Defaults match the slicer template when a slot lacks the field.
-    projectSettings['filament_vendor'] = body.filamentSlots.map(s => s.vendor ?? '');
-    projectSettings['filament_diameter'] = body.filamentSlots.map(s => s.diameter ?? '1.75');
-    projectSettings['filament_density'] = body.filamentSlots.map(s => s.density ?? '1.26');
-    projectSettings['filament_cost'] = body.filamentSlots.map(s => s.cost ?? '0');
+    projectSettings['filament_vendor'] = slots.map(s => s.vendor ?? '');
+    projectSettings['filament_diameter'] = slots.map(s => s.diameter ?? '1.75');
+    projectSettings['filament_density'] = slots.map(s => s.density ?? '1.26');
+    projectSettings['filament_cost'] = slots.map(s => s.cost ?? '0');
+
+    // Override nozzle temperatures from the DB filament profile when the
+    // user's chosen type differs from the original embedded one. OrcaSlicer
+    // reads nozzle_temperature as a top-level scalar (not filament_*), so
+    // the type override above alone doesn't fix the temp. Without this, a
+    // 3MF originally sliced for PLA (200°C) keeps 200°C even when the user
+    // picks PETG — leading to under-extrusion / failed prints.
+    // (Called later, after default_filament_profile is set, so the override
+    // can resolve the selected profile's nozzle_temperature via inherits.)
   }
 
   if (body.settings?.process) {
     for (const [key, val] of Object.entries(body.settings.process)) {
+      // filament_* keys belong to the filament category, not process. The
+      // frontend's settings state carries them as a side effect of the
+      // "Apply embedded settings" overlay (handleSourceSettings pours
+      // the entire 3MF blob into `settings`, including
+      // filament_type / filament_colour arrays from the embedded config).
+      // Letting them ride back here overwrites the per-slot filament_type
+      // derivation above (slot.profile-derived PETG) with the stale
+      // embedded PLA value, so the slicer ends up with
+      // filament_settings_id=SUNLU PETG + filament_type=PLA → prints as
+      // PLA. filament_colour + filament_type are already set from
+      // filamentSlots above; skip them here.
+      if (key.startsWith('filament_')) continue;
+      // Identity keys: set below from body.profiles (machine/process/
+      // filament selections). Embedded 3MFs often carry empty strings or
+      // stale values for these (e.g. imported P1S 3MF after switching to
+      // U1), and frontend's settings state propagates them. Letting them
+      // through here clobbers the correct profile-derived values.
+      if (key === 'printer_model'
+        || key === 'printer_settings_id'
+        || key === 'print_settings_id'
+        || key === 'default_print_profile'
+        || key === 'default_filament_profile'
+        || key === 'inherits_group') continue;
+      // Skip empty strings — the embedded blob frequently stores unused
+      // keys as "" (e.g. curr_bed_type on some imports). Overwriting a
+      // meaningful value with "" silently resets it.
+      if (typeof val === 'string' && val.trim() === '') continue;
+      // Frontend's "Apply embedded settings" path (App.tsx:1126) stringifies
+      // arrays via JSON.stringify so they fit Record<string,string>. Reverse
+      // it here: any incoming string that JSON-parses to an array becomes a
+      // real array again. Without this, OrcaSlicer's load_from_json rejects
+      // the whole project_settings.config ("Invalid value for parameter X:
+      // [\"0\"]") for keys it expects as ConfigOptionBools/Strings arrays
+      // (activate_air_filtration, activate_chamber_temp_control, fan_min_speed,
+      // close_fan_the_first_x_layers, …), falls back to the 200x200 default
+      // bed, and the model doesn't fit → exit 206 with no stderr. Keys the
+      // template already carries as arrays are rehydrated unconditionally;
+      // for keys absent from the template (e.g. activate_chamber_temp_control)
+      // the shape-based JSON-array check still fires.
+      if (typeof val === 'string') {
+        const trimmed = val.trim();
+        if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+          try {
+            const parsed = JSON.parse(trimmed);
+            if (Array.isArray(parsed)) {
+              projectSettings[key] = parsed.map(String);
+              continue;
+            }
+          } catch {
+            // Not valid JSON (e.g. "[3 x 1.2mm]" coordinate) — keep scalar.
+          }
+        }
+      }
       projectSettings[key] = String(val);
     }
   }
@@ -634,6 +865,14 @@ export async function buildSliceInput3MF(
     }
     projectSettings['filament_settings_id'] = filamentNames;
     projectSettings['default_filament_profile'] = [filamentNames[0]];
+  }
+
+  // Override nozzle temperatures when the user's chosen filament type differs
+  // from the original embedded one. Resolves the selected filament profile's
+  // nozzle_temperature through its inherits chain. Must run AFTER
+  // default_filament_profile is set above so it can find the profile name.
+  if (body.filamentSlots && body.filamentSlots.length > 0) {
+    overrideNozzleTemps(projectSettings, body.filamentSlots, originalFilamentTypes, body.engine, db);
   }
 
   // Bambuddy parity: NO post-user-settings padding / printer_model rewrite.
@@ -904,6 +1143,17 @@ function sanitizeSentinelsAndZeroFilaments(settings: Record<string, unknown>, en
   if (!g92Pattern.test(lc)) {
     settings.layer_change_gcode = `G92 E0\n${lc}`.trimStart();
   }
+  // Multi-material (single_extruder_multi_material=1) profiles also need
+  // G92 E0 in the toolchange gcode — exit 205 fires when relative-E is on and
+  // the slicer can't guarantee an extruder reset across filament swaps. Some
+  // lean user-imported process profiles ship change_filament_gcode as empty.
+  const semm = settings.single_extruder_multi_material;
+  if (semm === '1' || semm === 1) {
+    const cfg = typeof settings.change_filament_gcode === 'string' ? settings.change_filament_gcode : '';
+    if (!g92Pattern.test(cfg)) {
+      settings.change_filament_gcode = cfg ? `G92 E0\n${cfg}` : 'G92 E0';
+    }
+  }
 }
 
 export async function runSliceJob(
@@ -977,8 +1227,17 @@ export async function runSliceJob(
       );
 
       if (result.exitCode !== 0) {
-        const output = (result.stdout + '\n' + result.stderr).slice(-1000);
-        throw new Error(`Slicer exited with code ${result.exitCode}: ${output}`);
+        // Prefer stderr (OrcaSlicer emits validation messages there); widen
+        // from 1000→2000 chars so longer messages aren't truncated. OrcaSlicer
+        // writes some failures (config-parse rejection → bed-size fallback →
+        // "Nothing to be sliced") ONLY to its --logfile, not stdout/stderr —
+        // when output is empty, point at the logfile if it was kept.
+        const output = (result.stderr || result.stdout).slice(-2000).trim();
+        const logPath = path.join(workDir, 'slicer.log');
+        const hint = !output && fs.existsSync(logPath)
+          ? `\n[no stderr — see ${logPath}]`
+          : '';
+        throw new Error(`Slicer exited with code ${result.exitCode}: ${output}${hint}`);
       }
 
       db.updateJobStatus(jobId, 'completed');
@@ -1009,7 +1268,12 @@ export async function runSliceJob(
     // failure) — remove the workDir so failed slices don't accumulate on
     // disk. Success path keeps the dir (holds output gcode; removed later by
     // DELETE /api/jobs/:id). Mirrors models.ts clean-on-failure pattern.
-    try { fs.rmSync(workDir, { recursive: true, force: true }); } catch { /* best effort */ }
+    // Set SNORCAL_KEEP_FAILED_SLICE=1 to preserve for debugging.
+    if (process.env.SNORCAL_KEEP_FAILED_SLICE !== '1') {
+      try { fs.rmSync(workDir, { recursive: true, force: true }); } catch { /* best effort */ }
+    } else {
+      console.warn(`[slice] keeping failed workDir at ${workDir} (SNORCAL_KEEP_FAILED_SLICE=1)`);
+    }
     throw err;
   } finally {
     runningExecutors.delete(jobId);

@@ -26,8 +26,10 @@ export interface PrinterAdapter {
   /**
    * Upload a gcode/3mf file path from disk to the printer.
    * Returns printer-side path the file landed at.
+   * `plateNum` (1-indexed) is used by adapters that need to wrap raw gcode
+   * into a plate-specific 3MF container (bambuddy proxy).
    */
-  uploadFile(localPath: string, filename: string): Promise<string>;
+  uploadFile(localPath: string, filename: string, plateNum?: number): Promise<string>;
 
   /**
    * Start a print for an already-uploaded file.

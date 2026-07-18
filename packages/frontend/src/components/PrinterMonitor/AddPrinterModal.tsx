@@ -18,6 +18,10 @@ export function AddPrinterModal({ onClose, onAdded }: Props) {
   const [cameraStreamUrl, setCameraStreamUrl] = useState('');
   const [cameraSnapshotUrl, setCameraSnapshotUrl] = useState('');
   const [manualSlots, setManualSlots] = useState<number>(0);      // multi-extruder / CFS / direct-feed spool count
+  const [bambuddyMode, setBambuddyMode] = useState(false);        // bambu: route through bambuddy proxy vs direct MQTT
+  const [bambuddyUrl, setBambuddyUrl] = useState('');
+  const [bambuddyPrinterId, setBambuddyPrinterId] = useState<number | ''>('');
+  const [bambuddyApiKey, setBambuddyApiKey] = useState('');
   const [modelChoice, setModelChoice] = useState<string>('');     // '' | '__other__' | profile-name
   const [modelCustom, setModelCustom] = useState<string>('');     // free text when __other__
   const [availableModels, setAvailableModels] = useState<string[]>([]);
@@ -55,8 +59,12 @@ export function AddPrinterModal({ onClose, onAdded }: Props) {
   const submit = async () => {
     setError(null);
     if (!name.trim() || !ip.trim()) { setError('Name and IP required'); return; }
-    if (protocol === 'bambu' && (!serial.trim() || !accessCode.trim())) {
-      setError('Bambu requires serial and access code');
+    if (protocol === 'bambu' && !bambuddyMode && (!serial.trim() || !accessCode.trim())) {
+      setError('Bambu (direct) requires serial and access code');
+      return;
+    }
+    if (protocol === 'bambu' && bambuddyMode && (!bambuddyUrl.trim() || bambuddyPrinterId === '')) {
+      setError('Bambuddy mode requires proxy URL and printer ID');
       return;
     }
     setSubmitting(true);
@@ -73,6 +81,10 @@ export function AddPrinterModal({ onClose, onAdded }: Props) {
         cameraSnapshotUrl: cameraSnapshotUrl.trim() || undefined,
         model: modelChoice === '__other__' ? modelCustom.trim() : (modelChoice || undefined),
         manualSlots: protocol === 'moonraker' ? manualSlots : undefined,
+        connectionMode: protocol === 'bambu' ? (bambuddyMode ? 'bambuddy' : 'direct') : undefined,
+        bambuddyUrl: bambuddyMode ? bambuddyUrl.trim() || undefined : undefined,
+        bambuddyPrinterId: bambuddyMode && bambuddyPrinterId !== '' ? Number(bambuddyPrinterId) : undefined,
+        bambuddyApiKey: bambuddyMode ? bambuddyApiKey.trim() || undefined : undefined,
       });
       onAdded();
     } catch (e) {
@@ -160,17 +172,57 @@ export function AddPrinterModal({ onClose, onAdded }: Props) {
 
         {protocol === 'bambu' && (
           <>
-            <Field label="Serial Number">
-              <input value={serial} onChange={(e) => setSerial(e.target.value)} placeholder="00M00C000000000"
-                className="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-white" />
-            </Field>
-            <Field label="LAN Access Code (8-digit)">
-              <input value={accessCode} onChange={(e) => setAccessCode(e.target.value)} placeholder="12345678"
-                className="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-white" />
-            </Field>
-            <p className="text-xs text-gray-400">
-              Find on printer LCD: Settings → Network → LAN Access Code.
-            </p>
+            {/* Connection mode — direct MQTT vs bambuddy proxy */}
+            <div className="flex gap-2">
+              {([false, true] as const).map(mode => (
+                <button key={String(mode)} type="button" onClick={() => setBambuddyMode(mode)}
+                  className={`flex-1 px-3 py-1.5 rounded text-xs ${
+                    bambuddyMode === mode ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                  }`}>
+                  {mode ? 'Bambuddy proxy' : 'Direct LAN (MQTT)'}
+                </button>
+              ))}
+            </div>
+
+            {!bambuddyMode ? (
+              <>
+                <Field label="Serial Number">
+                  <input value={serial} onChange={(e) => setSerial(e.target.value)} placeholder="00M00C000000000"
+                    className="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-white" />
+                </Field>
+                <Field label="LAN Access Code (8-digit)">
+                  <input value={accessCode} onChange={(e) => setAccessCode(e.target.value)} placeholder="12345678"
+                    className="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-white" />
+                </Field>
+                <p className="text-xs text-gray-400">
+                  Find on printer LCD: Settings → Network → LAN Access Code.
+                </p>
+              </>
+            ) : (
+              <>
+                <Field label="Bambuddy URL">
+                  <input value={bambuddyUrl} onChange={(e) => setBambuddyUrl(e.target.value)}
+                    placeholder="http://100.122.105.27:8000"
+                    className="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-white" />
+                </Field>
+                <Field label="Bambuddy Printer ID">
+                  <input type="number" min={1} value={bambuddyPrinterId}
+                    onChange={(e) => setBambuddyPrinterId(e.target.value === '' ? '' : Number(e.target.value))}
+                    placeholder="1"
+                    className="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-white" />
+                </Field>
+                <Field label="Bambuddy API Key (optional)">
+                  <input type="password" value={bambuddyApiKey} onChange={(e) => setBambuddyApiKey(e.target.value)}
+                    placeholder="bb_... (blank if auth disabled)"
+                    className="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-white" />
+                </Field>
+                <p className="text-xs text-gray-400">
+                  Route through bambuddy instead of direct MQTT. Needed when bambuddy holds the printer&apos;s
+                  single MQTT connection. Find the printer ID in bambuddy&apos;s URL (e.g. /printers/<span className="text-gray-300">1</span>).
+                  API key required for print control (upload/start/pause) — create one in bambuddy → Settings → API Keys with control + queue permissions.
+                </p>
+              </>
+            )}
           </>
         )}
 

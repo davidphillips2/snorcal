@@ -53,6 +53,14 @@ export interface ProjectModel {
   name: string;
   faceCount: number;
   plateCount: number;
+  /** Backend plate index inside a multi-plate 3MF (1-based). Set when this pm
+   *  represents one plate of a multi-plate import. Undefined for single-plate
+   *  uploads and for user-created UI plates that don't map to a backend plate. */
+  backendPlateIndex?: number;
+  /** Object names extracted from the 3MF's model_settings.config for the plate
+   *  this pm represents. Used to label the plate tab with what's actually on
+   *  it (e.g. "Mickey1.step") instead of the meaningless filename. */
+  backendPlateObjectNames?: string[];
   plateId: string; // which plate this model belongs to
   rotation: Rotation3D;
   positionOffset: { x: number; y: number; z: number };
@@ -536,6 +544,15 @@ export default function App() {
   const isMobileUA = typeof navigator !== 'undefined'
     && /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
   const [viewer3DEnabled, setViewer3DEnabled] = useState(() => persisted.current?.viewer3DEnabled ?? !isMobileUA);
+  // Auto-disable 3D viewer on mobile when project has multiple plates. Each
+  // plate's STL can be 400k+ faces; loading any one OOM-kills iOS Safari
+  // before the user can toggle the viewer off. Re-enabled automatically if
+  // plates drop back to 1 (e.g. user deletes extra plates).
+  useEffect(() => {
+    if (isMobileUA && plates.length > 1 && viewer3DEnabled) {
+      setViewer3DEnabled(false);
+    }
+  }, [isMobileUA, plates.length, viewer3DEnabled]);
   const [selectedPrinterId, setSelectedPrinterId] = useState<string | null>(() => persisted.current?.selectedPrinterId ?? null);
   const [showSidebar, setShowSidebar] = useState(() => persisted.current?.showSidebar ?? false);
   const [showSettings, setShowSettings] = useState(() => persisted.current?.showSettings ?? true);
@@ -579,9 +596,21 @@ export default function App() {
     }
     api.listPrinters().then(list => {
       const p = list.find(x => x.id === targetPrinterId);
-      // DB record may have null bedVolume (older entries) — fall back to
-      // legacy preset by printer id so the preview still sizes correctly.
-      const legacy = !p?.bedVolume ? PRINTERS.find(lp => lp.id === p?.id)?.buildVolume : undefined;
+      // DB record may have null bedVolume (older entries, or model field not
+      // matched against machine profile). Fall back to PRINTERS preset by
+      // model/name — DB printer rows use uuid ids that never equal preset
+      // ids (e.g. "bambu_p1s"), so the previous `lp.id === p?.id` lookup
+      // always missed. Without this, gcode-preview defaults to 200x200 and
+      // objects centered for a 256/270-bed printer appear shifted off plate.
+      const legacy = !p?.bedVolume
+        ? PRINTERS.find(lp => {
+            const model = (p?.model ?? '').toLowerCase();
+            const name = (p?.name ?? '').toLowerCase();
+            return (model && lp.name.toLowerCase() === model)
+              || (name && lp.name.toLowerCase() === name)
+              || (model && lp.name.toLowerCase().includes(model));
+          })?.buildVolume
+        : undefined;
       setBedVolume(p?.bedVolume ?? legacy ?? null);
     }).catch(() => {});
   }, [targetPrinterId]);
@@ -701,6 +730,12 @@ export default function App() {
   // Skip entirely when 3D viewer is off — colors only needed for painting UI.
   useEffect(() => {
     if (!viewer3DEnabled) return;
+    // Mobile multi-plate: only fetch colors for the active plate. Each blob
+    // is faceCount × 9 bytes (non-indexed) — 4-plate imports hit 10MB+ and
+    // OOM-kill iOS Safari before the user can toggle the viewer off.
+    const isMobileUA = typeof navigator !== 'undefined'
+      && /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+    const mobileMultiPlate = isMobileUA && plates.length > 1;
     const seen = new Set<string>();
     // Parents whose geometry is replaced by per-part STLs — their merged face_colors
     // blob has indices that don't map to any rendered mesh, so skip the fetch.
@@ -711,6 +746,7 @@ export default function App() {
     );
     for (const pm of projectModels) {
       if (pm.faceColors !== null) continue;
+      if (mobileMultiPlate && pm.plateId !== activePlateId) continue;
       // Negatives/modifiers/support use solid translucent material — no per-face paint.
       if (pm.kind === 'negative' || pm.kind === 'modifier' || pm.kind === 'support') continue;
       // Parents covered by per-part STLs: their merged blob has no rendered target.
@@ -734,16 +770,35 @@ export default function App() {
       }
       if (seen.has(pm.modelId)) continue;
       seen.add(pm.modelId);
-      api.getModelColors(pm.modelId).then(colors => {
-        setProjectModels(prev => prev.map(p => p.modelId === pm.modelId ? { ...p, faceColors: colors } : p));
+      const plate = pm.backendPlateIndex;
+      api.getModelColors(pm.modelId, plate).then(colors => {
+        setProjectModels(prev => prev.map(p =>
+          p.modelId === pm.modelId && p.backendPlateIndex === plate
+            ? { ...p, faceColors: colors }
+            : p,
+        ));
       }).catch(() => {});
     }
-  }, [projectModels.length, viewer3DEnabled]);
+  }, [projectModels.length, viewer3DEnabled, plates.length, activePlateId]);
 
-  // Load default settings when engine changes
+  // Load default settings when engine actually changes. Previously this effect
+  // ran on every mount (engine is just the initial value, deps compare ===),
+  // overwriting persisted settings — user imports 3MF, applies wall_loops=6,
+  // reloads, this effect fires setSettings(backendDefaults) and silently
+  // wipes the applied value back to default. Gate on whether we already have
+  // persisted settings for this engine; only seed defaults on first run.
+  const seededEngineRef = useRef<string | null>(null);
   useEffect(() => {
+    const hadPersisted = persisted.current !== null || Object.keys(settings).length > 0;
+    if (hadPersisted && seededEngineRef.current === engine) return;
+    seededEngineRef.current = engine;
     api.getDefaultSettings(engine).then((data) => {
-      if (data?.process) setSettings(data.process);
+      if (data?.process) {
+        // Merge over existing so user edits + applied 3MF values survive —
+        // backend defaults are just a base layer for keys the user hasn't
+        // touched.
+        setSettings(prev => ({ ...data.process, ...prev }));
+      }
     }).catch(console.error);
   }, [engine]);
 
@@ -760,6 +815,11 @@ export default function App() {
           kind: m.kind, linkedTo: m.linkedTo, settings: m.settings,
           negativePartRef: m.negativePartRef,
           printablePartRef: m.printablePartRef,
+          // Multi-plate tags — without these, reload forgets which backend
+          // plate a pm maps to (wrong STL/slice target) + loses object-name
+          // summaries in the plate tabs.
+          backendPlateIndex: m.backendPlateIndex,
+          backendPlateObjectNames: m.backendPlateObjectNames,
         })),
         activeModelIndex,    // legacy — kept for back-compat restore
         selectedIndices: Array.from(selectedIndices),
@@ -855,7 +915,67 @@ export default function App() {
     setIsUploading(true);
     try {
       const model = await api.uploadModel(file);
-      const offset = projectModels.length * 50;
+      await addModelToProject(model);
+    } catch (err) {
+      alert(`Upload failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setIsUploading(false);
+    }
+  }, [projectModels.length]);
+
+  /** Shared insertion logic for handleUpload + handleUploadMany.
+   *  Multi-plate 3MFs expand to one UI plate per backend plate; each pm
+   *  carries `backendPlateIndex` so STL fetch + slice request hit the right
+   *  backend plate. Single-plate uploads land on the active UI plate as-is. */
+  const addModelToProject = useCallback(async (model: {
+    id: string; name: string; faceCount: number; plateCount: number;
+    bounds: { x: number; y: number; z: number };
+    boundsMin?: { x: number; y: number; z: number };
+    boundsMax?: { x: number; y: number; z: number };
+    plates?: Array<{ index: number; faceCount: number; bounds: { x: number; y: number; z: number }; objectNames?: string[] }>;
+    negativeParts?: Array<{ plateIndex: number; partIndex: number; faceCount: number; boundsMin?: { x: number; y: number; z: number }; boundsMax?: { x: number; y: number; z: number } }>;
+    parts?: Array<{ plateIndex: number; partIndex: number; faceCount: number; name?: string; extruder?: number; boundsMin?: { x: number; y: number; z: number }; boundsMax?: { x: number; y: number; z: number } }>;
+  }) => {
+    const baseOffset = projectModels.length * 50;
+
+    // Multi-plate: one UI plate per backend plate. Each pm tags backendPlateIndex
+    // so /files/model/:id?plate=N + slice plateIndex + color save/load all hit
+    // the right backend plate.
+    if ((model.plateCount ?? 1) > 1 && model.plates && model.plates.length > 0) {
+      const newPlates: Array<{ id: string; name: string }> = [];
+      const newPms: ProjectModel[] = [];
+      model.plates.forEach((p, i) => {
+        const plateId = `plate-${Date.now()}-${i}`;
+        // Tab label stays short ("Plate N") so the horizontal tab strip
+        // doesn't explode in width. Object names go into the subtitle line
+        // below the tab where they have room to wrap.
+        const label = `Plate ${p.index}`;
+        newPlates.push({ id: plateId, name: label });
+        newPms.push({
+          uid: makeUid(),
+          modelId: model.id,
+          name: label,
+          faceCount: p.faceCount,
+          plateCount: model.plateCount,
+          backendPlateIndex: p.index,
+          backendPlateObjectNames: p.objectNames,
+          plateId,
+          rotation: { x: 0, y: 0, z: 0 },
+          positionOffset: { x: 0, y: 0, z: 0 },
+          scale: { ...DEFAULT_SCALE },
+          mirror: { ...DEFAULT_MIRROR },
+          faceColors: null,
+          visible: true,
+          kind: 'model',
+        });
+      });
+      setPlates(prev => [...prev, ...newPlates]);
+      updateModels(prev => [...prev, ...newPms]);
+      if (newPlates.length > 0) {
+        setActivePlateId(newPlates[0].id);
+        selectSingle(projectModels.length);
+      }
+    } else {
       const newPm: ProjectModel = {
         uid: makeUid(),
         modelId: model.id,
@@ -864,34 +984,21 @@ export default function App() {
         plateCount: model.plateCount ?? 1,
         plateId: activePlateId,
         rotation: { x: 0, y: 0, z: 0 },
-        positionOffset: { x: offset, y: 0, z: 0 },
+        positionOffset: { x: baseOffset, y: 0, z: 0 },
         scale: { ...DEFAULT_SCALE },
         mirror: { ...DEFAULT_MIRROR },
         faceColors: null,
         visible: true,
         kind: 'model',
       };
-
-      // Surface embedded negative parts (e.g. MakerWorld keyring holes) as
-      // child ProjectModels kind=negative. Each gets a delta offset so the
-      // part lines up with the parent after STLViewer's per-mesh centering.
-      const negativePms = buildNegativeChildPms(model, activePlateId, offset);
-      // Surface printable sub-objects (kind=part) — each `<object>` in a
-      // 3MF assembly becomes its own row, interactable independently.
+      const negativePms = buildNegativeChildPms(model, activePlateId, baseOffset);
       const partPms = buildPrintableChildPms(model, activePlateId);
-
       updateModels(prev => [...prev, newPm, ...partPms, ...negativePms]);
-      selectSingle(projectModels.length); // select new model
-
-      // 3MF uploads may carry filament_colour/type arrays in their embedded
-      // project_settings.config — populate slots the same way MW imports do.
-      await applySourceSettings(model.id);
-    } catch (err) {
-      alert(`Upload failed: ${err instanceof Error ? err.message : String(err)}`);
-    } finally {
-      setIsUploading(false);
+      selectSingle(projectModels.length);
     }
-  }, [projectModels.length]);
+
+    await applySourceSettings(model.id);
+  }, [projectModels.length, activePlateId, updateModels]);
 
   // Sequential multi-file upload — preserves order, sets isUploading once for batch
   const handleUploadMany = useCallback(async (files: File[]) => {
@@ -901,24 +1008,7 @@ export default function App() {
       for (const file of files) {
         try {
           const model = await api.uploadModel(file);
-          const offset = projectModels.length * 50;
-          const newPm: ProjectModel = {
-            uid: makeUid(),
-            modelId: model.id,
-            name: model.name,
-            faceCount: model.faceCount,
-            plateCount: model.plateCount ?? 1,
-            plateId: activePlateId,
-            rotation: { x: 0, y: 0, z: 0 },
-            positionOffset: { x: offset, y: 0, z: 0 },
-            scale: { ...DEFAULT_SCALE },
-            mirror: { ...DEFAULT_MIRROR },
-            faceColors: null,
-            visible: true,
-            kind: 'model',
-          };
-          updateModels(prev => [...prev, newPm]);
-          selectSingle(projectModels.length);
+          await addModelToProject(model);
         } catch (err) {
           console.error(`Upload failed for ${file.name}:`, err);
         }
@@ -926,49 +1016,24 @@ export default function App() {
     } finally {
       setIsUploading(false);
     }
-  }, [projectModels.length, activePlateId, updateModels]);
+  }, [addModelToProject]);
 
   // MakerWorld import — backend already registered the 3MF, just fetch metadata + add to scene
   const handleMakerworldImported = useCallback(async (m: { modelId: string; name: string; plateCount: number }) => {
     try {
       const meta = await api.getModel(m.modelId) as any;
-      const offset = projectModels.length * 50;
-      const newPm: ProjectModel = {
-        uid: makeUid(),
-        modelId: m.modelId,
+      await addModelToProject({
+        id: m.modelId,
         name: m.name,
         faceCount: meta?.faceCount ?? 0,
         plateCount: meta?.plateCount ?? m.plateCount ?? 1,
-        plateId: activePlateId,
-        rotation: { x: 0, y: 0, z: 0 },
-        positionOffset: { x: offset, y: 0, z: 0 },
-        scale: { ...DEFAULT_SCALE },
-        mirror: { ...DEFAULT_MIRROR },
-        faceColors: null,
-        visible: true,
-        kind: 'model',
-      };
-      // Surface embedded negatives (same path as plain uploads). Without this,
-      // MakerWorld imports silently lost their cutters / keyring holes.
-      const negativePms = buildNegativeChildPms(
-        {
-          id: m.modelId,
-          name: m.name,
-          negativeParts: meta?.negativeParts,
-          boundsMin: meta?.boundsMin,
-          boundsMax: meta?.boundsMax,
-        },
-        activePlateId,
-        offset,
-      );
-      // Surface printable sub-objects (same path as plain uploads).
-      const partPms = buildPrintableChildPms(
-        { id: m.modelId, name: m.name, parts: meta?.parts },
-        activePlateId,
-      );
-      updateModels(prev => [...prev, newPm, ...partPms, ...negativePms]);
-      selectSingle(projectModels.length);
-
+        bounds: meta?.bounds ?? { x: 0, y: 0, z: 0 },
+        boundsMin: meta?.boundsMin,
+        boundsMax: meta?.boundsMax,
+        plates: meta?.plates,
+        negativeParts: meta?.negativeParts,
+        parts: meta?.parts,
+      });
       // MakerWorld imports explicitly overwrite project settings (user opted
       // into the bundle's full slicer config). Plain uploads use the same
       // helper but skip the settings overwrite.
@@ -976,7 +1041,7 @@ export default function App() {
     } catch (err) {
       alert(`MakerWorld import failed: ${err instanceof Error ? err.message : String(err)}`);
     }
-  }, [projectModels.length, activePlateId, updateModels]);
+  }, [addModelToProject]);
 
   /**
    * Fetch a model's embedded project_settings.config and sync its
@@ -1037,29 +1102,22 @@ export default function App() {
       setFilamentSlots(newSlots);
     }
 
-    // Detect whether the embedded printer/process settings differ from the
-    // user's current selection. If so, prompt instead of silently overlaying.
-    // Filters _gcode keys (preserve user's printer-specific macros on apply).
-    // Detect whether the embedded printer/process settings differ from the
-    // user's current selection. If so, prompt instead of silently overlaying.
+    // Auto-apply ONLY filament color/type metadata (visible slot state).
+    // Full printer/process/profile overlay waits for explicit user Apply
+    // via the banner below — auto-applying silently overwrote user's PETG
+    // choice + bed_type + per-key numeric edits every reload.
     const cur = (k: string): string | undefined => {
       const v = sourceSettings[k];
       if (v == null) return undefined;
       return typeof v === 'string' ? v : JSON.stringify(v);
     };
-    // Only consider a small allowlist of keys that signal "this bundle was
-    // sliced for a different printer/process" — avoids prompting on noise.
-    const SIGNAL_KEYS = ['printer_model', 'printer_settings_id', 'process_class', 'filament_settings_id'];
-    const differs = SIGNAL_KEYS.some(k => cur(k) !== undefined && cur(k) !== settings[k]);
-    if (differs) {
-      const printerModel = cur('printer_model') ?? '';
-      const process = cur('process_class') ?? cur('print_settings_id') ?? '';
-      const summary = [printerModel, process].filter(Boolean).join(' · ') || 'embedded slicer profile';
-      // Keep the RAW blob (not a coerced copy) — the synthesize endpoint
-      // needs the original nested/array values to build profiles correctly.
-      setEmbeddedSettingsPrompt({ blob: sourceSettings, summary });
-    }
-  }, [settings]);
+    const printerModel = cur('printer_model') ?? '';
+    const process = cur('print_settings_id') ?? cur('process_class') ?? '';
+    const summary = [printerModel, process].filter(Boolean).join(' · ') || 'embedded slicer profile';
+    // Keep the RAW blob — synthesize endpoint needs original nested/array
+    // values to build profiles correctly.
+    setEmbeddedSettingsPrompt({ blob: sourceSettings, summary });
+  }, []);
 
   // Apply embedded settings: synthesize profiles into the DB (named by the
   // blob's *_settings_id keys) so the dropdowns can select them, then overlay
@@ -1076,13 +1134,8 @@ export default function App() {
         filament: names.filament ?? prev.filament,
       }));
     } catch (err) {
-      // Synthesis failed (e.g. no ids in blob) — non-fatal; fall through to
-      // the raw overlay so the user still gets the per-key settings.
       console.warn('synthesizeEmbeddedProfiles failed:', err);
     }
-    // Overlay raw numeric/string settings (layer height, temps, speeds, etc.)
-    // so per-key values the profiles don't capture still take effect. Skip
-    // _gcode keys to preserve the user's printer-specific macros.
     const coerced: Record<string, string> = {};
     for (const [k, v] of Object.entries(blob)) {
       if (v == null || k.endsWith('_gcode')) continue;
@@ -1145,7 +1198,7 @@ export default function App() {
         // MUST await before slice — fire-and-forget lets sliceModels beat the
         // save to the server, producing a stale-color 3MF.
         saves.push(
-          api.saveFaceColors(pm.modelId, colors, pm.plateCount > 1 ? plateIndex : undefined)
+          api.saveFaceColors(pm.modelId, colors, pm.backendPlateIndex ?? (pm.plateCount > 1 ? plateIndex : undefined))
             .catch(err => console.error('saveFaceColors failed', pm.modelId, err)),
         );
         // Mirror the saved blob into ProjectModel state so a later STLViewer
@@ -1185,6 +1238,27 @@ export default function App() {
     Object.assign(processSettings, settings);
     const firstPlateIdx = plates.findIndex(p => p.id === models[0].plateId) + 1 || 1;
     const anyMultiPlate = models.some(m => m.plateCount > 1);
+    const backendIdx = models[0].backendPlateIndex;
+
+    // Auto-detect multi-material: count distinct extruder IDs across the
+    // painted faces of every model being sliced. ≥2 unique extruders means
+    // the model uses 2+ filaments in a single print (multi-color paint,
+    // multi-material assembly) → slicer needs the full slot list + flush
+    // volumes + T<n> toolchange emission. With <2 unique, send only the
+    // primary slot — otherwise an imported 3MF carrying 4 AMS-bay colours
+    // would force a 4-filament slice for what's physically a single-spool
+    // print. Manual toggle still ORs in (user can force multi-material
+    // e.g. for support/interface on a different extruder, which the paint
+    // data doesn't reflect).
+    const usedExtruders = new Set<number>();
+    for (const pm of models) {
+      if (pm.faceColors) {
+        for (const e of pm.faceColors) usedExtruders.add(e);
+      }
+    }
+    const autoMulti = usedExtruders.size >= 2;
+    const effectiveMulti = multiMaterial.enabled || autoMulti;
+
     return {
       models: models.map(pm => ({
         modelId: pm.modelId,
@@ -1201,11 +1275,13 @@ export default function App() {
         printablePartRef: pm.printablePartRef,
       })),
       engine,
-      plateIndex: anyMultiPlate ? firstPlateIdx : undefined,
+      plateIndex: backendIdx ?? (anyMultiPlate ? firstPlateIdx : undefined),
       settings: { process: processSettings, machine: {}, filaments: [{}] },
       profiles: selectedProfiles,
-      multiMaterial: multiMaterial.enabled ? multiMaterial : undefined,
-      filamentSlots: filamentSlots.length > 1 ? filamentSlots : undefined,
+      multiMaterial: effectiveMulti ? multiMaterial : undefined,
+      filamentSlots: filamentSlots.length > 0
+        ? (effectiveMulti ? filamentSlots : [filamentSlots[0]])
+        : undefined,
       buildVolume: bedVolume ?? undefined,
       printerId: targetPrinterId ?? undefined,
     } as const;
@@ -1280,7 +1356,7 @@ export default function App() {
     try {
       const colors = extractFaceColors(mesh.geometry);
       const plateIndex = plates.findIndex(p => p.id === pm.plateId) + 1 || 1;
-      await api.saveFaceColors(pm.modelId, colors, pm.plateCount > 1 ? plateIndex : undefined);
+      await api.saveFaceColors(pm.modelId, colors, pm.backendPlateIndex ?? (pm.plateCount > 1 ? plateIndex : undefined));
     } catch (err) { console.error('Save failed:', err); }
   }, [activeModelIndex, projectModels, plates]);
 
@@ -1341,13 +1417,20 @@ export default function App() {
     const printer = printers.find(p => p.id === targetPrinterId);
     if (!printer) { alert('Target printer not found'); return; }
 
-    // Check if remap UI is needed: gcode has >1 filament, OR printer has multi-slots (AMS or manual)
+    // Check if the send dialog is needed. Bambu printers always need the
+    // dialog — print options (bed leveling, flow cali, vibration comp,
+    // timelapse) apply on every send, and AMS mapping may be needed even
+    // for single-filament prints. Moonraker/Klipper only needs the dialog
+    // when filament remapping is required (multi-filament gcode or manual
+    // slots on the printer).
     let filaments: api.JobFilament[] = [];
     try { filaments = await api.getJobFilaments(jobId); } catch { /* ignore */ }
     const usedCount = filaments.filter(f => f.used).length;
     const hasAms = printer.protocol === 'bambu' && printerStatuses[targetPrinterId]?.ams && printerStatuses[targetPrinterId]!.ams!.length > 0;
     const hasManualSlots = (printer.manualSlots ?? 0) > 0;
-    const needsRemap = usedCount > 1 || ((hasAms || hasManualSlots) && filaments.length > 0);
+    const needsRemap = printer.protocol === 'bambu'
+      || usedCount > 1
+      || ((hasAms || hasManualSlots) && filaments.length > 0);
 
     if (needsRemap) {
       setRemapJobId(jobId);
@@ -1838,6 +1921,52 @@ export default function App() {
     };
   }, [sceneRefs, paintMode, projectModels, activeModelIndex]);
 
+  // Plate tabs — single source of truth. Rendered in BOTH the sidebar (desktop
+  // layout + mobile-with-viewer-on) and the viewer-off settings panel, so
+  // mobile users without 3D can still switch plates without opening the sidebar.
+  const plateTabs = plates.length > 1 && (
+    <PlateTabs
+      plates={plates.map(p => {
+        const pms = projectModels.filter(m => m.plateId === p.id && m.kind === 'model');
+        // Prefer backend-extracted object names (real source-of-truth from the
+        // 3MF). Fall back to the pm name with extension/suffix stripped.
+        const cleanName = (n: string) => n
+          .replace(/\s*\(plate\s+\d+\)\s*$/i, '')
+          .replace(/\.(3mf|stl|step|stp)$/i, '');
+        const summary = pms.map(m => m.backendPlateObjectNames?.length
+          ? m.backendPlateObjectNames.join(', ')
+          : cleanName(m.name),
+        ).filter(Boolean).join(', ') || undefined;
+        return {
+          id: p.id,
+          name: p.name,
+          modelCount: pms.length,
+          summary,
+        };
+      })}
+      activePlateId={activePlateId}
+      onSelect={(id) => { setActivePlateId(id); selectSingle(null); }}
+      onRename={handleRenamePlate}
+      onDuplicate={handleDuplicatePlate}
+      onDelete={handleDeletePlate}
+      onReorder={handleReorderPlates}
+      onAdd={() => {
+        const n = plates.length + 1;
+        const id = `plate-${Date.now()}`;
+        setPlates(prev => [...prev, { id, name: `Plate ${n}` }]);
+        setActivePlateId(id);
+        selectSingle(null);
+      }}
+      onClearAll={() => {
+        const defaultId = `plate-${Date.now()}`;
+        setPlates([{ id: defaultId, name: 'Plate 1' }]);
+        setActivePlateId(defaultId);
+        setProjectModels([]);
+        selectSingle(null);
+      }}
+    />
+  );
+
   const sidebarContent = (
     <div className="flex flex-col h-full">
       {/* Header */}
@@ -1949,22 +2078,7 @@ export default function App() {
       </div>
 
       {/* Plate tabs */}
-      <PlateTabs
-        plates={plates.map(p => ({ id: p.id, name: p.name, modelCount: projectModels.filter(m => m.plateId === p.id).length }))}
-        activePlateId={activePlateId}
-        onSelect={(id) => { setActivePlateId(id); selectSingle(null); }}
-        onRename={handleRenamePlate}
-        onDuplicate={handleDuplicatePlate}
-        onDelete={handleDeletePlate}
-        onReorder={handleReorderPlates}
-        onAdd={() => {
-          const n = plates.length + 1;
-          const id = `plate-${Date.now()}`;
-          setPlates(prev => [...prev, { id, name: `Plate ${n}` }]);
-          setActivePlateId(id);
-          selectSingle(null);
-        }}
-      />
+      {plateTabs}
 
       {/* Slice buttons */}
       <div className="p-3 border-t border-gray-700 shrink-0 space-y-2">
@@ -2066,14 +2180,15 @@ export default function App() {
       </aside>
 
       <main className="flex-1 flex flex-col overflow-hidden relative">
-        {/* Mobile header — hidden when 3D viewer off (full-screen settings takes over) */}
-        {(!isMobileUA || viewer3DEnabled) && (
+        {/* Mobile header — always visible so sidebar (plate tabs, settings,
+            jobs) is reachable even when 3D viewer is off. Previously gated
+            on viewer3DEnabled, which trapped the user in the slice-settings
+            full-screen panel on multi-plate imports (viewer auto-disables). */}
         <div className="md:hidden flex items-center gap-3 px-3 py-2 bg-gray-800 border-b border-gray-700 shrink-0">
           <button onClick={() => setShowSidebar(!showSidebar)} className="p-1.5 rounded-lg bg-gray-700 text-gray-300 hover:bg-gray-600 transition">
             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" /></svg>
           </button>
         </div>
-        )}
 
         {/* 3D Viewer */}
         <div className="flex-1 relative overflow-hidden">
@@ -2113,6 +2228,11 @@ export default function App() {
                     Show 3D viewer
                   </button>
                 </div>
+
+                {/* Plate tabs — surfaced here so mobile users with viewer off
+                    can switch plates without opening the sidebar. Sidebar
+                    copy stays too (desktop + mobile-with-viewer-on paths). */}
+                {plateTabs}
 
                 {/* Objects */}
                 <ObjectListPanel
@@ -2232,14 +2352,58 @@ export default function App() {
           {sceneRefs && !previewJobId && viewer3DEnabled && (() => {
             const isMobile = typeof navigator !== 'undefined'
               && /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+            // Mobile multi-plate: any single plate's STL can be 400k+ faces
+            // and OOM-kills iOS Safari on its own. Block the viewer entirely
+            // and tell the user to slice directly or use desktop. Slicing
+            // doesn't need geometry in memory — backend reads STL from disk.
+            if (isMobile && plates.length > 1) {
+              return (
+                <div className="absolute inset-0 overflow-auto p-3 space-y-2">
+                  <div className="text-xs text-gray-500 pb-1">
+                    3D viewer off for multi-plate on mobile. Tap a plate to select it; slice runs server-side.
+                  </div>
+                  {plates.map(pl => {
+                    const pms = projectModels.filter(m => m.plateId === pl.id && m.kind === 'model');
+                    const isActive = pl.id === activePlateId;
+                    return (
+                      <button
+                        key={pl.id}
+                        onClick={() => { setActivePlateId(pl.id); selectSingle(null); }}
+                        className={`w-full text-left rounded p-2 border transition-colors ${isActive ? 'bg-gray-700 border-gray-500' : 'bg-gray-800 border-gray-700'}`}
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="text-xs text-white font-medium truncate">{pl.name}</div>
+                          <div className="text-[10px] text-gray-500 flex-shrink-0">
+                            {pms.length === 0 ? 'empty' : `${pms.length} object${pms.length > 1 ? 's' : ''}`}
+                          </div>
+                        </div>
+                        {pms.map(pm => (
+                          <div key={pm.uid} className="mt-1 flex items-center gap-2 text-[11px] text-gray-400">
+                            <span
+                              className="w-3 h-3 rounded-sm border border-gray-600 flex-shrink-0"
+                              style={{ backgroundColor: pm.faceColors && pm.faceColors.length >= 3
+                                ? `rgb(${pm.faceColors[0]},${pm.faceColors[1]},${pm.faceColors[2]})`
+                                : '#9ca3af' }}
+                            />
+                            <span className="truncate flex-1">{pm.name}</span>
+                            <span className="text-gray-600 flex-shrink-0">{(pm.faceCount / 1000).toFixed(0)}k</span>
+                          </div>
+                        ))}
+                      </button>
+                    );
+                  })}
+                </div>
+              );
+            }
             // Parent renders alongside its printable parts so user can
             // select + paint either. (Was filtered for perf, but that
             // blocked painting the merged main object.)
             const visible = projectModels.filter(m => m.visible);
-            // Mobile: only active model (if any). Desktop: all visible.
-            const capped = isMobile && activeModelIndex != null
-              ? visible.filter((_, i) => i === activeModelIndex)
-              : isMobile ? visible.slice(0, 1) : visible;
+            // Mobile single-plate: only render the first visible pm. Desktop:
+            // render all visible (multi-material layout side-by-side).
+            const capped = isMobile
+              ? visible.filter(m => m.plateId === activePlateId).slice(0, 1)
+              : visible;
             return capped.map((pm) => {
             const plateOff = plateOffsets[pm.plateId] ?? { x: 0, y: 0, z: 0 };
             const combined = new THREE.Vector3(
@@ -2255,7 +2419,7 @@ export default function App() {
                     ? api.getNegativePartUrl(pm.negativePartRef.parentModelId, pm.negativePartRef.plate, pm.negativePartRef.part)
                     : pm.printablePartRef
                       ? api.getPrintablePartUrl(pm.printablePartRef.parentModelId, pm.printablePartRef.plate, pm.printablePartRef.part)
-                      : api.getModelUrl(pm.modelId)
+                      : api.getModelUrl(pm.modelId, pm.backendPlateIndex)
                 }
                 faceColors={pm.faceColors || undefined}
                 rotation={pm.rotation}
@@ -2468,8 +2632,12 @@ export default function App() {
             </div>
           )}
 
-          {/* Empty state — no models on active plate */}
-          {!hasVisibleModels && !previewJobId && activePlateModels.length === 0 && projectModels.length === 0 && (
+          {/* Empty state — no models on active plate. Skipped when the 3D
+              viewer is off: the viewer-off settings panel already carries its
+              own upload affordance (ObjectListPanel), and this overlay would
+              sit on top (z-10 > z-auto) and swallow clicks meant for the
+              MakerWorld button + other settings-panel controls. */}
+          {viewer3DEnabled && !hasVisibleModels && !previewJobId && activePlateModels.length === 0 && projectModels.length === 0 && (
             <div className="absolute inset-0 flex items-center justify-center text-gray-500 z-10 cursor-pointer"
               onClick={() => uploadInputRef.current?.click()}
               onDrop={(e) => {

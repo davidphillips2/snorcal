@@ -30,6 +30,7 @@ export class Db {
     const cols: Array<{ table: string; col: string; where?: string }> = [
       { table: 'printers', col: 'access_code' },
       { table: 'printers', col: 'api_key' },
+      { table: 'printers', col: 'bambuddy_api_key' },
       { table: 'app_settings', col: 'value', where: "key = 'bambu_cloud_token'" },
     ];
     for (const { table, col, where } of cols) {
@@ -251,11 +252,15 @@ export class Db {
     camera_snapshot_url?: string | null;
     model?: string | null;
     manual_slots?: number;
+    connection_mode?: string | null;
+    bambuddy_url?: string | null;
+    bambuddy_printer_id?: number | null;
+    bambuddy_api_key?: string | null;
   }) {
     this.db.prepare(`
-      INSERT INTO printers (id, name, protocol, ip, port, serial, access_code, api_key, camera_ip, camera_stream_url, camera_snapshot_url, model, manual_slots)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(p.id, p.name, p.protocol, p.ip, p.port, p.serial ?? null, enc(p.access_code), enc(p.api_key), p.camera_ip ?? null, p.camera_stream_url ?? null, p.camera_snapshot_url ?? null, p.model ?? null, p.manual_slots ?? 0);
+      INSERT INTO printers (id, name, protocol, ip, port, serial, access_code, api_key, camera_ip, camera_stream_url, camera_snapshot_url, model, manual_slots, connection_mode, bambuddy_url, bambuddy_printer_id, bambuddy_api_key)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(p.id, p.name, p.protocol, p.ip, p.port, p.serial ?? null, enc(p.access_code), enc(p.api_key), p.camera_ip ?? null, p.camera_stream_url ?? null, p.camera_snapshot_url ?? null, p.model ?? null, p.manual_slots ?? 0, p.connection_mode ?? null, p.bambuddy_url ?? null, p.bambuddy_printer_id ?? null, enc(p.bambuddy_api_key));
   }
 
   updatePrinterModel(id: string, model: string | null) {
@@ -273,6 +278,10 @@ export class Db {
     model?: string | null;
     manual_slots?: number;
     manual_filaments?: string | null;
+    connection_mode?: string | null;
+    bambuddy_url?: string | null;
+    bambuddy_printer_id?: number | null;
+    bambuddy_api_key?: string | null;
   }) {
     const sets: string[] = [];
     const vals: (string | number | null)[] = [];
@@ -286,6 +295,10 @@ export class Db {
     if (fields.model !== undefined) { sets.push('model = ?'); vals.push(fields.model); }
     if (fields.manual_slots !== undefined) { sets.push('manual_slots = ?'); vals.push(fields.manual_slots); }
     if (fields.manual_filaments !== undefined) { sets.push('manual_filaments = ?'); vals.push(fields.manual_filaments); }
+    if (fields.connection_mode !== undefined) { sets.push('connection_mode = ?'); vals.push(fields.connection_mode); }
+    if (fields.bambuddy_url !== undefined) { sets.push('bambuddy_url = ?'); vals.push(fields.bambuddy_url); }
+    if (fields.bambuddy_printer_id !== undefined) { sets.push('bambuddy_printer_id = ?'); vals.push(fields.bambuddy_printer_id); }
+    if (fields.bambuddy_api_key !== undefined) { sets.push('bambuddy_api_key = ?'); vals.push(enc(fields.bambuddy_api_key)); }
     if (sets.length === 0) return;
     vals.push(id);
     this.db.prepare(`UPDATE printers SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
@@ -579,6 +592,10 @@ export interface DbPrinter {
   camera_snapshot_url: string | null;
   model: string | null;
   manual_slots: number;   // multi-material slot count for printers with no live introspection (e.g. Creality CFS)
+  connection_mode: string | null;  // 'direct' (default null) | 'bambuddy' — Bambu only
+  bambuddy_url: string | null;
+  bambuddy_printer_id: number | null;
+  bambuddy_api_key: string | null;
   last_status: string | null;
   last_seen: string | null;
   created_at: string;

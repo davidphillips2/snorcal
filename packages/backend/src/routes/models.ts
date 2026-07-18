@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { Db } from '../db/index.js';
 import { parseSTL, ensureDir, getModelsDir } from '../services/model-parser.js';
-import { parse3MF, writePositionsToSTL, countPlates } from '../services/threemf-parser.js';
+import { parse3MF, writePositionsToSTL, countPlates, getPlateObjectNames } from '../services/threemf-parser.js';
 import { extractProjectSettings } from '../services/makerworld.js';
 
 const MAX_FACES = 1_500_000;
@@ -21,6 +21,7 @@ export async function register3MFModel(
   boundsMin?: { x: number; y: number; z: number };
   boundsMax?: { x: number; y: number; z: number };
   plateCount: number;
+  plates?: Array<{ index: number; faceCount: number; bounds: { x: number; y: number; z: number }; objectNames?: string[] }>;
   negativeParts?: Array<{ plateIndex: number; partIndex: number; faceCount: number; boundsMin?: { x: number; y: number; z: number }; boundsMax?: { x: number; y: number; z: number } }>;
   parts?: Array<{ plateIndex: number; partIndex: number; faceCount: number; name?: string; extruder?: number; boundsMin?: { x: number; y: number; z: number }; boundsMax?: { x: number; y: number; z: number } }>;
 }> {
@@ -30,10 +31,11 @@ export async function register3MFModel(
 
   try {
     const plateCount = await countPlates(buffer);
+    const plateObjectNames = await getPlateObjectNames(buffer);
     const originalPath = path.join(modelDir, filename);
     fs.writeFileSync(originalPath, buffer);
 
-    const plateData: { index: number; faceCount: number; bounds: { x: number; y: number; z: number }; positions: Float32Array; faceColors?: Uint8Array }[] = [];
+    const plateData: { index: number; faceCount: number; bounds: { x: number; y: number; z: number }; positions: Float32Array; faceColors?: Uint8Array; objectNames?: string[] }[] = [];
     // Collect negative parts during the parse loop, flush AFTER insertModel
     // so the FK on model_negative_parts.model_id is satisfiable.
     const negativeData: { plateIndex: number; partIndex: number; filePath: string; faceCount: number; boundsMin?: { x: number; y: number; z: number }; boundsMax?: { x: number; y: number; z: number } }[] = [];
@@ -96,7 +98,15 @@ export async function register3MFModel(
         });
       }
 
-      plateData.push({ index: p, faceCount: parsed.faceCount, bounds: parsed.bounds, positions: parsed.positions, faceColors: parsed.faceColors ?? undefined });
+      const nameLookup = plateObjectNames.find(n => n.index === p);
+      plateData.push({
+        index: p,
+        faceCount: parsed.faceCount,
+        bounds: parsed.bounds,
+        positions: parsed.positions,
+        faceColors: parsed.faceColors ?? undefined,
+        objectNames: nameLookup?.names,
+      });
 
       if (p === 1) {
         faceCount = parsed.faceCount;
@@ -195,6 +205,12 @@ export async function register3MFModel(
       boundsMin,
       boundsMax,
       plateCount,
+      plates: plateData.map(pd => ({
+        index: pd.index,
+        faceCount: pd.faceCount,
+        bounds: pd.bounds,
+        objectNames: pd.objectNames,
+      })),
       negativeParts: negativeData.length > 0
         ? negativeData.map(nd => ({
             plateIndex: nd.plateIndex,
@@ -347,6 +363,30 @@ export async function modelRoutes(app: FastifyInstance, options: { db: Db }) {
         ? { x: pp.bounds_max_x, y: pp.bounds_max_y, z: pp.bounds_max_z }
         : undefined,
     }));
+    // Re-extract object names per plate from the stored 3MF. Not persisted in
+    // DB (avoids a schema column for data already present inside the file),
+    // and the read is cheap — only Metadata/model_settings.config XML, no
+    // geometry parse. Falls back to no names if file is missing or unreadable.
+    let plateObjectNames: Array<{ index: number; names: string[] }> = [];
+    // model.file_path points at plate_1.stl, not the original 3MF —
+    // reconstruct the source archive path from model dir + stored name.
+    const original3mfPath = path.join(path.dirname(model.file_path), model.name);
+    if (model.plate_count > 1 && fs.existsSync(original3mfPath)) {
+      try {
+        plateObjectNames = await getPlateObjectNames(fs.readFileSync(original3mfPath));
+      } catch {
+        // best-effort — names are optional
+      }
+    }
+    const plates = db.listPlates(model.id).map(p => {
+      const lookup = plateObjectNames.find(n => n.index === p.plate_index);
+      return {
+        index: p.plate_index,
+        faceCount: p.face_count,
+        bounds: { x: p.bounds_x, y: p.bounds_y, z: p.bounds_z },
+        objectNames: lookup?.names,
+      };
+    });
     return {
       ok: true,
       data: {
@@ -364,6 +404,7 @@ export async function modelRoutes(app: FastifyInstance, options: { db: Db }) {
           : undefined,
         hasColors: (model.face_colors !== null) || (db.getPlate(model.id, 1)?.face_colors != null),
         plateCount: model.plate_count,
+        plates: plates.length > 0 ? plates : undefined,
         createdAt: model.created_at,
         sourceType: model.source_type ?? null,
         hasSourceSettings: model.source_settings != null,

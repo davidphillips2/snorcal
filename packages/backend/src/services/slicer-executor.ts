@@ -380,6 +380,16 @@ export class SlicerExecutor {
       '--debug', '2',
     );
 
+    // Write the slicer's internal log to the workDir. OrcaSlicer-class CLIs
+    // emit config-parse errors + "Nothing to be sliced" diagnostics ONLY to
+    // this logfile (not stdout/stderr), so without it a config-rejection
+    // failure surfaces as a non-zero exit code with empty stderr — undiagnosable
+    // from the API. BambuStudio-class CLIs reject --logfile ("Invalid option",
+    // exit 254), so it's gated on isBambuStudioClass.
+    if (cmd.workDir && !isBambuStudioClass(cmd.engine)) {
+      args.push('--logfile', path.join(cmd.workDir, 'slicer.log'));
+    }
+
     // --skip_useless_pick was previously gated on isBambuStudioClass. Local
     // BambuStudio.app CLI rejects it ("Invalid option --skip_useless_pick",
     // exit 254). Sidecar (HTTP mode) builds its own args server-side and is

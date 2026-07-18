@@ -25,6 +25,23 @@ export function FilamentRemapModal({
   const [mapping, setMapping] = useState<number[]>([]);
   const [printOptions, setPrintOptions] = useState<PrintOptions>({});
   const [sending, setSending] = useState(false);
+  // Live AMS from REST (fallback when SSE-cached status lacks it).
+  const [liveAms, setLiveAms] = useState<PrinterStatus['ams']>(undefined);
+
+  // Fetch fresh printer status on open — the SSE-cached printerStatus may be
+  // stale or missing AMS data if the SSE event hadn't arrived yet.
+  useEffect(() => {
+    let cancelled = false;
+    api.listPrinters().then(printers => {
+      if (cancelled) return;
+      const p = printers.find(p => p.id === printerId);
+      if (p?.status?.ams) setLiveAms(p.status.ams);
+    }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [printerId]);
+
+  // Prefer SSE-cached AMS (live-updating), fall back to REST-fetched AMS.
+  const ams = printerStatus?.ams ?? liveAms;
 
   useEffect(() => {
     let cancelled = false;
@@ -39,7 +56,7 @@ export function FilamentRemapModal({
         setFilaments(shown);
 
         // Initial pre-pick by color match against slot list
-        const slots = buildSlots(printerProtocol, printerManualSlots, printerStatus?.ams, printerManualFilaments);
+        const slots = buildSlots(printerProtocol, printerManualSlots, ams, printerManualFilaments);
         const initial = shown.map(gcodeFil => {
           const gcodeColor = hexNormalize(gcodeFil.color);
           if (!gcodeColor) return -1;
@@ -51,11 +68,11 @@ export function FilamentRemapModal({
       .catch(e => !cancelled && setError(e instanceof Error ? e.message : String(e)))
       .finally(() => !cancelled && setLoading(false));
     return () => { cancelled = true; };
-  }, [jobId, printerProtocol, printerManualSlots, printerManualFilaments, printerStatus]);
+  }, [jobId, printerProtocol, printerManualSlots, printerManualFilaments, ams]);
 
   const slots = useMemo(
-    () => buildSlots(printerProtocol, printerManualSlots, printerStatus?.ams, printerManualFilaments),
-    [printerProtocol, printerManualSlots, printerManualFilaments, printerStatus],
+    () => buildSlots(printerProtocol, printerManualSlots, ams, printerManualFilaments),
+    [printerProtocol, printerManualSlots, printerManualFilaments, ams],
   );
 
   const submit = async () => {
@@ -76,7 +93,9 @@ export function FilamentRemapModal({
       <div className="bg-gray-900 border border-gray-700 rounded-xl w-full max-w-lg shadow-2xl" onClick={e => e.stopPropagation()}>
         <div className="flex items-center justify-between px-5 py-3 border-b border-gray-800">
           <div>
-            <h2 className="text-base font-semibold text-white">Map filaments to slots</h2>
+            <h2 className="text-base font-semibold text-white">
+              {filaments.length > 0 ? 'Map filaments to slots' : 'Send to printer'}
+            </h2>
             <p className="text-[11px] text-gray-500">
               {printerProtocol === 'bambu'
                 ? 'Live AMS trays from printer'
@@ -153,7 +172,7 @@ export function FilamentRemapModal({
 
         <div className="px-5 py-3 border-t border-gray-800 flex gap-2">
           <button onClick={onClose} className="flex-1 px-3 py-2 bg-gray-800 hover:bg-gray-700 rounded text-sm text-gray-200">Cancel</button>
-          <button onClick={submit} disabled={sending || filaments.length === 0}
+          <button onClick={submit} disabled={sending}
             className="flex-1 px-3 py-2 bg-emerald-600 hover:bg-emerald-500 disabled:bg-emerald-600/30 rounded text-sm text-white">
             {sending ? 'Sending…' : 'Send to printer'}
           </button>
