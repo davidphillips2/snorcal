@@ -1136,9 +1136,15 @@ export default function App() {
     } catch (err) {
       console.warn('synthesizeEmbeddedProfiles failed:', err);
     }
+    // Skip gcode blobs + speed/accel/jerk (let user's existing tune win).
+    const isSpeedAccel = (k: string): boolean =>
+      k.endsWith('_speed') || k.endsWith('_acceleration') || k.endsWith('_jerk')
+      || k === 'default_acceleration' || k === 'default_jerk'
+      || k === 'accelerate_to_speed' || k === 'slow_down_layers';
     const coerced: Record<string, string> = {};
     for (const [k, v] of Object.entries(blob)) {
       if (v == null || k.endsWith('_gcode')) continue;
+      if (isSpeedAccel(k)) continue;
       coerced[k] = typeof v === 'string' ? v : JSON.stringify(v);
     }
     setSettings(prev => ({ ...prev, ...coerced }));

@@ -362,7 +362,7 @@ export function SettingsPanel({
         )}
         {!inOptions && current && (
           <p className="text-[10px] text-amber-400">
-            “{current}” is from a different printer — kept for its process intent. Speed/accel may exceed this printer’s limits; re-pick below if needed.
+            “{current}” is from a different printer — kept for its process intent. Re-pick below if needed.
           </p>
         )}
       </div>
