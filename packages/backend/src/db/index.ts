@@ -240,6 +240,26 @@ export class Db {
     return this.db.prepare('SELECT * FROM printers ORDER BY created_at ASC').all() as DbPrinter[];
   }
 
+  listPrintQueue(printerId: string): DbPrintQueueItem[] {
+    return this.db.prepare(
+      'SELECT * FROM print_queue WHERE printer_id = ? ORDER BY added_at ASC',
+    ).all(printerId) as DbPrintQueueItem[];
+  }
+
+  addPrintQueueItem(item: { id: string; printer_id: string; job_id: string }): void {
+    this.db.prepare(
+      'INSERT INTO print_queue (id, printer_id, job_id) VALUES (?, ?, ?)',
+    ).run(item.id, item.printer_id, item.job_id);
+  }
+
+  getPrintQueueItem(id: string): DbPrintQueueItem | undefined {
+    return this.db.prepare('SELECT * FROM print_queue WHERE id = ?').get(id) as DbPrintQueueItem | undefined;
+  }
+
+  deletePrintQueueItem(id: string): void {
+    this.db.prepare('DELETE FROM print_queue WHERE id = ?').run(id);
+  }
+
   getPrinter(id: string): DbPrinter | undefined {
     return this.db.prepare('SELECT * FROM printers WHERE id = ?').get(id) as DbPrinter | undefined;
   }
@@ -625,4 +645,11 @@ export interface DbPrintHistory {
   rating: number | null;
   notes: string | null;
   created_at: string;
+}
+
+export interface DbPrintQueueItem {
+  id: string;
+  printer_id: string;
+  job_id: string;
+  added_at: string;
 }

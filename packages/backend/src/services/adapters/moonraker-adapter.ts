@@ -56,6 +56,10 @@ export class MoonrakerAdapter implements PrinterAdapter {
   private filamentSlots: AmsSlot[] | undefined;
   private filamentTimer: NodeJS.Timeout | null = null;
   private static readonly FILAMENT_POLL_MS = 15_000;
+  private heartbeatTimer: NodeJS.Timeout | null = null;
+  private heartbeatId = 0;
+  private lastHeartbeatResponseAt = 0;
+  private static readonly HEARTBEAT_INTERVAL_MS = 30_000;
 
   private statusCbs = new Set<(s: PrinterStatus) => void>();
   private connectionCbs = new Set<(c: boolean, r?: string) => void>();
@@ -90,6 +94,7 @@ export class MoonrakerAdapter implements PrinterAdapter {
         this.setConnection(true);
         this.subscribeObjects();
         this.startFilamentPolling();
+        this.startHeartbeat();
         if (!settled) { settled = true; resolve(); }
       });
 
@@ -97,6 +102,7 @@ export class MoonrakerAdapter implements PrinterAdapter {
 
       ws.on('close', () => {
         this.ws = null;
+        this.stopHeartbeat();
         this.setConnection(false, 'websocket closed');
         if (!settled) { settled = true; reject(new Error('Connection closed')); return; }
         this.scheduleReconnect();
@@ -155,7 +161,32 @@ export class MoonrakerAdapter implements PrinterAdapter {
     } else if (msg.result?.status) {
       this.mergeObjects(msg.result.status);
       this.recomputeStatus();
+    } else if (msg.id === this.heartbeatId && msg.result !== undefined) {
+      // Heartbeat pong — any JSON-RPC response to our ping counts as alive.
+      this.lastHeartbeatResponseAt = Date.now();
     }
+  }
+
+  /** Send JSON-RPC ping every HEARTBEAT_INTERVAL_MS. If moonraker goes silent
+   *  (half-open TCP, NAT timeout), force-close so scheduleReconnect fires. */
+  private startHeartbeat(): void {
+    this.stopHeartbeat();
+    this.lastHeartbeatResponseAt = Date.now();
+    this.heartbeatTimer = setInterval(() => {
+      if (this.ws?.readyState !== WebSocket.OPEN) return;
+      const stale = Date.now() - this.lastHeartbeatResponseAt;
+      if (stale > MoonrakerAdapter.HEARTBEAT_INTERVAL_MS * 2.5) {
+        console.warn(`[Moonraker ${this.ip}] no heartbeat response in ${Math.round(stale / 1000)}s, force-closing half-open WS`);
+        this.ws.terminate();
+        return;
+      }
+      this.heartbeatId = Math.floor(Math.random() * 1e9);
+      this.ws.send(JSON.stringify({ jsonrpc: '2.0', method: 'server.ping', id: this.heartbeatId }));
+    }, MoonrakerAdapter.HEARTBEAT_INTERVAL_MS);
+  }
+
+  private stopHeartbeat(): void {
+    if (this.heartbeatTimer) { clearInterval(this.heartbeatTimer); this.heartbeatTimer = null; }
   }
 
   private mergeObjects(patch: Record<string, Record<string, unknown>>): void {
@@ -315,6 +346,7 @@ export class MoonrakerAdapter implements PrinterAdapter {
     this.destroyed = true;
     if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
     if (this.filamentTimer) { clearTimeout(this.filamentTimer); this.filamentTimer = null; }
+    this.stopHeartbeat();
     if (this.ws) { try { this.ws.close(); } catch {} this.ws = null; }
     this.setConnection(false, 'disconnected by user');
   }

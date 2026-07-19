@@ -281,7 +281,7 @@ export const SETTING_GROUPS: SettingGroup[] = [
       { key: 'top_shell_layers', label: 'Top Solid Layers', type: 'number', step: '1' },
       { key: 'bottom_shell_layers', label: 'Bottom Solid Layers', type: 'number', step: '1' },
       { key: 'sparse_infill_density', label: 'Infill Density (%)', type: 'text' },
-      { key: 'sparse_infill_pattern', label: 'Infill Pattern', type: 'select', options: ['crosshatch', 'gyroid', 'honeycomb', 'adaptivecubic', 'lightning', 'triangles', 'grid', 'line', 'cubic'] },
+      { key: 'sparse_infill_pattern', label: 'Infill Pattern', type: 'select', options: ['crosshatch', 'gyroid', 'honeycomb', 'adaptivecubic', 'lightning', 'triangles', 'grid', 'line', 'rectilinear', 'trihexagon', '3dhoneycomb', 'bicubic', 'cubic'] },
       { key: 'enable_support', label: 'Enable Support', type: 'toggle' },
       { key: 'brim_type', label: 'Brim Type', type: 'select', options: ['auto_brim', 'brim_ears', 'outer', 'inner', 'outer_and_inner', 'no_brim'] },
       { key: 'brim_width', label: 'Brim Width (mm)', type: 'number', step: '1' },
@@ -372,7 +372,7 @@ export const SETTING_GROUPS: SettingGroup[] = [
     defaultCollapsed: true,
     settings: [
       { key: 'sparse_infill_density', label: 'Density (%)', type: 'text' },
-      { key: 'sparse_infill_pattern', label: 'Pattern', type: 'select', options: ['crosshatch', 'gyroid', 'grid', 'honeycomb', 'lines', 'rectilinear', 'tri-hexagon', 'cubic', 'adaptive_cubic', '3dhoneycomb'] },
+      { key: 'sparse_infill_pattern', label: 'Pattern', type: 'select', options: ['crosshatch', 'gyroid', 'grid', 'honeycomb', 'line', 'rectilinear', 'trihexagon', 'cubic', 'bicubic', 'adaptivecubic', '3dhoneycomb'] },
       { key: 'internal_solid_infill_pattern', label: 'Solid Pattern', type: 'select', options: ['monotonic', 'monotonicline', 'rectilinear', 'concentric'] },
       { key: 'top_surface_pattern', label: 'Top Surface Pattern', type: 'select', options: ['monotonicline', 'monotonic', 'rectilinear', 'concentric'] },
       { key: 'bottom_surface_pattern', label: 'Bottom Surface Pattern', type: 'select', options: ['monotonic', 'monotonicline', 'rectilinear', 'concentric'] },

@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { formatLastSeen } from '../../lib/last-seen';
 import type { PrinterRecord, PrinterStatus } from '@snorcal/shared';
 import * as api from '../../api/client';
 import { formatDurationShort } from '../../lib/gcode-stats';
@@ -26,6 +27,7 @@ export function HomeDashboard({ onSlice, onOpenJob, onOpenPrinter, onImportMaker
   const [jobs, setJobs] = useState<JobSummary[]>([]);
   const [showPrinterMgmt, setShowPrinterMgmt] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [reconnectingId, setReconnectingId] = useState<string | null>(null);
 
   const refresh = async () => {
     try {
@@ -153,7 +155,17 @@ export function HomeDashboard({ onSlice, onOpenJob, onOpenPrinter, onImportMaker
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
               {printers.map(p => (
                 <PrinterTile key={p.id} printer={p} status={statuses[p.id]}
-                  onReconnect={() => api.reconnectPrinter(p.id)}
+                  reconnecting={reconnectingId === p.id}
+                  onReconnect={async () => {
+                    setReconnectingId(p.id);
+                    try {
+                      await api.reconnectPrinter(p.id);
+                      setTimeout(() => setReconnectingId(null), 1500);
+                    } catch (e) {
+                      setReconnectingId(null);
+                      alert(`Reconnect failed: ${e instanceof Error ? e.message : String(e)}`);
+                    }
+                  }}
                   onOpen={() => onOpenPrinter(p.id)} />
               ))}
             </div>
@@ -206,8 +218,8 @@ export function HomeDashboard({ onSlice, onOpenJob, onOpenPrinter, onImportMaker
   );
 }
 
-function PrinterTile({ printer, status, onReconnect, onOpen }: {
-  printer: PrinterRecord; status?: PrinterStatus; onReconnect: () => void; onOpen: () => void;
+function PrinterTile({ printer, status, onReconnect, reconnecting, onOpen }: {
+  printer: PrinterRecord; status?: PrinterStatus; onReconnect: () => void; reconnecting?: boolean; onOpen: () => void;
 }) {
   const connection = status?.connection ?? 'disconnected';
   const state = status?.state ?? 'offline';
@@ -227,11 +239,16 @@ function PrinterTile({ printer, status, onReconnect, onOpen }: {
           <h3 className="text-sm font-medium text-white truncate cursor-pointer hover:text-blue-300"
               onClick={onOpen}>{printer.name}</h3>
           {(connection === 'disconnected' || connection === 'error') && (
-            <button onClick={onReconnect}
-              className="ml-auto text-xs text-blue-400 hover:text-blue-300 flex-shrink-0">Reconnect</button>
+            <button onClick={onReconnect} disabled={reconnecting}
+              className="ml-auto text-xs text-blue-400 hover:text-blue-300 flex-shrink-0 disabled:opacity-50 disabled:cursor-wait">{reconnecting ? 'Reconnecting…' : 'Reconnect'}</button>
           )}
         </div>
-        <div className="text-xs text-gray-400 mt-0.5 capitalize">{state}</div>
+        <div className="text-xs text-gray-400 mt-0.5 capitalize">
+          {state}
+          {connection === 'connected' && state !== 'printing' && state !== 'paused' && formatLastSeen(status?.updatedAt) && (
+            <span className="text-gray-600 ml-1">· {formatLastSeen(status?.updatedAt)}</span>
+          )}
+        </div>
 
         {/* Temps + fan row */}
         {(status?.temps?.hotend !== undefined || status?.temps?.bed !== undefined || status?.fanSpeed !== undefined) && (

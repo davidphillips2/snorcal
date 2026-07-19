@@ -446,6 +446,49 @@ export async function printerRoutes(app: FastifyInstance, options: { db: Db }) {
     }
   });
 
+  // --- Print queue (manual "ready to send" shortlist per printer) ---
+  // No auto-advance: printers can't detect plate-empty, so user clears plate
+  // then clicks Send on the next queued item.
+  app.get<{ Params: { id: string } }>('/api/printers/:id/queue', async (req, reply) => {
+    const items = db.listPrintQueue(req.params.id);
+    // Hydrate with job metadata so UI can show filename + status without a
+    // second round-trip per item.
+    const hydrated = items.map(item => {
+      const job = db.getJob(item.job_id);
+      return {
+        id: item.id,
+        printerId: item.printer_id,
+        jobId: item.job_id,
+        addedAt: item.added_at,
+        modelName: job?.model_name ?? null,
+        jobStatus: job?.status ?? null,
+        printerName: job?.printer_name ?? null,
+      };
+    });
+    return reply.send({ ok: true, data: hydrated });
+  });
+
+  app.post<{ Params: { id: string } }>('/api/printers/:id/queue', async (req, reply) => {
+    const body = req.body as { jobId?: string };
+    if (!body.jobId) return reply.status(400).send({ ok: false, error: 'jobId required' });
+    const job = db.getJob(body.jobId);
+    if (!job) return reply.status(404).send({ ok: false, error: 'Job not found' });
+    if (job.status !== 'completed') return reply.status(400).send({ ok: false, error: 'Job not completed' });
+    const printer = db.getPrinter(req.params.id);
+    if (!printer) return reply.status(404).send({ ok: false, error: 'Printer not found' });
+    // De-dupe: don't add the same job twice for the same printer.
+    const existing = db.listPrintQueue(req.params.id).find(q => q.job_id === body.jobId);
+    if (existing) return reply.send({ ok: true, data: { id: existing.id, duplicate: true } });
+    const id = randomUUID();
+    db.addPrintQueueItem({ id, printer_id: req.params.id, job_id: body.jobId });
+    return reply.send({ ok: true, data: { id } });
+  });
+
+  app.delete<{ Params: { id: string; itemId: string } }>('/api/printers/:id/queue/:itemId', async (req, reply) => {
+    db.deletePrintQueueItem(req.params.itemId);
+    return reply.send({ ok: true });
+  });
+
   // POST /api/printers/:id/command
   app.post<{ Params: { id: string } }>('/api/printers/:id/command', async (req, reply) => {
     const body = req.body as { command: string; args?: Record<string, unknown> };

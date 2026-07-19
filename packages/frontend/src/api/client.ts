@@ -436,6 +436,32 @@ export async function disconnectPrinter(id: string) {
   return apiFetch(`/printers/${id}/disconnect`, { method: 'POST' });
 }
 
+export interface PrintQueueItem {
+  id: string;
+  printerId: string;
+  jobId: string;
+  addedAt: string;
+  modelName: string | null;
+  jobStatus: string | null;
+  printerName: string | null;
+}
+
+export async function listPrintQueue(printerId: string): Promise<PrintQueueItem[]> {
+  return apiFetch(`/printers/${printerId}/queue`) as Promise<PrintQueueItem[]>;
+}
+
+export async function addToPrintQueue(printerId: string, jobId: string): Promise<{ id: string; duplicate?: boolean }> {
+  return apiFetch(`/printers/${printerId}/queue`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ jobId }),
+  }) as Promise<{ id: string; duplicate?: boolean }>;
+}
+
+export async function removeFromPrintQueue(printerId: string, itemId: string): Promise<void> {
+  await apiFetch(`/printers/${printerId}/queue/${itemId}`, { method: 'DELETE' });
+}
+
 export async function sendPrinterCommand(printerId: string, command: string, args?: Record<string, unknown>) {
   return apiFetch(`/printers/${printerId}/command`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },

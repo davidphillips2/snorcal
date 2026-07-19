@@ -6,6 +6,9 @@ import { CameraView } from './CameraView';
 import { AmsEditor } from './AmsEditor';
 import { EditPrinterModal } from './EditPrinterModal';
 import { UploadFileSection } from './UploadFileSection';
+import { PrintQueueSection } from './PrintQueueSection';
+import { formatLastSeen } from '../../lib/last-seen';
+import { MATERIAL_PRESETS } from '../../lib/material-presets';
 import { ManualFilamentsEditor } from './ManualFilamentsEditor';
 
 interface Props {
@@ -21,6 +24,7 @@ export function PrinterDetail({ id, onBack }: Props) {
   const [bed, setBed] = useState(status?.temps?.bedTarget ?? 60);
   const [editingSlot, setEditingSlot] = useState<AmsSlot | null>(null);
   const [showEdit, setShowEdit] = useState(false);
+  const [reconnecting, setReconnecting] = useState(false);
 
   const loadPrinter = () => {
     api.listPrinters().then(list => {
@@ -108,7 +112,13 @@ export function PrinterDetail({ id, onBack }: Props) {
   };
 
   const onReconnect = async () => {
-    try { await api.reconnectPrinter(printer.id); } catch (e) {
+    setReconnecting(true);
+    try {
+      await api.reconnectPrinter(printer.id);
+      // SSE will fire printer:connected shortly; clear spinner after grace
+      setTimeout(() => setReconnecting(false), 1500);
+    } catch (e) {
+      setReconnecting(false);
       alert(`Reconnect failed: ${e instanceof Error ? e.message : String(e)}`);
     }
   };
@@ -131,7 +141,12 @@ export function PrinterDetail({ id, onBack }: Props) {
             className="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-sm text-gray-200">← Back</button>
           <span className={`w-2.5 h-2.5 rounded-full ${connColor}`} />
           <h1 className="text-xl font-semibold text-white">{printer.name}</h1>
-          <span className="text-xs text-gray-400 capitalize px-2 py-0.5 bg-gray-800 rounded">{state}</span>
+          <span className="text-xs text-gray-400 capitalize px-2 py-0.5 bg-gray-800 rounded">
+            {state}
+            {connection === 'connected' && state !== 'printing' && state !== 'paused' && formatLastSeen(status?.updatedAt) && (
+              <span className="text-gray-600 ml-1">· {formatLastSeen(status?.updatedAt)}</span>
+            )}
+          </span>
           <span className="text-xs text-gray-500">{printer.protocol} · {printer.ip}</span>
           <div className="ml-auto flex gap-2">
             {connection === 'connected' && (
@@ -139,8 +154,8 @@ export function PrinterDetail({ id, onBack }: Props) {
                 className="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-sm text-gray-300"
                 title="Disconnect so OrcaSlicer/BambuStudio/bambuddy can connect">Disconnect</button>
             )}
-            <button onClick={onReconnect}
-              className="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-sm text-gray-300">Reconnect</button>
+            <button onClick={onReconnect} disabled={reconnecting}
+              className="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-sm text-gray-300 disabled:opacity-50 disabled:cursor-wait">{reconnecting ? 'Reconnecting…' : 'Reconnect'}</button>
             <button onClick={() => setShowEdit(true)}
               className="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-sm text-white">Edit</button>
           </div>
@@ -253,8 +268,8 @@ export function PrinterDetail({ id, onBack }: Props) {
                 className="px-4 py-2 bg-green-600 hover:bg-green-500 rounded text-sm text-white">Resume</button>
             )}
             {(connection === 'disconnected' || connection === 'error') && (
-              <button onClick={onReconnect}
-                className="px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded text-sm text-white">Reconnect</button>
+              <button onClick={onReconnect} disabled={reconnecting}
+                className="px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded text-sm text-white disabled:opacity-50 disabled:cursor-wait">{reconnecting ? 'Reconnecting…' : 'Reconnect'}</button>
             )}
           </div>
         </Section>
@@ -280,6 +295,21 @@ export function PrinterDetail({ id, onBack }: Props) {
               <button onClick={() => onCommand('set_temp', { heater: 'bed', value: bed })}
                 className="px-3 py-1 bg-blue-600 hover:bg-blue-500 rounded text-white">Set</button>
             </label>
+          </div>
+          <div className="flex flex-wrap gap-1.5 mt-3">
+            {MATERIAL_PRESETS.map(m => (
+              <button key={m.label}
+                onClick={() => {
+                  setHotend(m.hotend);
+                  setBed(m.bed);
+                  onCommand('set_temp', { heater: 'hotend', value: m.hotend });
+                  onCommand('set_temp', { heater: 'bed', value: m.bed });
+                }}
+                title={`${m.label}: hotend ${m.hotend}°C · bed ${m.bed}°C`}
+                className="px-2 py-1 text-xs bg-gray-700 hover:bg-gray-600 rounded text-gray-200">
+                {m.label}
+              </button>
+            ))}
           </div>
         </Section>
 
@@ -321,6 +351,8 @@ export function PrinterDetail({ id, onBack }: Props) {
         </Section>
 
         <UploadFileSection printer={printer} printerStatus={status} />
+
+        <PrintQueueSection printer={printer} printerStatus={status} />
       </div>
 
       {editingSlot && (

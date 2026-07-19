@@ -1450,6 +1450,21 @@ export default function App() {
     } catch (err) { alert(`Send failed: ${err instanceof Error ? err.message : String(err)}`); }
   }, [targetPrinterId, printers, printerStatuses]);
 
+  const handleQueueOnPrinter = useCallback(async (jobId: string) => {
+    if (!targetPrinterId) {
+      alert('No target printer selected. Add a printer first.');
+      return;
+    }
+    try {
+      const result = await api.addToPrintQueue(targetPrinterId, jobId);
+      alert(result.duplicate ? 'Already in queue' : 'Added to queue');
+    } catch (err) {
+      alert(`Queue failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }, [targetPrinterId]);
+
+  const targetPrinter = printers.find(p => p.id === targetPrinterId);
+
   const handleExitPreview = useCallback(() => { setPreviewJobId(null); setGcodeText(null); setCurrentPreviewLayer(0); setLayerCount(0); setJobPauses([]); }, []);
 
   // Per-model geometry ready callback
@@ -2077,7 +2092,7 @@ export default function App() {
           {showJobs && (
             <div className="mt-2">
               <JobList jobs={jobs} onCancel={handleCancelJob} onDownload={handleDownloadGcode}
-                onDownloadThreemf={handleDownloadThreemf} onPreview={handlePreviewJob} onSendToPrinter={handleSendToPrinter} />
+                onDownloadThreemf={handleDownloadThreemf} onPreview={handlePreviewJob} onSendToPrinter={handleSendToPrinter} onQueue={handleQueueOnPrinter} queueLabel={targetPrinter?.name} />
             </div>
           )}
         </div>
@@ -2165,7 +2180,7 @@ export default function App() {
           <JobList jobs={jobs} onCancel={handleCancelJob} onDownload={handleDownloadGcode}
             onDownloadThreemf={handleDownloadThreemf}
             onPreview={(jid) => { setPreviewJobId(jid); setView('slice'); }}
-            onSendToPrinter={handleSendToPrinter} />
+            onSendToPrinter={handleSendToPrinter} onQueue={handleQueueOnPrinter} queueLabel={targetPrinter?.name} />
         </div>
       )}
 
@@ -2345,7 +2360,7 @@ export default function App() {
                   <div>
                     <div className="text-xs font-medium text-gray-400 uppercase tracking-wider py-1">Jobs ({jobs.length})</div>
                     <JobList jobs={jobs} onCancel={handleCancelJob} onDownload={handleDownloadGcode}
-                      onDownloadThreemf={handleDownloadThreemf} onPreview={handlePreviewJob} onSendToPrinter={handleSendToPrinter} />
+                      onDownloadThreemf={handleDownloadThreemf} onPreview={handlePreviewJob} onSendToPrinter={handleSendToPrinter} onQueue={handleQueueOnPrinter} queueLabel={targetPrinter?.name} />
                   </div>
                 )}
               </div>

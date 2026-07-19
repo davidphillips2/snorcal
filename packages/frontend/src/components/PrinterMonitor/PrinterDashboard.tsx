@@ -4,6 +4,7 @@ import * as api from '../../api/client';
 import { AddPrinterModal } from './AddPrinterModal';
 import { EditPrinterModal } from './EditPrinterModal';
 import { CameraView } from './CameraView';
+import { formatLastSeen } from '../../lib/last-seen';
 
 interface Props {
   onClose: () => void;
@@ -16,6 +17,7 @@ export function PrinterDashboard({ onClose }: Props) {
   const [editPrinter, setEditPrinter] = useState<PrinterRecord | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [reconnectingId, setReconnectingId] = useState<string | null>(null);
 
   const refresh = async () => {
     try {
@@ -60,7 +62,12 @@ export function PrinterDashboard({ onClose }: Props) {
   };
 
   const onReconnect = async (id: string) => {
-    try { await api.reconnectPrinter(id); } catch (e) {
+    setReconnectingId(id);
+    try {
+      await api.reconnectPrinter(id);
+      setTimeout(() => setReconnectingId(null), 1500);
+    } catch (e) {
+      setReconnectingId(null);
       alert(`Reconnect failed: ${e instanceof Error ? e.message : String(e)}`);
     }
   };
@@ -116,6 +123,7 @@ export function PrinterDashboard({ onClose }: Props) {
                 onToggle={() => setExpandedId(expandedId === p.id ? null : p.id)}
                 onDelete={() => onDelete(p.id)}
                 onReconnect={() => onReconnect(p.id)}
+                reconnecting={reconnectingId === p.id}
                 onEdit={() => setEditPrinter(p)}
                 onCommand={(cmd, args) => onCommand(p.id, cmd, args)}
               />
@@ -148,11 +156,12 @@ interface CardProps {
   onToggle: () => void;
   onDelete: () => void;
   onReconnect: () => void;
+  reconnecting?: boolean;
   onEdit: () => void;
   onCommand: (cmd: string, args?: Record<string, unknown>) => void;
 }
 
-function PrinterCard({ printer, status, expanded, onToggle, onDelete, onReconnect, onEdit, onCommand }: CardProps) {
+function PrinterCard({ printer, status, expanded, onToggle, onDelete, onReconnect, reconnecting, onEdit, onCommand }: CardProps) {
   const connection = status?.connection ?? 'disconnected';
   const state = status?.state ?? 'offline';
   const connColor = {
@@ -172,7 +181,12 @@ function PrinterCard({ printer, status, expanded, onToggle, onDelete, onReconnec
           <div className="text-xs text-gray-400 mt-0.5">
             {printer.protocol} · {printer.ip}:{printer.port}
           </div>
-          <div className="text-xs text-gray-300 mt-1 capitalize">{state}</div>
+          <div className="text-xs text-gray-300 mt-1 capitalize">
+            {state}
+            {connection === 'connected' && state !== 'printing' && state !== 'paused' && formatLastSeen(status?.updatedAt) && (
+              <span className="text-gray-500 ml-1">· {formatLastSeen(status?.updatedAt)}</span>
+            )}
+          </div>
           {status?.temps && (status.temps.bed !== undefined || status.temps.hotend !== undefined) && (
             <div className="text-xs text-gray-300 mt-1">
               {status.temps.hotends && status.temps.hotends.length > 1 ? (
@@ -230,10 +244,10 @@ function PrinterCard({ printer, status, expanded, onToggle, onDelete, onReconnec
           <button onClick={() => onCommand('resume')}
             className="text-xs text-green-300 hover:text-green-200 px-2 py-1 rounded hover:bg-gray-700">Resume</button>
         )}
-        {(connection === 'disconnected' || connection === 'error') && (
-          <button onClick={onReconnect}
-            className="text-xs text-blue-300 hover:text-blue-200 px-2 py-1 rounded hover:bg-gray-700">
-            Reconnect
+        {(connection === 'disconnected' || connection === 'error' || reconnecting) && (
+          <button onClick={onReconnect} disabled={reconnecting}
+            className="text-xs text-blue-300 hover:text-blue-200 px-2 py-1 rounded hover:bg-gray-700 disabled:opacity-50 disabled:cursor-wait">
+            {reconnecting ? 'Reconnecting…' : 'Reconnect'}
           </button>
         )}
         <button onClick={onEdit}

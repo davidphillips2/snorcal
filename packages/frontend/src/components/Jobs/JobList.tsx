@@ -20,6 +20,8 @@ interface JobCardProps {
   onDownloadThreemf?: (jobId: string) => void;
   onPreview?: (jobId: string) => void;
   onSendToPrinter?: (jobId: string) => void;
+  onQueue?: (jobId: string) => void;
+  queueLabel?: string;
 }
 
 const STATUS_COLORS: Record<string, string> = {
@@ -36,7 +38,7 @@ const ENGINE_LABELS: Record<string, string> = {
   prusaslicer: 'PrusaSlicer',
 };
 
-export function JobCard({ job, onCancel, onDownload, onDownloadThreemf, onPreview, onSendToPrinter }: JobCardProps) {
+export function JobCard({ job, onCancel, onDownload, onDownloadThreemf, onPreview, onSendToPrinter, onQueue, queueLabel }: JobCardProps) {
   return (
     <div className="bg-gray-700/40 rounded-lg p-2.5 border border-gray-600/50">
       <div className="flex items-center justify-between mb-1.5">
@@ -128,6 +130,15 @@ export function JobCard({ job, onCancel, onDownload, onDownloadThreemf, onPrevie
             Send
           </button>
         )}
+        {job.status === 'completed' && onQueue && (
+          <button
+            onClick={() => onQueue(job.id)}
+            title={queueLabel ? `Add to ${queueLabel}'s queue` : 'Add to print queue'}
+            className="px-2 py-0.5 text-[10px] rounded bg-blue-600/20 text-blue-400 hover:bg-blue-600/30 transition"
+          >
+            + Queue
+          </button>
+        )}
       </div>
     </div>
   );
@@ -140,9 +151,11 @@ interface JobListProps {
   onDownloadThreemf?: (jobId: string) => void;
   onPreview?: (jobId: string) => void;
   onSendToPrinter?: (jobId: string) => void;
+  onQueue?: (jobId: string) => void;
+  queueLabel?: string;
 }
 
-export function JobList({ jobs, onCancel, onDownload, onDownloadThreemf, onPreview, onSendToPrinter }: JobListProps) {
+export function JobList({ jobs, onCancel, onDownload, onDownloadThreemf, onPreview, onSendToPrinter, onQueue, queueLabel }: JobListProps) {
   if (jobs.length === 0) {
     return (
       <div className="text-center py-4 text-gray-500 text-xs">
@@ -154,7 +167,7 @@ export function JobList({ jobs, onCancel, onDownload, onDownloadThreemf, onPrevi
   return (
     <div className="space-y-2">
       {jobs.map((job) => (
-        <JobCard key={job.id} job={job} onCancel={onCancel} onDownload={onDownload} onDownloadThreemf={onDownloadThreemf} onPreview={onPreview} onSendToPrinter={onSendToPrinter} />
+        <JobCard key={job.id} job={job} onCancel={onCancel} onDownload={onDownload} onDownloadThreemf={onDownloadThreemf} onPreview={onPreview} onSendToPrinter={onSendToPrinter} onQueue={onQueue} queueLabel={queueLabel} />
       ))}
     </div>
   );

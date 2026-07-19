@@ -382,4 +382,21 @@ export function runSchemaMigrations(db: Database.Database) {
       } catch { /* skip unreadable STL */ }
     }
   } catch { /* backfill best-effort */ }
+
+  // print_queue — manual "ready to send" shortlist per printer. User adds a
+  // completed job from a job card, then one-click sends from the printer page
+  // after clearing the plate. No auto-advance (printers can't detect empty plate).
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS print_queue (
+        id TEXT PRIMARY KEY,
+        printer_id TEXT NOT NULL,
+        job_id TEXT NOT NULL,
+        added_at TEXT NOT NULL DEFAULT (datetime('now')),
+        FOREIGN KEY (printer_id) REFERENCES printers(id) ON DELETE CASCADE,
+        FOREIGN KEY (job_id) REFERENCES jobs(id) ON DELETE CASCADE
+      )
+    `);
+    db.exec("CREATE INDEX IF NOT EXISTS idx_print_queue_printer ON print_queue(printer_id, added_at)");
+  } catch { /* already exists */ }
 }
