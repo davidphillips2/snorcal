@@ -520,7 +520,12 @@ export class BambuddyAdapter implements PrinterAdapter {
     if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
     this.stopPing();
     this.stopTokenRefresh();
-    if (this.ws) { try { this.ws.close(); } catch {} this.ws = null; }
+    if (this.ws) {
+      // terminate() forces TCP RST — ws.close() is graceful and hangs in
+      // CLOSE_WAIT if the peer is silent, leaking sockets over long uptime.
+      try { this.ws.terminate(); } catch {}
+      this.ws = null;
+    }
     this.setConnection(false, 'disconnected by user');
   }
 }

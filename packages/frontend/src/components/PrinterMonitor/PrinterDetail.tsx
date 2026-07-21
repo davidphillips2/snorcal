@@ -114,12 +114,14 @@ export function PrinterDetail({ id, onBack }: Props) {
   const onReconnect = async () => {
     setReconnecting(true);
     try {
-      await api.reconnectPrinter(printer.id);
-      // SSE will fire printer:connected shortly; clear spinner after grace
-      setTimeout(() => setReconnecting(false), 1500);
+      const result = await api.reconnectPrinter(printer.id);
+      if (!result.ok) {
+        alert(`Reconnect failed: ${result.error || 'unknown error'}`);
+      }
     } catch (e) {
-      setReconnecting(false);
       alert(`Reconnect failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setReconnecting(false);
     }
   };
 

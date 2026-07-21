@@ -64,11 +64,14 @@ export function PrinterDashboard({ onClose }: Props) {
   const onReconnect = async (id: string) => {
     setReconnectingId(id);
     try {
-      await api.reconnectPrinter(id);
-      setTimeout(() => setReconnectingId(null), 1500);
+      const result = await api.reconnectPrinter(id);
+      if (!result.ok) {
+        alert(`Reconnect failed: ${result.error || 'unknown error'}`);
+      }
     } catch (e) {
-      setReconnectingId(null);
       alert(`Reconnect failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setReconnectingId(null);
     }
   };
 

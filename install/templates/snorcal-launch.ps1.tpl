@@ -1,6 +1,7 @@
 # Rendered by snorcal install.ps1. Runs the backend in production mode under a
 # per-user Scheduled Task. Re-rendered on each install/update run.
 $env:NODE_ENV = "production"
+$env:UV_THREADPOOL_SIZE = "16"
 $env:PORT = "${PORT}"
 $env:HOST = "0.0.0.0"
 $env:DATA_DIR = Join-Path $env:USERPROFILE ".snorcal\data"

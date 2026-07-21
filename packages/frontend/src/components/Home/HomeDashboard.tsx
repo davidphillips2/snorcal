@@ -159,11 +159,14 @@ export function HomeDashboard({ onSlice, onOpenJob, onOpenPrinter, onImportMaker
                   onReconnect={async () => {
                     setReconnectingId(p.id);
                     try {
-                      await api.reconnectPrinter(p.id);
-                      setTimeout(() => setReconnectingId(null), 1500);
+                      const result = await api.reconnectPrinter(p.id);
+                      if (!result.ok) {
+                        alert(`Reconnect failed: ${result.error || 'unknown error'}`);
+                      }
                     } catch (e) {
-                      setReconnectingId(null);
                       alert(`Reconnect failed: ${e instanceof Error ? e.message : String(e)}`);
+                    } finally {
+                      setReconnectingId(null);
                     }
                   }}
                   onOpen={() => onOpenPrinter(p.id)} />

@@ -428,7 +428,7 @@ export async function deletePrinter(id: string) {
   return apiFetch(`/printers/${id}`, { method: 'DELETE' });
 }
 
-export async function reconnectPrinter(id: string) {
+export async function reconnectPrinter(id: string): Promise<{ ok: boolean; error?: string }> {
   return apiFetch(`/printers/${id}/reconnect`, { method: 'POST' });
 }
 

@@ -422,11 +422,12 @@ export async function printerRoutes(app: FastifyInstance, options: { db: Db }) {
     return reply.send({ ok: true, data: status });
   });
 
-  // POST /api/printers/:id/reconnect — stop + start fresh adapter
+  // POST /api/printers/:id/reconnect — stop + start fresh adapter, wait for
+  // first connection event so the response reflects actual connect result.
   app.post<{ Params: { id: string } }>('/api/printers/:id/reconnect', async (req, reply) => {
     try {
-      await printerManager.reconnect(req.params.id);
-      return reply.send({ ok: true });
+      const result = await printerManager.reconnectWithResult(req.params.id);
+      return reply.send(result);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       return reply.send({ ok: false, error: message });

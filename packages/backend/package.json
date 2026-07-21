@@ -6,9 +6,9 @@
   "type": "module",
   "main": "./dist/index.js",
   "scripts": {
-    "dev": "tsx watch src/index.ts",
+    "dev": "UV_THREADPOOL_SIZE=16 tsx watch src/index.ts",
     "build": "tsc && cp src/routes/default-project-settings.json dist/routes/",
-    "start": "node dist/index.js"
+    "start": "UV_THREADPOOL_SIZE=16 node dist/index.js"
   },
   "dependencies": {
     "@fastify/cors": "^10.0.0",

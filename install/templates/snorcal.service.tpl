@@ -6,6 +6,7 @@ After=network.target
 Type=simple
 WorkingDirectory=%h/snorcal/packages/backend
 Environment=NODE_ENV=production
+Environment=UV_THREADPOOL_SIZE=16
 Environment=PORT=${PORT}
 Environment=HOST=0.0.0.0
 Environment=DATA_DIR=%h/.snorcal/data

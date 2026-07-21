@@ -5,7 +5,7 @@ import { MoonrakerAdapter } from './adapters/moonraker-adapter.js';
 import { BambuAdapter } from './adapters/bambu-adapter.js';
 import { BambuddyAdapter } from './adapters/bambuddy-adapter.js';
 import { decryptSecret } from './secret-crypto.js';
-import { emitPrinterStatus, emitPrinterConnected, emitPrinterDisconnected } from './event-bus.js';
+import { eventBus, emitPrinterStatus, emitPrinterConnected, emitPrinterDisconnected } from './event-bus.js';
 
 class PrinterManager {
   private adapters = new Map<string, PrinterAdapter>();
@@ -17,8 +17,26 @@ class PrinterManager {
   // successful first connect.
   private retryTimers = new Map<string, NodeJS.Timeout>();
   private retryDelays = new Map<string, number>();
+  private retryCounts = new Map<string, number>();
+  private adapterStartedAt = new Map<string, number>();
   private static readonly RETRY_DELAY_MS = 5_000;
   private static readonly RETRY_DELAY_MAX = 60_000;
+  /**
+   * If a printer has been failing continuously for this many retries, stop
+   * auto-retrying and wait for explicit user reconnect. Prevents hours-long
+   * connect-fail churn that compounds memory pressure on long-running
+   * processes. Adapter stays in map (disconnected); user clicks Reconnect in
+   * UI which calls reconnectWithResult → startAdapter → fresh attempt.
+   */
+  private static readonly MAX_CONSECUTIVE_RETRIES = 30;
+  /**
+   * Adapters accumulate bad state over long uptime (suspected: CLOSE_WAIT
+   * pile-up from graceful ws.close() on half-open sockets, libuv handle
+   * leaks). After this many ms, prefer full recreate over plain reconnect
+   * on the retry path so the adapter gets a clean internal slate without
+   * restarting the whole backend.
+   */
+  private static readonly ADAPTER_ROTATE_MS = 6 * 60 * 60 * 1000; // 6h
 
   init(db: Db): void {
     this.db = db;
@@ -27,6 +45,28 @@ class PrinterManager {
     for (const p of printers) {
       this.startAdapter(p).catch(err => {
         console.error(`[PrinterManager] failed to start ${p.id} (${p.name}):`, err);
+      });
+    }
+    // Defensive rotation: every 1h, find adapters that are both disconnected
+    // AND older than ADAPTER_ROTATE_MS, and force-recreate them. Catches the
+    // "stuck disconnected after long uptime" state we've seen without waiting
+    // for the user to click Reconnect.
+    setInterval(() => this.rotateStaleAdapters(), 60 * 60 * 1000).unref();
+  }
+
+  private rotateStaleAdapters(): void {
+    if (!this.db) return;
+    for (const [printerId, adapter] of this.adapters) {
+      if (!this.shouldRotateAdapter(printerId)) continue;
+      const status = adapter.getStatus();
+      const conn = status?.connection;
+      if (conn === 'connected' || conn === 'connecting') continue; // healthy, leave alone
+      const p = this.db.getPrinter(printerId);
+      if (!p) continue;
+      const ageMin = Math.round((Date.now() - (this.adapterStartedAt.get(printerId) ?? 0)) / 60_000);
+      console.log(`[PrinterManager] rotating stale adapter ${printerId} (${p.name}, age=${ageMin}min, conn=${conn ?? 'unknown'})`);
+      this.startAdapter(p).catch(err => {
+        console.error(`[PrinterManager] rotate failed ${printerId}:`, err instanceof Error ? err.message : err);
       });
     }
   }
@@ -78,6 +118,7 @@ class PrinterManager {
     }
     this.clearRetry(p.id);
     const adapter = this.createAdapter(p);
+    this.adapterStartedAt.set(p.id, Date.now());
 
     adapter.onStatus((status) => {
       this.db?.updatePrinterStatus(p.id, status.state);
@@ -96,13 +137,54 @@ class PrinterManager {
     try {
       await adapter.connect();
       this.retryDelays.delete(p.id); // reset backoff on success
+      this.retryCounts.delete(p.id);
+      this.networkFailures.delete(p.id);
       console.log(`[PrinterManager] connected ${p.id} (${p.protocol} ${p.ip})`);
     } catch (err) {
-      console.error(`[PrinterManager] connect failed ${p.id}:`, err instanceof Error ? err.message : err);
-      emitPrinterDisconnected(p.id, err instanceof Error ? err.message : String(err));
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`[PrinterManager] connect failed ${p.id}:`, msg);
+      emitPrinterDisconnected(p.id, msg);
+      const count = (this.retryCounts.get(p.id) ?? 0) + 1;
+      this.retryCounts.set(p.id, count);
+      if (count > PrinterManager.MAX_CONSECUTIVE_RETRIES) {
+        console.warn(`[PrinterManager] giving up on ${p.id} after ${count} consecutive failures — waiting for manual reconnect`);
+        return; // DO NOT scheduleRetry. Adapter stays in map (disconnected).
+      }
+      // Network-level errors that suggest process state corruption rather
+      // than a normal "printer offline" condition. After repeated hits, dump
+      // a process report so we have post-mortem data when the next "stale
+      // adapter after long uptime" incident happens.
+      if (/EHOSTUNREACH|ENETUNREACH|EAI_AGAIN/.test(msg)) {
+        this.recordNetworkFailure(p.id);
+      } else {
+        this.networkFailures.delete(p.id);
+      }
       // Schedule a retry with exponential backoff. The adapter stays in the
       // map (disconnected) so getStatus returns null, not a throw.
       this.scheduleRetry(p);
+    }
+  }
+
+  /**
+   * Track consecutive network-level connect failures per printer. After 5,
+   * dump process.report to stdout so we have libuv/socket state for diagnosis.
+   * Reset on any non-network error (likely auth/protocol, not state corruption).
+   */
+  private networkFailures = new Map<string, number>();
+  private recordNetworkFailure(printerId: string): void {
+    const n = (this.networkFailures.get(printerId) ?? 0) + 1;
+    this.networkFailures.set(printerId, n);
+    if (n === 5) {
+      console.warn(`[PrinterManager] ${printerId} has ${n} consecutive network failures — dumping process.report`);
+      try {
+        const report: unknown = process.report.getReport();
+        const text = typeof report === 'string' ? report : JSON.stringify(report);
+        const active = (text.match(/"type":\s*"TCP"/g) ?? []).length;
+        console.warn(`[PrinterManager] TCP handle markers in report: ${active}`);
+        console.warn(`[PrinterManager] uptime: ${Math.round(process.uptime() / 60)}min`);
+      } catch (e) {
+        console.warn('[PrinterManager] process.report failed:', e instanceof Error ? e.message : e);
+      }
     }
   }
 
@@ -128,12 +210,21 @@ class PrinterManager {
     this.retryDelays.delete(printerId);
   }
 
+  /** True if adapter has been alive longer than ADAPTER_ROTATE_MS. */
+  private shouldRotateAdapter(printerId: string): boolean {
+    const startedAt = this.adapterStartedAt.get(printerId);
+    if (!startedAt) return false;
+    return Date.now() - startedAt > PrinterManager.ADAPTER_ROTATE_MS;
+  }
+
   async stopAdapter(printerId: string): Promise<void> {
     this.clearRetry(printerId);
     const adapter = this.adapters.get(printerId);
     if (!adapter) return;
     await adapter.disconnect();
     this.adapters.delete(printerId);
+    this.adapterStartedAt.delete(printerId);
+    this.networkFailures.delete(printerId);
   }
 
   /** Force-stop then start with fresh adapter (resets reconnect state). */
@@ -143,6 +234,37 @@ class PrinterManager {
     if (!p) throw new Error(`printer ${printerId} not found`);
     await this.stopAdapter(printerId);
     await this.startAdapter(p);
+  }
+
+  /**
+   * Stop + start fresh adapter, AND wait for the first connection event
+   * (connected | disconnected) so the caller can surface a real error to the
+   * user. `reconnect()` swallows connect errors via startAdapter's internal
+   * try/catch + scheduleRetry — endpoint would otherwise always return ok.
+   */
+  async reconnectWithResult(printerId: string, timeoutMs = 6_000): Promise<{ ok: boolean; error?: string }> {
+    if (!this.db) throw new Error('manager not initialized');
+    const p = this.db.getPrinter(printerId);
+    if (!p) throw new Error(`printer ${printerId} not found`);
+    await this.stopAdapter(printerId);
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = (result: { ok: boolean; error?: string }) => {
+        if (settled) return;
+        settled = true;
+        unsub();
+        clearTimeout(timer);
+        resolve(result);
+      };
+      const unsub = eventBus.subscribe((type, data) => {
+        const d = data as { printerId?: string; reason?: string } | undefined;
+        if (d?.printerId !== printerId) return;
+        if (type === 'printer:connected') finish({ ok: true });
+        else if (type === 'printer:disconnected') finish({ ok: false, error: d.reason || 'connection failed' });
+      });
+      const timer = setTimeout(() => finish({ ok: false, error: 'timed out waiting for connect' }), timeoutMs);
+      this.startAdapter(p).catch(err => finish({ ok: false, error: err instanceof Error ? err.message : String(err) }));
+    });
   }
 
   getAdapter(printerId: string): PrinterAdapter | undefined {

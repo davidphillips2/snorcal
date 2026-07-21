@@ -17,6 +17,8 @@
     <string>${PATH_ENV}</string>
     <key>NODE_ENV</key>
     <string>production</string>
+    <key>UV_THREADPOOL_SIZE</key>
+    <string>16</string>
     <key>PORT</key>
     <string>${PORT}</string>
     <key>HOST</key>
