@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { PrinterRecord, PrinterStatus } from '@snorcal/shared';
 import * as api from '../../api/client';
+import { probeAuthOnSSEError } from '../../api/client';
 import { AddPrinterModal } from './AddPrinterModal';
 import { EditPrinterModal } from './EditPrinterModal';
 import { CameraView } from './CameraView';
@@ -52,6 +53,7 @@ export function PrinterDashboard({ onClose }: Props) {
     for (const t of ['printer:status', 'printer:connected', 'printer:disconnected']) {
       es.addEventListener(t, (e) => onMsg(t, e as MessageEvent));
     }
+    es.onerror = () => { void probeAuthOnSSEError(); };
     return () => es.close();
   }, []);
 

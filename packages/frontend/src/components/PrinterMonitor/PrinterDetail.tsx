@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { AmsSlot, PrinterRecord, PrinterStatus } from '@snorcal/shared';
 import * as api from '../../api/client';
+import { probeAuthOnSSEError } from '../../api/client';
 import { formatDurationShort } from '../../lib/gcode-stats';
 import { CameraView } from './CameraView';
 import { AmsEditor } from './AmsEditor';
@@ -76,6 +77,7 @@ export function PrinterDetail({ id, onBack }: Props) {
       es.onerror = () => {
         try { es?.close(); } catch {}
         es = null;
+        void probeAuthOnSSEError();
         if (!closed) reconnectTimer = setTimeout(connect, 2_000);
       };
     };

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { formatLastSeen } from '../../lib/last-seen';
 import type { PrinterRecord, PrinterStatus } from '@snorcal/shared';
 import * as api from '../../api/client';
+import { probeAuthOnSSEError } from '../../api/client';
 import { formatDurationShort } from '../../lib/gcode-stats';
 import { CameraView } from '../PrinterMonitor/CameraView';
 import { PrinterDashboard } from '../PrinterMonitor/PrinterDashboard';
@@ -81,6 +82,7 @@ export function HomeDashboard({ onSlice, onOpenJob, onOpenPrinter, onImportMaker
       es.onerror = () => {
         try { es?.close(); } catch {}
         es = null;
+        void probeAuthOnSSEError();
         if (!closed) reconnectTimer = setTimeout(connect, 2000);
       };
     };

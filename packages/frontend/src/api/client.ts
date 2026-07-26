@@ -74,6 +74,22 @@ export async function getAuthStatus(): Promise<AuthStatus> {
   return apiFetch('/auth/status') as Promise<AuthStatus>;
 }
 
+/**
+ * Throttled auth probe for SSE onerror handlers. EventSource can't read the
+ * HTTP status of its handshake, so a 401 (expired cookie) looks like a silent
+ * failure — UI keeps stale status forever and shows "offline" instead of
+ * redirecting to login. On SSE error we hit /auth/status via apiFetch, which
+ * triggers onUnauthorized on 401 → AuthGate flips to login. Throttled 30s
+ * so a flapping SSE doesn't hammer the backend.
+ */
+let lastAuthProbe = 0;
+export async function probeAuthOnSSEError(): Promise<void> {
+  const now = Date.now();
+  if (now - lastAuthProbe < 30_000) return;
+  lastAuthProbe = now;
+  try { await apiFetch('/auth/status'); } catch { /* onUnauthorized already fired */ }
+}
+
 export async function login(password: string): Promise<void> {
   await apiFetch('/auth/login', {
     method: 'POST',

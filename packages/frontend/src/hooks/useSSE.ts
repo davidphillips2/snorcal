@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { probeAuthOnSSEError } from '../api/client';
 
 interface SSEMessage {
   type: string;
@@ -46,6 +47,7 @@ export function useSSE(url: string) {
       es.onerror = () => {
         try { es?.close(); } catch { /* ignore */ }
         es = null;
+        void probeAuthOnSSEError();
         if (!closedRef.current) {
           reconnectTimer = setTimeout(connect, RECONNECT_DELAY_MS);
         }
