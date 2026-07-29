@@ -18,6 +18,14 @@ interface ModelMoverProps {
 
 export function ModelMover({ mesh, sceneRefs, active, bounds, onPositionChange, onDragEnd }: ModelMoverProps) {
   const isDraggingRef = useRef(false);
+  // Hold callbacks in refs so the drag effect doesn't tear down + re-attach
+  // when their identities change (they do whenever projectModels changes —
+  // mid-drag that would detach the pointer handlers and abort the drag, and
+  // any release after a tear-down leaves state stale → snap-back).
+  const onPositionChangeRef = useRef(onPositionChange);
+  onPositionChangeRef.current = onPositionChange;
+  const onDragEndRef = useRef(onDragEnd);
+  onDragEndRef.current = onDragEnd;
 
   useEffect(() => {
     if (!mesh || !active) return;
@@ -81,6 +89,10 @@ export function ModelMover({ mesh, sceneRefs, active, bounds, onPositionChange, 
         }
         mesh.position.x = newPos.x;
         mesh.position.z = newPos.z;
+        // Sync to state LIVE so STLViewer's positionOffset effect and the
+        // mover never disagree (avoids snap-back on release when restPosition
+        // is recomputed from a freshly-loaded geometry bbox).
+        onPositionChangeRef.current(mesh.position.clone());
       }
     };
 
@@ -88,8 +100,9 @@ export function ModelMover({ mesh, sceneRefs, active, bounds, onPositionChange, 
       if (!isDraggingRef.current) return;
       isDraggingRef.current = false;
       orbitControls.enabled = true;
-      // Sync final position to state only on drag end
-      const cb = onDragEnd || onPositionChange;
+      // Final sync via onDragEnd if provided (same fn in App); live updates
+      // already keep state current so this just confirms the last position.
+      const cb = onDragEndRef.current || onPositionChangeRef.current;
       cb(mesh.position.clone());
     };
 
@@ -108,7 +121,7 @@ export function ModelMover({ mesh, sceneRefs, active, bounds, onPositionChange, 
       planeGeo.dispose();
       planeMat.dispose();
     };
-  }, [mesh, active, sceneRefs, onPositionChange, bounds]);
+  }, [mesh, active, sceneRefs, bounds]);
 
   return null;
 }
