@@ -36,6 +36,7 @@ import type { PrinterStatus } from '@snorcal/shared';
 import { HomeDashboard } from './components/Home/HomeDashboard';
 import { PrinterDetail } from './components/PrinterMonitor/PrinterDetail';
 import { useSSE } from './hooks/useSSE';
+import { useUndo } from './hooks/useUndo';
 import * as api from './api/client';
 import type { PausePoint } from './api/client';
 import { shelfPack } from './lib/pack';
@@ -111,24 +112,15 @@ export default function App() {
   const [snapRotateDeg, setSnapRotateDeg] = useState<number>(() => persisted.current?.snapRotateDeg ?? 15);
 
   // --- Undo/redo history (50-step stack of projectModels snapshots) ---
-  const undoStackRef = useRef<ProjectModel[][]>([]);
-  const redoStackRef = useRef<ProjectModel[][]>([]);
+  // Undo/redo + tracked setter (snapshots before each mutation). Paint-undo
+  // takes precedence via the window bridge — see hooks/useUndo.ts.
   const projectModelsRef = useRef(projectModels);
   projectModelsRef.current = projectModels;
-  const [, forceUndoTick] = useState(0);
-
-  const pushUndo = useCallback(() => {
-    undoStackRef.current.push(projectModelsRef.current.map(p => ({ ...p })));
-    if (undoStackRef.current.length > 50) undoStackRef.current.shift();
-    redoStackRef.current = [];
-    forceUndoTick(t => t + 1);
-  }, []);
-
-  // Tracked setter — snapshots current state before applying updater
-  const updateModels = useCallback((updater: ProjectModel[] | ((prev: ProjectModel[]) => ProjectModel[])) => {
-    pushUndo();
-    setProjectModels(updater);
-  }, [pushUndo]);
+  const { pushUndo, updateModels, handleUndo, handleRedo, canUndo, canRedo } = useUndo({
+    projectModels,
+    setProjectModels,
+    clearSelection: () => selectSingle(null),
+  });
 
   // --- Plate manager handlers ---
   const handleRenamePlate = useCallback((id: string, name: string) => {
@@ -209,36 +201,7 @@ export default function App() {
     });
   }, []);
 
-  const handleUndo = useCallback(() => {
-    // Paint undo takes precedence (most recent action); fall back to project-models
-    const paintUndo = (window as any).__snorcal_undo as (() => boolean) | undefined;
-    if (paintUndo && paintUndo()) return;
-    if (undoStackRef.current.length > 0) {
-      const present = projectModelsRef.current.map(p => ({ ...p }));
-      const past = undoStackRef.current.pop()!;
-      redoStackRef.current.push(present);
-      setProjectModels(past);
-      selectSingle(null);
-      forceUndoTick(t => t + 1);
-      return;
-    }
-  }, []);
-
-  const handleRedo = useCallback(() => {
-    if (redoStackRef.current.length === 0) return;
-    const present = projectModelsRef.current.map(p => ({ ...p }));
-    const future = redoStackRef.current.pop()!;
-    undoStackRef.current.push(present);
-    setProjectModels(future);
-    selectSingle(null);
-    forceUndoTick(t => t + 1);
-  }, []);
-
-  const canUndo = undoStackRef.current.length > 0
-    || ((window as any).__snorcal_paint_undo_count ?? 0) > 0;
-  const canRedo = redoStackRef.current.length > 0;
-
-  // Undo/redo keyboard shortcuts (Ctrl/Cmd+Z, Ctrl+Shift+Z, Ctrl+Y)
+  // Undo/redo keyboard shortcuts (Ctrl/Cmd+Z, Ctrl/Shift+Z, Ctrl+Y)
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const meta = e.metaKey || e.ctrlKey;
