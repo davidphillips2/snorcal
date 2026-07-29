@@ -14,6 +14,9 @@ export interface SettingDef {
   step?: string;
   options?: string[];
   optionLabels?: Record<string, string>;
+  /** One-line explanation shown as a tooltip on hover. Plain language for
+   *  non-experts; explain what the setting does + trade-off. */
+  help?: string;
   showWhen?: { key: string; value: string | string[] };
   notWhen?: { key: string; value: string | string[] };
 }
@@ -276,16 +279,16 @@ export const SETTING_GROUPS: SettingGroup[] = [
     label: 'Frequent',
     defaultCollapsed: false,
     settings: [
-      { key: 'layer_height', label: 'Layer Height (mm)', type: 'number', step: '0.05' },
-      { key: 'wall_loops', label: 'Wall Loops', type: 'number', step: '1' },
-      { key: 'top_shell_layers', label: 'Top Solid Layers', type: 'number', step: '1' },
-      { key: 'bottom_shell_layers', label: 'Bottom Solid Layers', type: 'number', step: '1' },
-      { key: 'sparse_infill_density', label: 'Infill Density (%)', type: 'text' },
-      { key: 'sparse_infill_pattern', label: 'Infill Pattern', type: 'select', options: ['crosshatch', 'gyroid', 'honeycomb', 'adaptivecubic', 'lightning', 'triangles', 'grid', 'line', 'rectilinear', 'trihexagon', '3dhoneycomb', 'bicubic', 'cubic'] },
-      { key: 'enable_support', label: 'Enable Support', type: 'toggle' },
-      { key: 'brim_type', label: 'Brim Type', type: 'select', options: ['auto_brim', 'brim_ears', 'outer', 'inner', 'outer_and_inner', 'no_brim'] },
-      { key: 'brim_width', label: 'Brim Width (mm)', type: 'number', step: '1' },
-      { key: 'skirt_loops', label: 'Skirt Loops', type: 'number', step: '1' },
+      { key: 'layer_height', label: 'Layer Height (mm)', type: 'number', step: '0.05', help: 'Thickness of each printed layer. Lower = finer detail + longer print; higher = faster + more visible bands. Typical: 0.2mm, detail 0.12mm, draft 0.28mm.' },
+      { key: 'wall_loops', label: 'Wall Loops', type: 'number', step: '1', help: 'Number of outer perimeter shells. More = stronger + watertight + longer print. 2–3 typical, 1 for speed.' },
+      { key: 'top_shell_layers', label: 'Top Solid Layers', type: 'number', step: '1', help: 'Solid layers on top of the print. Too few shows infill pattern through the surface ("pillowing"). 4+ for quality.' },
+      { key: 'bottom_shell_layers', label: 'Bottom Solid Layers', type: 'number', step: '1', help: 'Solid layers on the bottom. 2–3 typical; more for watertight parts.' },
+      { key: 'sparse_infill_density', label: 'Infill Density (%)', type: 'text', help: 'How full the inside is. 0% = hollow (fastest, weakest), 15% typical, 100% solid. Enter as % (e.g. 15) or ratio (0.15).' },
+      { key: 'sparse_infill_pattern', label: 'Infill Pattern', type: 'select', options: ['crosshatch', 'gyroid', 'honeycomb', 'adaptivecubic', 'lightning', 'triangles', 'grid', 'line', 'rectilinear', 'trihexagon', '3dhoneycomb', 'bicubic', 'cubic'], help: 'Geometry of internal infill. Gyroid = strong all directions + fast; cubic = good general; lightning = lowest filament (figurines); grid = classic. Higher density favors stronger patterns.' },
+      { key: 'enable_support', label: 'Enable Support', type: 'toggle', help: 'Builds disposable scaffolding under overhangs >~45° so they don\'t sag. Off by default — enable for parts with bridges or steep overhangs.' },
+      { key: 'brim_type', label: 'Brim Type', type: 'select', options: ['auto_brim', 'brim_ears', 'outer', 'inner', 'outer_and_inner', 'no_brim'], help: 'Flat rings attached to the first layer. auto = smart pick; ears = mouse-ears at corners (low footprint); outer = full brim. Helps bed adhesion + prevents warping on small/narrow parts.' },
+      { key: 'brim_width', label: 'Brim Width (mm)', type: 'number', step: '1', help: 'How far the brim extends from the part. 3–8mm typical; wider = more adhesion but harder to remove cleanly.' },
+      { key: 'skirt_loops', label: 'Skirt Loops', type: 'number', step: '1', help: 'Outline printed around (but not touching) the part on layer 1. Primed the nozzle + checks bed alignment. 1–2 typical; 0 to skip.' },
     ],
   },
   {
@@ -293,25 +296,25 @@ export const SETTING_GROUPS: SettingGroup[] = [
     label: 'Quality',
     defaultCollapsed: true,
     settings: [
-      { key: 'layer_height', label: 'Layer Height (mm)', type: 'number', step: '0.05' },
-      { key: 'adaptive_layer_height', label: 'Adaptive Layer Height', type: 'toggle' },
-      { key: 'initial_layer_height', label: 'First Layer Height (mm)', type: 'number', step: '0.05' },
-      { key: 'initial_layer_print_height', label: 'First Layer Print Height (mm)', type: 'number', step: '0.05' },
-      { key: 'wall_loops', label: 'Wall Loops', type: 'number', step: '1' },
-      { key: 'top_shell_layers', label: 'Top Solid Layers', type: 'number', step: '1' },
-      { key: 'bottom_shell_layers', label: 'Bottom Solid Layers', type: 'number', step: '1' },
-      { key: 'top_shell_thickness', label: 'Top Solid Thickness (mm)', type: 'number', step: '0.2' },
-      { key: 'bottom_shell_thickness', label: 'Bottom Solid Thickness (mm)', type: 'number', step: '0.2' },
-      { key: 'ensure_vertical_shell_thickness', label: 'Vertical Shell Thickness', type: 'select', options: ['ensure_all', 'ensure_moderate', 'none'] },
-      { key: 'alternate_extra_wall', label: 'Alternate Extra Wall', type: 'toggle' },
-      { key: 'detect_overhang_wall', label: 'Detect Overhang Wall', type: 'toggle' },
-      { key: 'optimize_wall_print_order', label: 'Optimize Wall Print Order', type: 'toggle' },
-      { key: 'only_one_wall_first_layer', label: 'Only One Wall First Layer', type: 'toggle' },
-      { key: 'only_one_wall_top', label: 'Only One Wall Top', type: 'toggle' },
-      { key: 'precise_outer_wall', label: 'Precise Outer Wall', type: 'toggle' },
-      { key: 'precise_z_height', label: 'Precise Z Height', type: 'toggle' },
-      { key: 'wall_generator', label: 'Wall Generator', type: 'select', options: ['arachne', 'classic'] },
-      { key: 'wall_sequence', label: 'Wall Sequence', type: 'select', options: ['inner wall/outer wall', 'outer wall/inner wall', 'inner-outer-inner wall'] },
+      { key: 'layer_height', label: 'Layer Height (mm)', type: 'number', step: '0.05', help: 'Thickness of each printed layer. Lower = finer detail + longer print; higher = faster + more visible bands. Typical: 0.2mm, detail 0.12mm, draft 0.28mm.' },
+      { key: 'adaptive_layer_height', label: 'Adaptive Layer Height', type: 'toggle', help: 'Auto-varies layer height per region — thinner layers on curves/slopes, thicker on flat/vertical. Better curved surfaces without slowing the whole print.' },
+      { key: 'initial_layer_height', label: 'First Layer Height (mm)', type: 'number', step: '0.05', help: 'Height of the first layer. Slightly thicker (0.2–0.3mm) than the rest improves bed adhesion.' },
+      { key: 'initial_layer_print_height', label: 'First Layer Print Height (mm)', type: 'number', step: '0.05', help: 'Actual extruded height of the first layer (may differ from initial_layer_height when Z-offset/offset is applied).' },
+      { key: 'wall_loops', label: 'Wall Loops', type: 'number', step: '1', help: 'Number of outer perimeter shells. More = stronger + watertight + longer print. 2–3 typical, 1 for speed.' },
+      { key: 'top_shell_layers', label: 'Top Solid Layers', type: 'number', step: '1', help: 'Solid layers on top of the print. Too few shows infill pattern through the surface ("pillowing"). 4+ for quality.' },
+      { key: 'bottom_shell_layers', label: 'Bottom Solid Layers', type: 'number', step: '1', help: 'Solid layers on the bottom. 2–3 typical; more for watertight parts.' },
+      { key: 'top_shell_thickness', label: 'Top Solid Thickness (mm)', type: 'number', step: '0.2', help: 'Alternative to "Top Solid Layers" — specify by thickness instead of layer count. Set one or the other; whichever is larger wins.' },
+      { key: 'bottom_shell_thickness', label: 'Bottom Solid Thickness (mm)', type: 'number', step: '0.2', help: 'Alternative to "Bottom Solid Layers" — specify by thickness instead of layer count.' },
+      { key: 'ensure_vertical_shell_thickness', label: 'Vertical Shell Thickness', type: 'select', options: ['ensure_all', 'ensure_moderate', 'none'], help: 'Guarantees the side walls are thick enough for strength. ensure_all = most reliable (may add a wall), moderate = balanced, none = respect wall_loops only.' },
+      { key: 'alternate_extra_wall', label: 'Alternate Extra Wall', type: 'toggle', help: 'Adds an extra wall on alternating layers so seams don\'t stack — improves strength and hides the Z-seam. May widen outer wall slightly.' },
+      { key: 'detect_overhang_wall', label: 'Detect Overhang Wall', type: 'toggle', help: 'Auto-adds support-like walls under overhangs to reduce sagging without using full support material.' },
+      { key: 'optimize_wall_print_order', label: 'Optimize Wall Print Order', type: 'toggle', help: 'Reorders perimeters to reduce travel + stringing. Usually leave on.' },
+      { key: 'only_one_wall_first_layer', label: 'Only One Wall First Layer', type: 'toggle', help: 'Prints just the outer wall on layer 1 (no inner walls). Better adhesion on some textured beds; weaker bottom.' },
+      { key: 'only_one_wall_top', label: 'Only One Wall Top', type: 'toggle', help: 'Single top wall — gives a flatter, smoother top surface at the cost of strength.' },
+      { key: 'precise_outer_wall', label: 'Precise Outer Wall', type: 'toggle', help: 'Slows the outer wall slightly + plans the path for dimensional accuracy. On for parts that must fit together.' },
+      { key: 'precise_z_height', label: 'Precise Z Height', type: 'toggle', help: 'Snaps layer Z to exact multiples so total height matches the model. Helps inter-part fit.' },
+      { key: 'wall_generator', label: 'Wall Generator', type: 'select', options: ['arachne', 'classic'], help: 'arachne = variable-width walls (better flow, fewer gaps on curves); classic = fixed-width perimeters. Arachne is the modern default.' },
+      { key: 'wall_sequence', label: 'Wall Sequence', type: 'select', options: ['inner wall/outer wall', 'outer wall/inner wall', 'inner-outer-inner wall'], help: 'Print order of walls. inner→outer = cleaner outer surface (less stringing wiped on it). inner-outer-inner = best dimensional accuracy.' },
     ],
   },
   {

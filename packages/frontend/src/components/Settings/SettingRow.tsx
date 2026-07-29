@@ -7,19 +7,40 @@ interface SettingRowProps {
   onChange: (value: string) => void;
 }
 
+/** Label + optional help tooltip. Help uses native title (hover) so it works
+ *  without a tooltip library and is keyboard-focusable via the button. */
+function SettingLabel({ def }: { def: SettingDef }) {
+  if (!def.help) {
+    return <span className="text-xs text-gray-400 truncate mr-2" title={def.label}>{def.label}</span>;
+  }
+  return (
+    <span className="flex items-center gap-1 min-w-0 mr-2">
+      <span className="text-xs text-gray-400 truncate" title={def.label}>{def.label}</span>
+      <span
+        className="shrink-0 w-3.5 h-3.5 rounded-full border border-gray-500 text-gray-400 flex items-center justify-center text-[9px] leading-none cursor-help"
+        role="img"
+        aria-label={`${def.label}: ${def.help}`}
+        title={def.help}
+      >
+        ?
+      </span>
+    </span>
+  );
+}
+
 export const SettingRow = memo(function SettingRow({ def, value, onChange }: SettingRowProps) {
-  const { type, label } = def;
+  const { type } = def;
 
   if (type === 'toggle') {
     const isOn = value === '1';
     return (
       <div className="flex items-center justify-between py-0.5">
-        <span className="text-xs text-gray-400 truncate mr-2" title={label}>{label}</span>
+        <SettingLabel def={def} />
         <button
           type="button"
           onClick={() => onChange(isOn ? '0' : '1')}
           className={`relative w-8 h-4 rounded-full transition-colors shrink-0 ${isOn ? 'bg-blue-600' : 'bg-gray-600'}`}
-          aria-label={label}
+          aria-label={def.label}
         >
           <span
             className={`absolute left-0.5 top-0.5 w-3 h-3 rounded-full bg-white transition-transform ${isOn ? 'translate-x-4' : 'translate-x-0'}`}
@@ -32,7 +53,7 @@ export const SettingRow = memo(function SettingRow({ def, value, onChange }: Set
   if (type === 'select') {
     return (
       <div className="flex items-center justify-between py-0.5">
-        <span className="text-xs text-gray-400 truncate mr-2" title={label}>{label}</span>
+        <SettingLabel def={def} />
         <select
           value={value}
           onChange={(e) => onChange(e.target.value)}
@@ -51,7 +72,7 @@ export const SettingRow = memo(function SettingRow({ def, value, onChange }: Set
   if (type === 'textarea') {
     return (
       <div className="py-0.5">
-        <span className="text-xs text-gray-400 block mb-0.5" title={label}>{label}</span>
+        <div className="mb-0.5"><SettingLabel def={def} /></div>
         <textarea
           value={value}
           onChange={(e) => onChange(e.target.value)}
@@ -65,7 +86,7 @@ export const SettingRow = memo(function SettingRow({ def, value, onChange }: Set
   if (type === 'number') {
     return (
       <div className="flex items-center justify-between py-0.5">
-        <span className="text-xs text-gray-400 truncate mr-2" title={label}>{label}</span>
+        <SettingLabel def={def} />
         <input
           type="number"
           value={value}
@@ -80,7 +101,7 @@ export const SettingRow = memo(function SettingRow({ def, value, onChange }: Set
   // text
   return (
     <div className="flex items-center justify-between py-0.5">
-      <span className="text-xs text-gray-400 truncate mr-2" title={label}>{label}</span>
+      <SettingLabel def={def} />
       <input
         type="text"
         value={value}
