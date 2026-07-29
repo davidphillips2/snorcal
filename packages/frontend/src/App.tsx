@@ -2155,15 +2155,24 @@ export default function App() {
             <img src="/icon-192.png" alt="" className="w-6 h-6" />
             <span className="text-base font-semibold tracking-tight">snorcal</span>
           </div>
-          <nav className="flex gap-1">
-            {(['home', 'slice', 'settings'] as const).map(v => (
-              <button key={v} onClick={() => setView(v)}
-                className={`px-3 py-1.5 rounded text-sm capitalize ${
-                  view === v ? 'bg-gray-700 text-white' : 'text-gray-400 hover:text-white hover:bg-gray-800'
-                }`}>
-                {v}
-              </button>
-            ))}
+          <nav className="flex gap-1 items-center">
+            {(['home', 'slice', 'jobs', 'settings'] as const).map(v => {
+              const label = v === 'home' ? 'Printers' : v;
+              const runningCount = v === 'jobs' ? jobs.filter(j => j.status === 'running' || j.status === 'queued').length : 0;
+              return (
+                <button key={v} onClick={() => setView(v)}
+                  className={`px-3 py-1.5 rounded text-sm capitalize flex items-center gap-1.5 ${
+                    view === v ? 'bg-gray-700 text-white' : 'text-gray-400 hover:text-white hover:bg-gray-800'
+                  }`}>
+                  {label}
+                  {runningCount > 0 && (
+                    <span className="inline-flex items-center justify-center min-w-[1.1rem] h-[1.1rem] px-1 text-[10px] font-semibold rounded-full bg-blue-600 text-white" aria-label={`${runningCount} active job${runningCount === 1 ? '' : 's'}`}>
+                      {runningCount}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
           </nav>
         </div>
         <div className="text-xs text-gray-500">{engine}</div>
@@ -2196,6 +2205,7 @@ export default function App() {
 
       {view === 'jobs' && (
         <div className="flex-1 overflow-y-auto p-6 max-w-4xl mx-auto w-full">
+          <h1 className="text-lg font-semibold text-white mb-4">Slicing Jobs</h1>
           <JobList jobs={jobs} onCancel={handleCancelJob} onDownload={handleDownloadGcode}
             onDownloadThreemf={handleDownloadThreemf}
             onPreview={(jid) => { setPreviewJobId(jid); setView('slice'); }}
@@ -2225,8 +2235,8 @@ export default function App() {
             on viewer3DEnabled, which trapped the user in the slice-settings
             full-screen panel on multi-plate imports (viewer auto-disables). */}
         <div className="md:hidden flex items-center gap-3 px-3 py-2 bg-gray-800 border-b border-gray-700 shrink-0">
-          <button onClick={() => setShowSidebar(!showSidebar)} className="p-1.5 rounded-lg bg-gray-700 text-gray-300 hover:bg-gray-600 transition">
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" /></svg>
+          <button onClick={() => setShowSidebar(!showSidebar)} aria-label={showSidebar ? 'Hide sidebar' : 'Show sidebar'} aria-expanded={showSidebar} className="p-1.5 rounded-lg bg-gray-700 text-gray-300 hover:bg-gray-600 transition">
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" /></svg>
           </button>
         </div>
 
