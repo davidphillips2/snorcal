@@ -3,6 +3,7 @@ import * as api from '../../api/client';
 import { SETTING_GROUPS, DEFAULT_VALUES, isSettingVisible } from './settings-definitions';
 import type { SettingGroup } from './settings-definitions';
 import { SettingRow } from './SettingRow';
+import { useToast } from '../Toast';
 
 interface ProfileInfo {
   engine: string;
@@ -112,6 +113,7 @@ export function SettingsPanel({
   targetPrinterModel,
   defaultAdvancedOpen = false,
 }: SettingsPanelProps) {
+  const toast = useToast();
   // Initialize collapsed state from group defaults
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>(() => {
     const initial: Record<string, boolean> = {};
@@ -127,8 +129,13 @@ export function SettingsPanel({
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    api.getProfiles(engine).then(setProfiles).catch(() => setProfiles([]));
-  }, [engine]);
+    api.getProfiles(engine)
+      .then(setProfiles)
+      .catch(err => {
+        setProfiles([]);
+        toast.error('Failed to load profiles', err instanceof Error ? err.message : String(err));
+      });
+  }, [engine, toast]);
 
   // When engine changes (or profile list refreshes), drop selections that no
   // longer exist in the current engine's profile set. Without this, switching
@@ -301,18 +308,29 @@ export function SettingsPanel({
       const updated = await api.getProfiles(engine);
       setProfiles(updated);
     } catch (err) {
-      alert(`Import failed: ${err instanceof Error ? err.message : String(err)}`);
+      toast.error('Import failed', err instanceof Error ? err.message : String(err));
     } finally {
       setImporting(false);
       if (fileInputRef.current) fileInputRef.current.value = '';
     }
   };
 
+  const [deletingProfile, setDeletingProfile] = useState(false);
+
   const handleDeleteProfile = async (type: string, name: string) => {
-    await api.deleteProfile(engine, type, name);
-    setProfiles(prev => prev.filter(p => !(p.profile_type === type && p.name === name)));
-    if (selectedProfiles[type as keyof SelectedProfiles] === name) {
-      onProfilesChange({ ...selectedProfiles, [type]: undefined });
+    if (deletingProfile) return;
+    setDeletingProfile(true);
+    try {
+      await api.deleteProfile(engine, type, name);
+      setProfiles(prev => prev.filter(p => !(p.profile_type === type && p.name === name)));
+      if (selectedProfiles[type as keyof SelectedProfiles] === name) {
+        onProfilesChange({ ...selectedProfiles, [type]: undefined });
+      }
+      toast.success('Profile deleted', `${type}: ${name}`);
+    } catch (err) {
+      toast.error('Delete failed', err instanceof Error ? err.message : String(err));
+    } finally {
+      setDeletingProfile(false);
     }
   };
 
@@ -348,10 +366,11 @@ export function SettingsPanel({
           {current && (
             <button
               onClick={() => handleDeleteProfile(type, current)}
-              className="px-1.5 py-1 text-xs text-red-400 hover:text-red-300 hover:bg-gray-700 rounded"
+              disabled={deletingProfile}
+              className="px-1.5 py-1 text-xs text-red-400 hover:text-red-300 hover:bg-gray-700 rounded disabled:opacity-50 disabled:cursor-wait"
               title="Delete profile"
             >
-              &times;
+              {deletingProfile ? '…' : '×'}
             </button>
           )}
         </div>

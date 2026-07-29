@@ -6,6 +6,7 @@ import { probeAuthOnSSEError } from '../../api/client';
 import { formatDurationShort } from '../../lib/gcode-stats';
 import { CameraView } from '../PrinterMonitor/CameraView';
 import { PrinterDashboard } from '../PrinterMonitor/PrinterDashboard';
+import { useToast } from '../Toast';
 
 interface JobSummary {
   id: string;
@@ -23,6 +24,7 @@ interface Props {
 }
 
 export function HomeDashboard({ onSlice, onOpenJob, onOpenPrinter, onImportMakerworld }: Props) {
+  const toast = useToast();
   const [printers, setPrinters] = useState<PrinterRecord[]>([]);
   const [statuses, setStatuses] = useState<Record<string, PrinterStatus>>({});
   const [jobs, setJobs] = useState<JobSummary[]>([]);
@@ -31,19 +33,24 @@ export function HomeDashboard({ onSlice, onOpenJob, onOpenPrinter, onImportMaker
   const [reconnectingId, setReconnectingId] = useState<string | null>(null);
 
   const refresh = async () => {
-    try {
-      const [list, jobList] = await Promise.all([
-        api.listPrinters().catch(() => []),
-        api.listJobs().catch(() => []),
-      ]);
+    // Run printers + jobs in parallel; surface each failure separately so a
+    // backend-down isn't disguised as "you have no data".
+    const [listRes, jobListRes] = await Promise.allSettled([api.listPrinters(), api.listJobs()]);
+    if (listRes.status === 'fulfilled') {
+      const list = listRes.value;
       setPrinters(list);
       const next: Record<string, PrinterStatus> = {};
       for (const p of list) if (p.status) next[p.id] = p.status;
       setStatuses(next);
-      setJobs((jobList as any[]).slice(0, 5));
-    } finally {
-      setLoading(false);
+    } else {
+      toast.error('Failed to load printers', listRes.reason instanceof Error ? listRes.reason.message : String(listRes.reason));
     }
+    if (jobListRes.status === 'fulfilled') {
+      setJobs((jobListRes.value as any[]).slice(0, 5));
+    } else {
+      toast.error('Failed to load jobs', jobListRes.reason instanceof Error ? jobListRes.reason.message : String(jobListRes.reason));
+    }
+    setLoading(false);
   };
 
   useEffect(() => { refresh(); }, []);
@@ -163,10 +170,10 @@ export function HomeDashboard({ onSlice, onOpenJob, onOpenPrinter, onImportMaker
                     try {
                       const result = await api.reconnectPrinter(p.id);
                       if (!result.ok) {
-                        alert(`Reconnect failed: ${result.error || 'unknown error'}`);
+                        toast.error('Reconnect failed', result.error || 'unknown error');
                       }
                     } catch (e) {
-                      alert(`Reconnect failed: ${e instanceof Error ? e.message : String(e)}`);
+                      toast.error('Reconnect failed', e instanceof Error ? e.message : String(e));
                     } finally {
                       setReconnectingId(null);
                     }

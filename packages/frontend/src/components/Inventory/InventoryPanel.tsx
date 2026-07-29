@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import * as api from '../../api/client';
 import type { Spool, PrintHistoryEntry } from '../../api/client';
+import { useToast } from '../Toast';
 
 interface InventoryPanelProps {
   onClose: () => void;
@@ -112,6 +113,7 @@ function SpoolsTab() {
 }
 
 function SpoolEditor({ spool, onClose, onSaved }: { spool: Spool | null; onClose: () => void; onSaved: () => void }) {
+  const toast = useToast();
   const [name, setName] = useState(spool?.name ?? '');
   const [color, setColor] = useState(spool?.color ?? '#888888');
   const [material, setMaterial] = useState(spool?.material ?? 'PLA');
@@ -120,12 +122,25 @@ function SpoolEditor({ spool, onClose, onSaved }: { spool: Spool | null; onClose
   const [costPerKg, setCostPerKg] = useState(spool?.costPerKg ?? 0);
   const [notes, setNotes] = useState(spool?.notes ?? '');
   const [archived, setArchived] = useState(spool?.archived ?? false);
+  const [saving, setSaving] = useState(false);
 
   const save = async () => {
-    const payload = { name, color, material, totalWeightG: totalG, remainingWeightG: remainingG, costPerKg, notes, archived };
-    if (spool) await api.updateSpool(spool.id, payload);
-    else await api.createSpool(payload);
-    onSaved();
+    if (saving) return;
+    if (!name.trim()) {
+      toast.warning('Name required', 'Give the spool a name.');
+      return;
+    }
+    setSaving(true);
+    try {
+      const payload = { name, color, material, totalWeightG: totalG, remainingWeightG: remainingG, costPerKg, notes, archived };
+      if (spool) await api.updateSpool(spool.id, payload);
+      else await api.createSpool(payload);
+      onSaved();
+    } catch (err) {
+      toast.error('Save failed', err instanceof Error ? err.message : String(err));
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
@@ -153,7 +168,7 @@ function SpoolEditor({ spool, onClose, onSaved }: { spool: Spool | null; onClose
         </label>
         <div className="flex justify-end gap-2 pt-2">
           <button onClick={onClose} className="px-3 py-1 text-xs bg-gray-700 hover:bg-gray-600 rounded text-gray-300">Cancel</button>
-          <button onClick={save} className="px-3 py-1 text-xs bg-blue-600 hover:bg-blue-500 rounded text-white">Save</button>
+          <button onClick={save} disabled={saving} className="px-3 py-1 text-xs bg-blue-600 hover:bg-blue-500 rounded text-white disabled:opacity-50 disabled:cursor-wait">{saving ? 'Saving…' : 'Save'}</button>
         </div>
       </div>
     </div>
@@ -218,17 +233,31 @@ function HistoryTab() {
 }
 
 function HistoryEditor({ entry, onClose, onSaved }: { entry: PrintHistoryEntry; onClose: () => void; onSaved: () => void }) {
+  const toast = useToast();
   const [notes, setNotes] = useState(entry.notes ?? '');
   const [rating, setRating] = useState(entry.rating ?? 0);
+  const [saving, setSaving] = useState(false);
 
   const save = async () => {
-    await api.updatePrintHistory(entry.id, { notes, rating });
-    onSaved();
+    if (saving) return;
+    setSaving(true);
+    try {
+      await api.updatePrintHistory(entry.id, { notes, rating });
+      onSaved();
+    } catch (err) {
+      toast.error('Save failed', err instanceof Error ? err.message : String(err));
+    } finally {
+      setSaving(false);
+    }
   };
 
   const uploadPhoto = async (file: File) => {
-    await api.uploadPrintHistoryPhoto(entry.id, file);
-    onSaved();
+    try {
+      await api.uploadPrintHistoryPhoto(entry.id, file);
+      onSaved();
+    } catch (err) {
+      toast.error('Photo upload failed', err instanceof Error ? err.message : String(err));
+    }
   };
 
   return (
@@ -251,7 +280,7 @@ function HistoryEditor({ entry, onClose, onSaved }: { entry: PrintHistoryEntry; 
         </Field>
         <div className="flex justify-end gap-2 pt-2">
           <button onClick={onClose} className="px-3 py-1 text-xs bg-gray-700 hover:bg-gray-600 rounded text-gray-300">Cancel</button>
-          <button onClick={save} className="px-3 py-1 text-xs bg-blue-600 hover:bg-blue-500 rounded text-white">Save</button>
+          <button onClick={save} disabled={saving} className="px-3 py-1 text-xs bg-blue-600 hover:bg-blue-500 rounded text-white disabled:opacity-50 disabled:cursor-wait">{saving ? 'Saving…' : 'Save'}</button>
         </div>
       </div>
     </div>

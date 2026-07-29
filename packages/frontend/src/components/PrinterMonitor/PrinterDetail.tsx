@@ -11,6 +11,7 @@ import { PrintQueueSection } from './PrintQueueSection';
 import { formatLastSeen } from '../../lib/last-seen';
 import { MATERIAL_PRESETS } from '../../lib/material-presets';
 import { ManualFilamentsEditor } from './ManualFilamentsEditor';
+import { useToast } from '../Toast';
 
 interface Props {
   id: string;
@@ -18,6 +19,7 @@ interface Props {
 }
 
 export function PrinterDetail({ id, onBack }: Props) {
+  const toast = useToast();
   const [printer, setPrinter] = useState<PrinterRecord | null>(null);
   const [status, setStatus] = useState<PrinterStatus | undefined>(undefined);
   const [gcode, setGcode] = useState('');
@@ -26,6 +28,7 @@ export function PrinterDetail({ id, onBack }: Props) {
   const [editingSlot, setEditingSlot] = useState<AmsSlot | null>(null);
   const [showEdit, setShowEdit] = useState(false);
   const [reconnecting, setReconnecting] = useState(false);
+  const [commandPending, setCommandPending] = useState(false);
 
   const loadPrinter = () => {
     api.listPrinters().then(list => {
@@ -106,10 +109,14 @@ export function PrinterDetail({ id, onBack }: Props) {
   }
 
   const onCommand = async (command: string, args?: Record<string, unknown>) => {
+    if (commandPending) return; // prevent duplicate commands
+    setCommandPending(true);
     try {
       await api.sendPrinterCommand(printer.id, command, args);
     } catch (e) {
-      alert(`Command failed: ${e instanceof Error ? e.message : String(e)}`);
+      toast.error('Command failed', e instanceof Error ? e.message : String(e));
+    } finally {
+      setCommandPending(false);
     }
   };
 
@@ -118,10 +125,10 @@ export function PrinterDetail({ id, onBack }: Props) {
     try {
       const result = await api.reconnectPrinter(printer.id);
       if (!result.ok) {
-        alert(`Reconnect failed: ${result.error || 'unknown error'}`);
+        toast.error('Reconnect failed', result.error || 'unknown error');
       }
     } catch (e) {
-      alert(`Reconnect failed: ${e instanceof Error ? e.message : String(e)}`);
+      toast.error('Reconnect failed', e instanceof Error ? e.message : String(e));
     } finally {
       setReconnecting(false);
     }
@@ -129,7 +136,7 @@ export function PrinterDetail({ id, onBack }: Props) {
 
   const onDisconnect = async () => {
     try { await api.disconnectPrinter(printer.id); } catch (e) {
-      alert(`Disconnect failed: ${e instanceof Error ? e.message : String(e)}`);
+      toast.error('Disconnect failed', e instanceof Error ? e.message : String(e));
     }
   };
 
@@ -261,15 +268,15 @@ export function PrinterDetail({ id, onBack }: Props) {
           <div className="flex gap-2 flex-wrap">
             {state === 'printing' && (
               <>
-                <button onClick={() => onCommand('pause')}
-                  className="px-4 py-2 bg-yellow-600 hover:bg-yellow-500 rounded text-sm text-white">Pause</button>
-                <button onClick={() => onCommand('cancel')}
-                  className="px-4 py-2 bg-red-600 hover:bg-red-500 rounded text-sm text-white">Cancel</button>
+                <button onClick={() => onCommand('pause')} disabled={commandPending}
+                  className="px-4 py-2 bg-yellow-600 hover:bg-yellow-500 rounded text-sm text-white disabled:opacity-50 disabled:cursor-wait">{commandPending ? 'Pausing…' : 'Pause'}</button>
+                <button onClick={() => onCommand('cancel')} disabled={commandPending}
+                  className="px-4 py-2 bg-red-600 hover:bg-red-500 rounded text-sm text-white disabled:opacity-50 disabled:cursor-wait">{commandPending ? 'Cancelling…' : 'Cancel'}</button>
               </>
             )}
             {state === 'paused' && (
-              <button onClick={() => onCommand('resume')}
-                className="px-4 py-2 bg-green-600 hover:bg-green-500 rounded text-sm text-white">Resume</button>
+              <button onClick={() => onCommand('resume')} disabled={commandPending}
+                className="px-4 py-2 bg-green-600 hover:bg-green-500 rounded text-sm text-white disabled:opacity-50 disabled:cursor-wait">{commandPending ? 'Resuming…' : 'Resume'}</button>
             )}
             {(connection === 'disconnected' || connection === 'error') && (
               <button onClick={onReconnect} disabled={reconnecting}

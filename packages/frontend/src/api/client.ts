@@ -143,9 +143,7 @@ export async function uploadModel(file: File) {
 }
 
 export async function listModels() {
-  try {
-    return await apiFetch('/models') as Promise<any[]>;
-  } catch { return []; }
+  return apiFetch('/models') as Promise<any[]>;
 }
 
 export async function getModel(id: string) {
@@ -212,10 +210,8 @@ export async function submitSliceJob(data: {
 }
 
 export async function listJobs(status?: string) {
-  try {
-    const params = status ? `?status=${status}` : '';
-    return await apiFetch(`/jobs${params}`) as Promise<any[]>;
-  } catch { return []; }
+  const params = status ? `?status=${status}` : '';
+  return apiFetch(`/jobs${params}`) as Promise<any[]>;
 }
 
 export async function getJob(id: string) {
@@ -305,18 +301,14 @@ export async function getPrintablePartColors(modelId: string, plate: number, par
 }
 
 export async function getDefaultSettings(engine: string) {
-  try {
-    return await apiFetch(`/settings/${engine}/defaults`);
-  } catch { return null; }
+  return apiFetch(`/settings/${engine}/defaults`);
 }
 
 export async function getProfiles(engine: string, type?: string) {
-  try {
-    const params = type ? `?type=${type}` : '';
-    return await apiFetch(`/settings/${engine}/profiles${params}`) as Promise<{
-      engine: string; profile_type: string; name: string; created_at: string;
-    }[]>;
-  } catch { return []; }
+  const params = type ? `?type=${type}` : '';
+  return apiFetch(`/settings/${engine}/profiles${params}`) as Promise<{
+    engine: string; profile_type: string; name: string; created_at: string;
+  }[]>;
 }
 
 export async function getProfileSettings(engine: string, type: string, name: string) {
@@ -564,10 +556,19 @@ export interface JobFilament {
 }
 
 export async function getJobFilaments(jobId: string): Promise<JobFilament[]> {
+  // 404 = job has no parsed filament info yet (single-filament job, fresh
+  // slice). Benign empty. Anything else (500, network) must surface — the
+  // caller (Send to Printer) uses the count to decide whether to show the
+  // filament-remap dialog, and silently returning [] skipped the dialog and
+  // sent the wrong mapping.
   try {
     const data = await apiFetch(`/jobs/${jobId}/filaments`) as JobFilament[];
     return Array.isArray(data) ? data : [];
-  } catch { return []; }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (/HTTP 404|not found/i.test(msg)) return [];
+    throw err;
+  }
 }
 
 export function cameraUrl(printerId: string): string {

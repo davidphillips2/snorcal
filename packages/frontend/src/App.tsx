@@ -29,6 +29,7 @@ import { PrinterDashboard } from './components/PrinterMonitor/PrinterDashboard';
 import { InventoryPanel } from './components/Inventory/InventoryPanel';
 import { MultiPrinterFit } from './components/PrinterMonitor/MultiPrinterFit';
 import { LiveMonitorOverlay } from './components/PrinterMonitor/LiveMonitorOverlay';
+import { useToast } from './components/Toast';
 import { FilamentRemapModal } from './components/PrinterMonitor/FilamentRemapModal';
 import { AddPrinterModal } from './components/PrinterMonitor/AddPrinterModal';
 import type { PrinterStatus } from '@snorcal/shared';
@@ -320,6 +321,7 @@ function computeMeshBoundsMM(mesh: THREE.Mesh): { x: number; y: number; z: numbe
 // --- App ---
 
 export default function App() {
+  const toast = useToast();
   const [isUploading, setIsUploading] = useState(false);
   const [sceneRefs, setSceneRefs] = useState<SceneRefs | null>(null);
   const meshRefs = useRef<Record<string, THREE.Mesh | null>>({});
@@ -699,7 +701,10 @@ export default function App() {
         filamentCost: j.filamentCost, errorMessage: j.errorMessage,
         printerName: j.printerName, createdAt: j.createdAt,
       })));
-    }).catch(console.error);
+    }).catch(err => {
+      console.error('listJobs failed', err);
+      toast.error('Failed to load jobs', err instanceof Error ? err.message : String(err));
+    });
 
     // Restore project models
     const saved = persisted.current;
@@ -799,7 +804,10 @@ export default function App() {
         // touched.
         setSettings(prev => ({ ...data.process, ...prev }));
       }
-    }).catch(console.error);
+    }).catch(err => {
+      console.error('getDefaultSettings failed', err);
+      toast.error('Failed to load default slicer settings', err instanceof Error ? err.message : String(err));
+    });
   }, [engine]);
 
   // Persist state on changes (debounced)
@@ -917,7 +925,7 @@ export default function App() {
       const model = await api.uploadModel(file);
       await addModelToProject(model);
     } catch (err) {
-      alert(`Upload failed: ${err instanceof Error ? err.message : String(err)}`);
+      toast.error('Upload failed', err instanceof Error ? err.message : String(err));
     } finally {
       setIsUploading(false);
     }
@@ -1039,7 +1047,7 @@ export default function App() {
       // helper but skip the settings overwrite.
       await applySourceSettings(m.modelId);
     } catch (err) {
-      alert(`MakerWorld import failed: ${err instanceof Error ? err.message : String(err)}`);
+      toast.error('MakerWorld import failed', err instanceof Error ? err.message : String(err));
     }
   }, [addModelToProject]);
 
@@ -1071,7 +1079,7 @@ export default function App() {
       // 404 = model has no embedded settings — benign, nothing to apply.
       const msg = err instanceof Error ? err.message : String(err);
       if (!/not found|no source settings/i.test(msg)) {
-        alert(`Failed to load embedded settings: ${msg}`);
+        toast.error('Failed to load embedded settings', msg);
       }
       return;
     }
@@ -1311,7 +1319,7 @@ export default function App() {
       setTimeout(() => URL.revokeObjectURL(url), 60_000);
     } catch (err) {
       console.error('Save 3MF failed:', err);
-      alert(`Save 3MF failed: ${err instanceof Error ? err.message : String(err)}`);
+      toast.error('Save 3MF failed', err instanceof Error ? err.message : String(err));
     }
   }, [activePlateModels, saveAllColors, buildSliceBody]);
 
@@ -1327,7 +1335,7 @@ export default function App() {
       }
     } catch (err) {
       console.error('Slice failed:', err);
-      alert(`Slice failed: ${err instanceof Error ? err.message : String(err)}`);
+      toast.error('Slice failed', err instanceof Error ? err.message : String(err));
     }
   }, [activePlateModels, saveAllColors, sliceModels, engine]);
 
@@ -1348,7 +1356,7 @@ export default function App() {
       setShowJobs(true);
     } catch (err) {
       console.error('Slice all failed:', err);
-      alert(`Slice failed: ${err instanceof Error ? err.message : String(err)}`);
+      toast.error('Slice failed', err instanceof Error ? err.message : String(err));
     }
   }, [projectModels, saveAllColors, sliceModels, engine]);
 
@@ -1367,9 +1375,15 @@ export default function App() {
   }, [activeModelIndex, projectModels, plates]);
 
   const handleCancelJob = useCallback(async (jobId: string) => {
-    await api.cancelJob(jobId);
-    setJobs(prev => prev.map(j => j.id === jobId ? { ...j, status: 'cancelled' } : j));
-  }, []);
+    try {
+      await api.cancelJob(jobId);
+      setJobs(prev => prev.map(j => j.id === jobId ? { ...j, status: 'cancelled' } : j));
+      toast.info('Job cancelled');
+    } catch (err) {
+      toast.error('Cancel failed', err instanceof Error ? err.message : String(err));
+      throw err;
+    }
+  }, [toast]);
 
   const handleDownloadGcode = useCallback((jobId: string) => { window.open(api.getGcodeUrl(jobId), '_blank'); }, []);
   const handleDownloadThreemf = useCallback((jobId: string) => { window.open(api.getThreemfUrl(jobId), '_blank'); }, []);
@@ -1409,7 +1423,7 @@ export default function App() {
     } catch (err) {
       // Revert on failure
       setJobPauses(jobPauses);
-      alert(`Failed to update pauses: ${err instanceof Error ? err.message : String(err)}`);
+      toast.error('Failed to update pauses', err instanceof Error ? err.message : String(err));
     }
   }, [previewJobId, jobPauses, printers, targetPrinterId]);
 
@@ -1417,11 +1431,11 @@ export default function App() {
 
   const handleSendToPrinter = useCallback(async (jobId: string) => {
     if (!targetPrinterId) {
-      alert('No target printer selected. Add a printer first.');
+      toast.warning('No target printer selected', 'Add a printer first.');
       return;
     }
     const printer = printers.find(p => p.id === targetPrinterId);
-    if (!printer) { alert('Target printer not found'); return; }
+    if (!printer) { toast.error('Target printer not found'); return; }
 
     // Check if the send dialog is needed. Bambu printers always need the
     // dialog — print options (bed leveling, flow cali, vibration comp,
@@ -1430,7 +1444,12 @@ export default function App() {
     // when filament remapping is required (multi-filament gcode or manual
     // slots on the printer).
     let filaments: api.JobFilament[] = [];
-    try { filaments = await api.getJobFilaments(jobId); } catch { /* ignore */ }
+    try {
+      filaments = await api.getJobFilaments(jobId);
+    } catch (err) {
+      toast.error('Could not read job filaments', err instanceof Error ? err.message : String(err));
+      return;
+    }
     const usedCount = filaments.filter(f => f.used).length;
     const hasAms = printer.protocol === 'bambu' && printerStatuses[targetPrinterId]?.ams && printerStatuses[targetPrinterId]!.ams!.length > 0;
     const hasManualSlots = (printer.manualSlots ?? 0) > 0;
@@ -1446,22 +1465,22 @@ export default function App() {
     // Direct send — no remap
     try {
       const result = await api.sendToRegisteredPrinter(targetPrinterId, jobId, true);
-      alert(`Sent to printer. Path: ${result.printerPath}`);
-    } catch (err) { alert(`Send failed: ${err instanceof Error ? err.message : String(err)}`); }
-  }, [targetPrinterId, printers, printerStatuses]);
+      toast.success('Sent to printer', result.printerPath);
+    } catch (err) { toast.error('Send failed', err instanceof Error ? err.message : String(err)); }
+  }, [targetPrinterId, printers, printerStatuses, toast]);
 
   const handleQueueOnPrinter = useCallback(async (jobId: string) => {
     if (!targetPrinterId) {
-      alert('No target printer selected. Add a printer first.');
+      toast.warning('No target printer selected', 'Add a printer first.');
       return;
     }
     try {
       const result = await api.addToPrintQueue(targetPrinterId, jobId);
-      alert(result.duplicate ? 'Already in queue' : 'Added to queue');
+      toast.info(result.duplicate ? 'Already in queue' : 'Added to queue');
     } catch (err) {
-      alert(`Queue failed: ${err instanceof Error ? err.message : String(err)}`);
+      toast.error('Queue failed', err instanceof Error ? err.message : String(err));
     }
-  }, [targetPrinterId]);
+  }, [targetPrinterId, toast]);
 
   const targetPrinter = printers.find(p => p.id === targetPrinterId);
 
@@ -1760,7 +1779,7 @@ export default function App() {
       setSelectedIndices(new Set([projectModels.length - 1]));
       setPaintMode('orbit');
     } catch (err) {
-      alert(`Cut upload failed: ${err instanceof Error ? err.message : String(err)}`);
+      toast.error('Cut upload failed', err instanceof Error ? err.message : String(err));
     } finally {
       setIsUploading(false);
     }
@@ -1776,7 +1795,7 @@ export default function App() {
     setAddVolumeKind(null);
     setAddVolumeParentId(null);
     if (!parentId) {
-      alert('Select a model first to attach a volume.');
+      toast.warning('Select a model first', 'Attach a volume to a selected model.');
       return;
     }
     setIsUploading(true);
@@ -1801,7 +1820,7 @@ export default function App() {
       };
       updateModels(prev => [...prev, newPm]);
     } catch (err) {
-      alert(`Add volume failed: ${err instanceof Error ? err.message : String(err)}`);
+      toast.error('Add volume failed', err instanceof Error ? err.message : String(err));
     } finally {
       setIsUploading(false);
     }
@@ -1847,7 +1866,7 @@ export default function App() {
       };
       updateModels(prev => [...prev, newPm]);
     } catch (err) {
-      alert(`Add support failed: ${err instanceof Error ? err.message : String(err)}`);
+      toast.error('Add support failed', err instanceof Error ? err.message : String(err));
     } finally {
       setIsUploading(false);
     }
@@ -2707,7 +2726,7 @@ export default function App() {
             onClose={() => setRemapJobId(null)}
             onSent={(printerPath) => {
               setRemapJobId(null);
-              alert(`Sent to printer. Path: ${printerPath}`);
+              toast.success('Sent to printer', printerPath);
             }}
           />
         );

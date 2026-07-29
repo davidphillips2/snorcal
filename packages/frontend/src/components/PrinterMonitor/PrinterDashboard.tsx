@@ -6,12 +6,14 @@ import { AddPrinterModal } from './AddPrinterModal';
 import { EditPrinterModal } from './EditPrinterModal';
 import { CameraView } from './CameraView';
 import { formatLastSeen } from '../../lib/last-seen';
+import { useToast } from '../Toast';
 
 interface Props {
   onClose: () => void;
 }
 
 export function PrinterDashboard({ onClose }: Props) {
+  const toast = useToast();
   const [printers, setPrinters] = useState<PrinterRecord[]>([]);
   const [statuses, setStatuses] = useState<Record<string, PrinterStatus>>({});
   const [showAdd, setShowAdd] = useState(false);
@@ -68,20 +70,26 @@ export function PrinterDashboard({ onClose }: Props) {
     try {
       const result = await api.reconnectPrinter(id);
       if (!result.ok) {
-        alert(`Reconnect failed: ${result.error || 'unknown error'}`);
+        toast.error('Reconnect failed', result.error || 'unknown error');
       }
     } catch (e) {
-      alert(`Reconnect failed: ${e instanceof Error ? e.message : String(e)}`);
+      toast.error('Reconnect failed', e instanceof Error ? e.message : String(e));
     } finally {
       setReconnectingId(null);
     }
   };
 
+  const [pendingCmd, setPendingCmd] = useState<string | null>(null);
+
   const onCommand = async (printerId: string, command: string, args?: Record<string, unknown>) => {
+    if (pendingCmd) return; // prevent duplicate commands while one is in flight
+    setPendingCmd(printerId);
     try {
       await api.sendPrinterCommand(printerId, command, args);
     } catch (e) {
-      alert(`Command failed: ${e instanceof Error ? e.message : String(e)}`);
+      toast.error('Command failed', e instanceof Error ? e.message : String(e));
+    } finally {
+      setPendingCmd(null);
     }
   };
 
@@ -131,6 +139,7 @@ export function PrinterDashboard({ onClose }: Props) {
                 reconnecting={reconnectingId === p.id}
                 onEdit={() => setEditPrinter(p)}
                 onCommand={(cmd, args) => onCommand(p.id, cmd, args)}
+                commandPending={pendingCmd === p.id}
               />
             ))}
           </div>
@@ -164,9 +173,10 @@ interface CardProps {
   reconnecting?: boolean;
   onEdit: () => void;
   onCommand: (cmd: string, args?: Record<string, unknown>) => void;
+  commandPending?: boolean;
 }
 
-function PrinterCard({ printer, status, expanded, onToggle, onDelete, onReconnect, reconnecting, onEdit, onCommand }: CardProps) {
+function PrinterCard({ printer, status, expanded, onToggle, onDelete, onReconnect, reconnecting, onEdit, onCommand, commandPending }: CardProps) {
   const connection = status?.connection ?? 'disconnected';
   const state = status?.state ?? 'offline';
   const connColor = {
@@ -239,15 +249,15 @@ function PrinterCard({ printer, status, expanded, onToggle, onDelete, onReconnec
         </button>
         {state === 'printing' && (
           <>
-            <button onClick={() => onCommand('pause')}
-              className="text-xs text-yellow-300 hover:text-yellow-200 px-2 py-1 rounded hover:bg-gray-700">Pause</button>
-            <button onClick={() => onCommand('cancel')}
-              className="text-xs text-red-300 hover:text-red-200 px-2 py-1 rounded hover:bg-gray-700">Cancel</button>
+            <button onClick={() => onCommand('pause')} disabled={commandPending}
+              className="text-xs text-yellow-300 hover:text-yellow-200 px-2 py-1 rounded hover:bg-gray-700 disabled:opacity-50 disabled:cursor-wait">{commandPending ? '…' : 'Pause'}</button>
+            <button onClick={() => onCommand('cancel')} disabled={commandPending}
+              className="text-xs text-red-300 hover:text-red-200 px-2 py-1 rounded hover:bg-gray-700 disabled:opacity-50 disabled:cursor-wait">{commandPending ? '…' : 'Cancel'}</button>
           </>
         )}
         {state === 'paused' && (
-          <button onClick={() => onCommand('resume')}
-            className="text-xs text-green-300 hover:text-green-200 px-2 py-1 rounded hover:bg-gray-700">Resume</button>
+          <button onClick={() => onCommand('resume')} disabled={commandPending}
+            className="text-xs text-green-300 hover:text-green-200 px-2 py-1 rounded hover:bg-gray-700 disabled:opacity-50 disabled:cursor-wait">{commandPending ? '…' : 'Resume'}</button>
         )}
         {(connection === 'disconnected' || connection === 'error' || reconnecting) && (
           <button onClick={onReconnect} disabled={reconnecting}

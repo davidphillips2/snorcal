@@ -9,6 +9,7 @@ import { ensureDir, getJobsDir } from '../services/model-parser.js';
 import { build3MF, type ThreeMFModelInput } from '../services/threemf-builder.js';
 import { SlicerExecutor } from '../services/slicer-executor.js';
 import { findGcodeFile } from '../services/gcode-utils.js';
+import { emitJobProgress, emitJobCompleted, emitJobFailed } from '../services/event-bus.js';
 import type { SliceRequest, SliceJobData, MultiMaterialConfig, FilamentSlot } from '@snorcal/shared';
 import os from 'node:os';
 
@@ -1187,6 +1188,7 @@ export async function runSliceJob(
   db.updateJobStatus(jobId, 'running');
   db.updateJobProgress(jobId, 5, 'Building 3MF...');
   onProgress?.(5, 'Building 3MF...');
+  emitJobProgress(jobId, 5, 'Building 3MF...');
 
   // Register the executor so the cancel route can reach it (see POST
   // /api/jobs/:id/cancel below). Cleared in the finally.
@@ -1203,6 +1205,7 @@ export async function runSliceJob(
 
     db.updateJobProgress(jobId, 15, 'Spawning slicer...');
     onProgress?.(15, 'Spawning slicer...');
+    emitJobProgress(jobId, 15, 'Spawning slicer...');
 
       // Build bambuddy-style profile stubs from the user's picker choices.
       // Sidecar walks `inherits` against its bundled slicer presets and
@@ -1241,6 +1244,7 @@ export async function runSliceJob(
           const mapped = Math.max(15, Math.min(95, progress));
           db.updateJobProgress(jobId, mapped, step);
           onProgress?.(mapped, step);
+          emitJobProgress(jobId, mapped, step);
         },
       );
 
@@ -1260,6 +1264,7 @@ export async function runSliceJob(
 
       db.updateJobStatus(jobId, 'completed');
       if (result.gcodeSize) db.updateJobOutput(jobId, result.gcodeSize);
+      emitJobCompleted(jobId);
 
       // Rename gcode to use model name
       let finalGcodePath = result.gcodePath;
@@ -1324,6 +1329,12 @@ export async function runSliceJob(
       try { fs.rmSync(workDir, { recursive: true, force: true }); } catch { /* best effort */ }
     } else {
       console.warn(`[slice] keeping failed workDir at ${workDir} (SNORCAL_KEEP_FAILED_SLICE=1)`);
+    }
+    // Notify SSE listeners — but skip aborts (cancel path sets 'cancelled'
+    // via the cancel route, not 'failed').
+    const isAbort = err instanceof Error && (err.name === 'AbortError' || /abort/i.test(err.message));
+    if (!isAbort) {
+      emitJobFailed(jobId, err instanceof Error ? err.message : String(err));
     }
     throw err;
   } finally {
