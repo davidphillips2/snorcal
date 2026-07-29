@@ -31,14 +31,7 @@ export function CameraView({ printer, expanded }: Props) {
     return <WebRTCPlayer printerId={printer.id} size={size} />;
   }
   if (safeStreamUrl) {
-    return (
-      <img
-        src={safeStreamUrl}
-        alt="camera"
-        className={`${size} bg-black rounded object-cover`}
-        onError={(e) => { (e.target as HTMLImageElement).style.opacity = '0.3'; }}
-      />
-    );
+    return <MjpegImg src={safeStreamUrl} size={size} />;
   }
   if (safeSnapshotUrl) {
     return <SnapshotPoll url={safeSnapshotUrl} size={size} />;
@@ -48,23 +41,55 @@ export function CameraView({ printer, expanded }: Props) {
   return <BackendCameraRoute printer={printer} size={size} />;
 }
 
+/** MJPEG stream via <img>. Shows a visible error overlay when the stream
+ *  fails to load instead of silently fading the broken image. */
+function MjpegImg({ src, size }: { src: string; size: string }) {
+  const [error, setError] = useState(false);
+  if (error) {
+    return (
+      <div className={`${size} bg-gray-900 rounded flex items-center justify-center`}>
+        <span className="text-[10px] text-red-400 px-2 text-center">Camera unreachable</span>
+      </div>
+    );
+  }
+  return (
+    <img
+      src={src}
+      alt="camera"
+      className={`${size} bg-black rounded object-cover`}
+      onError={() => setError(true)}
+    />
+  );
+}
+
 function SnapshotPoll({ url, size }: { url: string; size: string }) {
   const [src, setSrc] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
   const timer = useRef<number | null>(null);
   const currentUrl = useRef<string | null>(null);
 
   useEffect(() => {
+    let consecutiveFails = 0;
     const tick = async () => {
       try {
         const res = await fetch(`${url}${url.includes('?') ? '&' : '?'}t=${Date.now()}`);
-        if (!res.ok) return;
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const blob = await res.blob();
         const u = URL.createObjectURL(blob);
         const prev = currentUrl.current;
         currentUrl.current = u;
         setSrc(u);
+        setFailed(false);
+        consecutiveFails = 0;
         if (prev) URL.revokeObjectURL(prev);
-      } catch {}
+      } catch {
+        // Distinguish "still connecting" from "persistently broken": only flag
+        // failure after 3 consecutive misses (~9s) so a transient blip doesn't
+        // flash an error. Once we have a frame, keep showing it — many snapshot
+        // endpoints hiccup but recover.
+        consecutiveFails++;
+        if (consecutiveFails >= 3 && !src) setFailed(true);
+      }
     };
     tick();
     timer.current = window.setInterval(tick, 3000);
@@ -72,12 +97,19 @@ function SnapshotPoll({ url, size }: { url: string; size: string }) {
       if (timer.current) window.clearInterval(timer.current);
       if (currentUrl.current) URL.revokeObjectURL(currentUrl.current);
     };
-  }, [url]);
+  }, [url, src]);
 
+  if (failed) {
+    return (
+      <div className={`${size} bg-gray-900 rounded flex items-center justify-center`}>
+        <span className="text-[10px] text-red-400 px-2 text-center">Camera unreachable</span>
+      </div>
+    );
+  }
   if (!src) {
     return (
       <div className={`${size} bg-gray-900 rounded flex items-center justify-center`}>
-        <span className="text-xs text-gray-600">no signal</span>
+        <span className="text-xs text-gray-600">connecting…</span>
       </div>
     );
   }
@@ -87,14 +119,7 @@ function SnapshotPoll({ url, size }: { url: string; size: string }) {
 function BackendCameraRoute({ printer, size }: { printer: PrinterRecord; size: string }) {
   // Old default: moonraker → MJPEG via <img>; bambu/snapmaker → snapshot poll via backend
   if (printer.protocol === 'moonraker') {
-    return (
-      <img
-        src={`/api/printers/${printer.id}/camera`}
-        alt="camera"
-        className={`${size} bg-black rounded object-cover`}
-        onError={(e) => { (e.target as HTMLImageElement).style.opacity = '0.3'; }}
-      />
-    );
+    return <MjpegImg src={`/api/printers/${printer.id}/camera`} size={size} />;
   }
   return <SnapshotPoll url={`/api/printers/${printer.id}/camera`} size={size} />;
 }
