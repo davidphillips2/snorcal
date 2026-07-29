@@ -656,6 +656,17 @@ export async function printerRoutes(app: FastifyInstance, options: { db: Db }) {
 
       const mapping = Array.isArray(body.filamentMapping) ? body.filamentMapping : null;
       const hasMapping = mapping && mapping.length > 0;
+      // Validate mapping indices. -1 / 0 = "skip" sentinel for some adapters
+      // (Bambu ams_mapping uses 0=skip); positive = slot/tray index. Reject
+      // non-integers, NaN, or negatives other than -1 before they reach the
+      // gcode rewriter (which would silently emit malformed T-codes).
+      if (hasMapping) {
+        for (const v of mapping!) {
+          if (!Number.isInteger(v) || (v < 0 && v !== -1)) {
+            return reply.status(400).send({ ok: false, error: `Invalid filament mapping entry: ${v}. Each must be an integer slot index, 0, or -1 (skip).` });
+          }
+        }
+      }
       const printOptions = body.printOptions;
 
       // Decide if we need to rewrite gcode T-codes.
