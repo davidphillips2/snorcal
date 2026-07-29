@@ -1,7 +1,6 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { AmsSlot, PrinterRecord, PrinterStatus } from '@snorcal/shared';
 import * as api from '../../api/client';
-import { probeAuthOnSSEError } from '../../api/client';
 import { formatDurationShort } from '../../lib/gcode-stats';
 import { CameraView } from './CameraView';
 import { AmsEditor } from './AmsEditor';
@@ -12,6 +11,7 @@ import { formatLastSeen } from '../../lib/last-seen';
 import { MATERIAL_PRESETS } from '../../lib/material-presets';
 import { ManualFilamentsEditor } from './ManualFilamentsEditor';
 import { useToast } from '../Toast';
+import { useSSEEvent } from '../../hooks/useSSE';
 
 interface Props {
   id: string;
@@ -42,56 +42,26 @@ export function PrinterDetail({ id, onBack }: Props) {
 
   useEffect(() => { loadPrinter(); }, [id]);
 
-  useEffect(() => {
-    let es: EventSource | null = null;
-    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-    let closed = false;
-    let firstOpen = true;
-    const onMsg = (type: string, event: MessageEvent) => {
-      try {
-        const data = JSON.parse(event.data);
-        if (data.printerId !== id) return;
-        if (type === 'printer:status') {
-          setStatus(data);
-        } else if (type === 'printer:connected') {
-          // No payload beyond printerId — mark connected locally and resync
-          // the full status via REST so state/temps recover.
-          setStatus(prev => prev ? { ...prev, connection: 'connected' } : prev);
-          loadPrinter();
-        } else if (type === 'printer:disconnected') {
-          setStatus(prev => prev ? { ...prev, connection: 'disconnected' } : prev);
-        }
-      } catch {}
-    };
-    const connect = () => {
-      if (closed) return;
-      es = new EventSource('/api/events');
-      // Resync full status after a reconnect gap (initial load is covered by
-      // the mount effect, so skip the first open).
-      es.onopen = () => {
-        if (firstOpen) { firstOpen = false; return; }
-        loadPrinter();
-      };
-      for (const t of ['printer:status', 'printer:connected', 'printer:disconnected']) {
-        es.addEventListener(t, (e) => onMsg(t, e as MessageEvent));
-      }
-      // Native EventSource gives up silently after the browser's internal cap.
-      // Force a fresh connection so the dot/state don't freeze at stale data.
-      es.onerror = () => {
-        try { es?.close(); } catch {}
-        es = null;
-        void probeAuthOnSSEError();
-        if (!closed) reconnectTimer = setTimeout(connect, 2_000);
-      };
-    };
-    connect();
-    return () => {
-      closed = true;
-      if (reconnectTimer) clearTimeout(reconnectTimer);
-      try { es?.close(); } catch {}
-      es = null;
-    };
-  }, [id]);
+  // Live status via the shared SSE connection. Only act on events for this printer.
+  const idRef = useRef(id);
+  idRef.current = id;
+  const loadPrinterRef = useRef(loadPrinter);
+  loadPrinterRef.current = loadPrinter;
+  useSSEEvent('printer:status', (data) => {
+    if (data.printerId !== idRef.current) return;
+    setStatus(data as unknown as PrinterStatus);
+  });
+  useSSEEvent('printer:connected', (data) => {
+    if (data.printerId !== idRef.current) return;
+    // No payload beyond printerId — mark connected locally and resync the
+    // full status via REST so state/temps recover.
+    setStatus(prev => prev ? { ...prev, connection: 'connected' } : prev);
+    loadPrinterRef.current();
+  });
+  useSSEEvent('printer:disconnected', (data) => {
+    if (data.printerId !== idRef.current) return;
+    setStatus(prev => prev ? { ...prev, connection: 'disconnected' } : prev);
+  });
 
   const connection = status?.connection ?? 'disconnected';
   const state = status?.state ?? 'offline';

@@ -1,12 +1,12 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { formatLastSeen } from '../../lib/last-seen';
 import type { PrinterRecord, PrinterStatus } from '@snorcal/shared';
 import * as api from '../../api/client';
-import { probeAuthOnSSEError } from '../../api/client';
 import { formatDurationShort } from '../../lib/gcode-stats';
 import { CameraView } from '../PrinterMonitor/CameraView';
 import { PrinterDashboard } from '../PrinterMonitor/PrinterDashboard';
 import { useToast } from '../Toast';
+import { useSSEEvent } from '../../hooks/useSSE';
 
 interface JobSummary {
   id: string;
@@ -55,52 +55,17 @@ export function HomeDashboard({ onSlice, onOpenJob, onOpenPrinter, onImportMaker
 
   useEffect(() => { refresh(); }, []);
 
-  useEffect(() => {
-    let es: EventSource | null = null;
-    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-    let closed = false;
-    let firstOpen = true;
-    const onMsg = (type: string, event: MessageEvent) => {
-      try {
-        const data = JSON.parse(event.data);
-        if (type === 'printer:status' && data.printerId) {
-          setStatuses(prev => ({ ...prev, [data.printerId]: data }));
-        }
-        if (type === 'job:progress' || type === 'job:completed' || type === 'job:failed') {
-          refresh();
-        }
-      } catch {}
-    };
-    const connect = () => {
-      if (closed) return;
-      es = new EventSource('/api/events');
-      // Resync live status after a reconnect gap (first open is covered by the
-      // mount effect, so skip it to avoid a redundant fetch).
-      es.onopen = () => {
-        if (firstOpen) { firstOpen = false; return; }
-        refresh();
-      };
-      for (const t of ['printer:status', 'job:progress', 'job:completed', 'job:failed']) {
-        es.addEventListener(t, (e) => onMsg(t, e as MessageEvent));
-      }
-      // Native EventSource auto-reconnects, but gives up silently after the
-      // browser's internal cap (esp. after a backend restart). Force a fresh
-      // connection so tiles don't freeze at stale status.
-      es.onerror = () => {
-        try { es?.close(); } catch {}
-        es = null;
-        void probeAuthOnSSEError();
-        if (!closed) reconnectTimer = setTimeout(connect, 2000);
-      };
-    };
-    connect();
-    return () => {
-      closed = true;
-      if (reconnectTimer) clearTimeout(reconnectTimer);
-      try { es?.close(); } catch {}
-      es = null;
-    };
-  }, []);
+  // Live printer status + job updates via the shared SSE connection.
+  useSSEEvent('printer:status', (data) => {
+    if (data.printerId) setStatuses(prev => ({ ...prev, [data.printerId as string]: data as unknown as PrinterStatus }));
+  });
+  const refreshRef = useRef(refresh);
+  refreshRef.current = refresh;
+  useSSEEvent('job:progress', () => refreshRef.current());
+  useSSEEvent('job:completed', () => refreshRef.current());
+  useSSEEvent('job:failed', () => refreshRef.current());
+  useSSEEvent('printer:connected', () => refreshRef.current());
+  useSSEEvent('printer:disconnected', () => refreshRef.current());
 
   const printingCount = Object.values(statuses).filter(s => s.state === 'printing').length;
   const totalJobs = jobs.length;

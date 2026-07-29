@@ -1,12 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 import type { PrinterRecord, PrinterStatus } from '@snorcal/shared';
 import * as api from '../../api/client';
-import { probeAuthOnSSEError } from '../../api/client';
 import { AddPrinterModal } from './AddPrinterModal';
 import { EditPrinterModal } from './EditPrinterModal';
 import { CameraView } from './CameraView';
 import { formatLastSeen } from '../../lib/last-seen';
 import { useToast } from '../Toast';
+import { useSSEEvent } from '../../hooks/useSSE';
 
 interface Props {
   onClose: () => void;
@@ -38,26 +38,14 @@ export function PrinterDashboard({ onClose }: Props) {
 
   useEffect(() => { refresh(); }, []);
 
-  // Listen to SSE for printer status updates
-  useEffect(() => {
-    const es = new EventSource('/api/events');
-    const onMsg = (type: string, event: MessageEvent) => {
-      try {
-        const data = JSON.parse(event.data);
-        if (type === 'printer:status' && data.printerId) {
-          setStatuses(prev => ({ ...prev, [data.printerId]: data }));
-        }
-        if (type === 'printer:connected' || type === 'printer:disconnected') {
-          refresh();
-        }
-      } catch {}
-    };
-    for (const t of ['printer:status', 'printer:connected', 'printer:disconnected']) {
-      es.addEventListener(t, (e) => onMsg(t, e as MessageEvent));
-    }
-    es.onerror = () => { void probeAuthOnSSEError(); };
-    return () => es.close();
-  }, []);
+  // Live printer status via the shared SSE connection.
+  const refreshRef = useRef(refresh);
+  refreshRef.current = refresh;
+  useSSEEvent('printer:status', (data) => {
+    if (data.printerId) setStatuses(prev => ({ ...prev, [data.printerId as string]: data as unknown as PrinterStatus }));
+  });
+  useSSEEvent('printer:connected', () => refreshRef.current());
+  useSSEEvent('printer:disconnected', () => refreshRef.current());
 
   const onDelete = async (id: string) => {
     if (!confirm('Remove this printer?')) return;
