@@ -839,6 +839,19 @@ export async function buildSliceInput3MF(
     }
   }
 
+  // Force Label Objects off. OrcaSlicer's exclude_objects path walks
+  // model_settings.config and expects each labeled <object> to carry its
+  // own geometry — but our 3MF structure uses a wrapper <object id=N> that
+  // only contains <components> referencing the real mesh objects, with the
+  // top-level <item> pointing at the wrapper. With exclude_object=1 (the
+  // template default in default-project-settings.json) OrcaSlicer fails to
+  // resolve the wrapper as a labelable object and aborts:
+  //   "Unknown label object id!" exit 156.
+  // Reproduced: same 3MF with exclude_object=0 slices clean. Force-disable
+  // here (overriding any user/imported value) until threemf-builder emits
+  // a structure Orca can label. Frontend DEFAULT_VALUES already ships 0.
+  projectSettings['exclude_object'] = '0';
+
   // Bambuddy parity: preset identity keys (printer_settings_id,
   // print_settings_id, filament_settings_id, master_extruder_id,
   // filament_map, filament_map_mode) ship in the BambuStudio reference
