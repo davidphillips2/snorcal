@@ -621,14 +621,24 @@ export default function App() {
       }
       if (!jobId) continue;
       setJobs((prev) =>
-        prev.map((j) =>
-          j.id === jobId
-            ? { ...j, status: msg.type === 'job:completed' ? 'completed' : msg.type === 'job:failed' ? 'failed' : 'running',
-                progress: (msg.data.progress as number) ?? j.progress,
-                currentStep: msg.data.currentStep as string | undefined,
-                errorMessage: msg.data.error as string | undefined }
-            : j
-        ),
+        prev.map((j) => {
+          if (j.id !== jobId) return j;
+          // job:completed/job:failed events carry only jobId — force progress
+          // to 100 (or last for failed) so the bar doesn't freeze at whatever
+          // the last progress tick happened to land on.
+          if (msg.type === 'job:completed') {
+            return { ...j, status: 'completed', progress: 100, currentStep: undefined, errorMessage: undefined };
+          }
+          if (msg.type === 'job:failed') {
+            return { ...j, status: 'failed', errorMessage: (msg.data.error as string) ?? j.errorMessage };
+          }
+          // job:progress
+          return {
+            ...j, status: 'running',
+            progress: (msg.data.progress as number) ?? j.progress,
+            currentStep: (msg.data.currentStep as string) ?? j.currentStep,
+          };
+        }),
       );
     }
     if (printerListDirty) {

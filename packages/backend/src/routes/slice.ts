@@ -1276,6 +1276,7 @@ export async function runSliceJob(
       }
 
       db.updateJobStatus(jobId, 'completed');
+      db.updateJobProgress(jobId, 100, '');
       if (result.gcodeSize) db.updateJobOutput(jobId, result.gcodeSize);
       emitJobCompleted(jobId);
 
