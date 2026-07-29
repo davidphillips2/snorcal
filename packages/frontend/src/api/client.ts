@@ -38,7 +38,15 @@ async function apiFetch(path: string, options?: RequestInit) {
       }
       if (!res.ok) {
         let msg = `HTTP ${res.status}`;
-        try { const t = await res.text(); if (t) msg = t; } catch {}
+        try {
+          const t = await res.text();
+          if (t) {
+            // Prefer the structured error field when the body is JSON
+            // (backend returns { ok:false, error:"..." }), else the raw text.
+            try { const j = JSON.parse(t); if (j?.error) msg = j.error; else msg = t; }
+            catch { msg = t; }
+          }
+        } catch {}
         throw new Error(msg);
       }
       const json = await res.json();

@@ -218,7 +218,7 @@ export async function printerRoutes(app: FastifyInstance, options: { db: Db }) {
       return reply.send({ ok: true, data: devices });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      return reply.send({ ok: false, error: `Discovery failed: ${message}` });
+      return reply.status(500).send({ ok: false, error: `Discovery failed: ${message}` });
     }
   });
 
@@ -431,7 +431,7 @@ export async function printerRoutes(app: FastifyInstance, options: { db: Db }) {
       return reply.send(result);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      return reply.send({ ok: false, error: message });
+      return reply.status(502).send({ ok: false, error: message });
     }
   });
 
@@ -444,7 +444,7 @@ export async function printerRoutes(app: FastifyInstance, options: { db: Db }) {
       return reply.send({ ok: true });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      return reply.send({ ok: false, error: message });
+      return reply.status(502).send({ ok: false, error: message });
     }
   });
 
@@ -504,7 +504,7 @@ export async function printerRoutes(app: FastifyInstance, options: { db: Db }) {
       return reply.send({ ok: true });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      return reply.send({ ok: false, error: message });
+      return reply.status(502).send({ ok: false, error: message });
     }
   });
 
@@ -703,7 +703,7 @@ export async function printerRoutes(app: FastifyInstance, options: { db: Db }) {
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      return reply.send({ ok: false, error: message });
+      return reply.status(502).send({ ok: false, error: message });
     }
   });
 
@@ -750,7 +750,7 @@ export async function printerRoutes(app: FastifyInstance, options: { db: Db }) {
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      return reply.send({ ok: false, error: message });
+      return reply.status(502).send({ ok: false, error: message });
     }
   });
 
@@ -836,7 +836,7 @@ export async function printerRoutes(app: FastifyInstance, options: { db: Db }) {
       return reply.send({ ok: true, data: { printerPath } });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      return reply.send({ ok: false, error: message });
+      return reply.status(502).send({ ok: false, error: message });
     } finally {
       try { fs.rmSync(stageDir, { recursive: true, force: true }); } catch { /* ignore */ }
     }
