@@ -37,6 +37,7 @@ import { HomeDashboard } from './components/Home/HomeDashboard';
 import { PrinterDetail } from './components/PrinterMonitor/PrinterDetail';
 import { useSSE } from './hooks/useSSE';
 import { useUndo } from './hooks/useUndo';
+import { usePlates } from './hooks/usePlates';
 import * as api from './api/client';
 import type { PausePoint } from './api/client';
 import { shelfPack } from './lib/pack';
@@ -85,8 +86,6 @@ export default function App() {
   // per-row ⊖ button in ObjectListPanel). Falls back to activeModel.modelId.
   const [addVolumeParentId, setAddVolumeParentId] = useState<string | null>(null);
   const [activeColor, setActiveColor] = useState(() => persisted.current?.activeColor || '#FF0000');
-  const [plates, setPlates] = useState<Array<{ id: string; name: string }>>(() => persisted.current?.plates ?? [{ id: defaultPlateId, name: 'Plate 1' }]);
-  const [activePlateId, setActivePlateId] = useState(() => persisted.current?.activePlateId ?? defaultPlateId);
   const [projectModels, setProjectModels] = useState<ProjectModel[]>([]);
   const [selectedIndices, setSelectedIndices] = useState<Set<number>>(new Set());
   // Derived single-active index (first of set or null) — kept for back-compat
@@ -122,59 +121,19 @@ export default function App() {
     clearSelection: () => selectSingle(null),
   });
 
-  // --- Plate manager handlers ---
-  const handleRenamePlate = useCallback((id: string, name: string) => {
-    setPlates(prev => prev.map(p => p.id === id ? { ...p, name } : p));
-  }, []);
-  const handleDuplicatePlate = useCallback((id: string) => {
-    const idx = plates.findIndex(p => p.id === id);
-    if (idx < 0) return;
-    const src = plates[idx];
-    const newId = `plate-${Date.now()}`;
-    const modelIdMap = new Map<string, string>();
-    const clones: ProjectModel[] = projectModels
-      .filter(m => m.plateId === id)
-      .map(m => {
-        const newMid = `m-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-        modelIdMap.set(m.modelId, newMid);
-        return { ...m, modelId: newMid, plateId: newId, faceColors: m.faceColors ? new Uint8Array(m.faceColors) : null };
-      });
-    clones.forEach(c => {
-      if (c.linkedTo) c.linkedTo = c.linkedTo.map(lid => modelIdMap.get(lid) ?? lid);
-    });
-    setPlates(prev => [
-      ...prev.slice(0, idx + 1),
-      { id: newId, name: `${src.name} copy` },
-      ...prev.slice(idx + 1),
-    ]);
-    updateModels(pm => [...pm, ...clones]);
-    setActivePlateId(newId);
-    selectSingle(null);
-  }, [plates, projectModels, updateModels]);
-  const handleDeletePlate = useCallback((id: string) => {
-    if (plates.length <= 1) return;
-    const idx = plates.findIndex(p => p.id === id);
-    if (idx < 0) return;
-    setPlates(prev => prev.filter(p => p.id !== id));
-    updateModels(pm => pm.filter(m => m.plateId !== id));
-    if (activePlateId === id) {
-      const fallbackIdx = Math.max(0, idx - 1);
-      setActivePlateId(prev => {
-        const next = plates.filter(p => p.id !== id);
-        return next[Math.min(fallbackIdx, next.length - 1)]?.id ?? prev;
-      });
-      selectSingle(null);
-    }
-  }, [plates, activePlateId, updateModels]);
-  const handleReorderPlates = useCallback((fromIdx: number, toIdx: number) => {
-    setPlates(prev => {
-      if (fromIdx === toIdx || fromIdx < 0 || toIdx < 0 || fromIdx >= prev.length || toIdx >= prev.length) return prev;
-      const next = [...prev];
-      const [moved] = next.splice(fromIdx, 1);
-      next.splice(toIdx, 0, moved);
-      return next;
-    });
-  }, []);
+  // --- Plates (tabs) + active-plate state ---
+  const {
+    plates, setPlates,
+    activePlateId, setActivePlateId,
+    handleRenamePlate, handleDuplicatePlate, handleDeletePlate, handleReorderPlates,
+  } = usePlates({
+    initialPlates: persisted.current?.plates ?? [{ id: defaultPlateId, name: 'Plate 1' }],
+    initialActivePlateId: persisted.current?.activePlateId ?? defaultPlateId,
+    projectModels,
+    updateModels,
+    clearSelection: () => selectSingle(null),
+  });
+
   // Toggle anti-warp brim preset: brim_ears + 8mm width
   const toggleBrim = useCallback(() => {
     setSettings(prev => {
