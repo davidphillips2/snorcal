@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import * as api from '../../api/client';
 import type { Spool, PrintHistoryEntry } from '../../api/client';
 import { useToast } from '../Toast';
+import { Modal } from '../Modal';
 
 interface InventoryPanelProps {
   onClose: () => void;
@@ -15,27 +16,26 @@ export function InventoryPanel({ onClose }: InventoryPanelProps) {
   const [tab, setTab] = useState<Tab>('spools');
 
   return (
-    <div className="fixed inset-0 z-40 bg-black/50 flex items-center justify-center p-4" onClick={onClose}>
-      <div className="bg-gray-900 rounded-xl shadow-2xl w-full max-w-3xl max-h-[85vh] flex flex-col" onClick={e => e.stopPropagation()}>
-        <div className="flex items-center justify-between px-4 py-3 border-b border-gray-700">
-          <div className="flex items-center gap-2">
-            <h2 className="text-base font-semibold text-gray-100">Inventory</h2>
-            <div className="flex bg-gray-800 rounded ml-2">
-              {(['spools', 'history'] as Tab[]).map(t => (
-                <button key={t} onClick={() => setTab(t)}
-                  className={`px-3 py-1 text-xs rounded transition ${tab === t ? 'bg-blue-600 text-white' : 'text-gray-400 hover:text-white'}`}>
-                  {t === 'spools' ? 'Spools' : 'Print History'}
-                </button>
-              ))}
-            </div>
-          </div>
-          <button onClick={onClose} className="text-gray-400 hover:text-white text-xl leading-none">×</button>
-        </div>
-        <div className="flex-1 overflow-y-auto p-4">
-          {tab === 'spools' ? <SpoolsTab /> : <HistoryTab />}
+    <Modal
+      title="Inventory"
+      onClose={onClose}
+      widthClass="max-w-3xl"
+      panelClass="bg-gray-900 rounded-xl shadow-2xl flex flex-col max-h-[85vh] overflow-hidden p-0"
+    >
+      <div className="flex items-center gap-2 px-4 py-3 border-b border-gray-700">
+        <div className="flex bg-gray-800 rounded">
+          {(['spools', 'history'] as Tab[]).map(t => (
+            <button key={t} onClick={() => setTab(t)}
+              className={`px-3 py-1 text-xs rounded transition ${tab === t ? 'bg-blue-600 text-white' : 'text-gray-400 hover:text-white'}`}>
+              {t === 'spools' ? 'Spools' : 'Print History'}
+            </button>
+          ))}
         </div>
       </div>
-    </div>
+      <div className="flex-1 overflow-y-auto p-4">
+        {tab === 'spools' ? <SpoolsTab /> : <HistoryTab />}
+      </div>
+    </Modal>
   );
 }
 
@@ -144,34 +144,38 @@ function SpoolEditor({ spool, onClose, onSaved }: { spool: Spool | null; onClose
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4" onClick={onClose}>
-      <div className="bg-gray-900 rounded-lg p-4 w-full max-w-md space-y-2" onClick={e => e.stopPropagation()}>
-        <h3 className="text-sm font-semibold text-gray-100">{spool ? 'Edit Spool' : 'New Spool'}</h3>
-        <Field label="Name"><input type="text" value={name} onChange={e => setName(e.target.value)} className={inputCls} /></Field>
-        <div className="grid grid-cols-2 gap-2">
-          <Field label="Color"><input type="color" value={color} onChange={e => setColor(e.target.value)} className="w-full h-8 rounded bg-gray-800" /></Field>
-          <Field label="Material">
-            <select value={material} onChange={e => setMaterial(e.target.value)} className={inputCls}>
-              {MATERIALS.map(m => <option key={m} value={m}>{m}</option>)}
-            </select>
-          </Field>
-        </div>
-        <div className="grid grid-cols-3 gap-2">
-          <Field label="Total (g)"><input type="number" value={totalG} onChange={e => setTotalG(Number(e.target.value))} className={inputCls} /></Field>
-          <Field label="Remaining (g)"><input type="number" value={remainingG} onChange={e => setRemainingG(Number(e.target.value))} className={inputCls} /></Field>
-          <Field label="$/kg"><input type="number" step="0.01" value={costPerKg} onChange={e => setCostPerKg(Number(e.target.value))} className={inputCls} /></Field>
-        </div>
-        <Field label="Notes"><textarea value={notes} onChange={e => setNotes(e.target.value)} rows={2} className={inputCls} /></Field>
-        <label className="flex items-center gap-2 text-xs text-gray-400">
-          <input type="checkbox" checked={archived} onChange={e => setArchived(e.target.checked)} className="accent-blue-500" />
-          Archived (out of rotation)
-        </label>
-        <div className="flex justify-end gap-2 pt-2">
+    <Modal
+      title={spool ? 'Edit Spool' : 'New Spool'}
+      onClose={onClose}
+      widthClass="max-w-md"
+      panelClass="bg-gray-900 rounded-lg p-4 space-y-2"
+      footer={
+        <>
           <button onClick={onClose} className="px-3 py-1 text-xs bg-gray-700 hover:bg-gray-600 rounded text-gray-300">Cancel</button>
           <button onClick={save} disabled={saving} className="px-3 py-1 text-xs bg-blue-600 hover:bg-blue-500 rounded text-white disabled:opacity-50 disabled:cursor-wait">{saving ? 'Saving…' : 'Save'}</button>
-        </div>
+        </>
+      }
+    >
+      <Field label="Name"><input type="text" value={name} onChange={e => setName(e.target.value)} className={inputCls} /></Field>
+      <div className="grid grid-cols-2 gap-2">
+        <Field label="Color"><input type="color" value={color} onChange={e => setColor(e.target.value)} className="w-full h-8 rounded bg-gray-800" /></Field>
+        <Field label="Material">
+          <select value={material} onChange={e => setMaterial(e.target.value)} className={inputCls}>
+            {MATERIALS.map(m => <option key={m} value={m}>{m}</option>)}
+          </select>
+        </Field>
       </div>
-    </div>
+      <div className="grid grid-cols-3 gap-2">
+        <Field label="Total (g)"><input type="number" value={totalG} onChange={e => setTotalG(Number(e.target.value))} className={inputCls} /></Field>
+        <Field label="Remaining (g)"><input type="number" value={remainingG} onChange={e => setRemainingG(Number(e.target.value))} className={inputCls} /></Field>
+        <Field label="$/kg"><input type="number" step="0.01" value={costPerKg} onChange={e => setCostPerKg(Number(e.target.value))} className={inputCls} /></Field>
+      </div>
+      <Field label="Notes"><textarea value={notes} onChange={e => setNotes(e.target.value)} rows={2} className={inputCls} /></Field>
+      <label className="flex items-center gap-2 text-xs text-gray-400">
+        <input type="checkbox" checked={archived} onChange={e => setArchived(e.target.checked)} className="accent-blue-500" />
+        Archived (out of rotation)
+      </label>
+    </Modal>
   );
 }
 
@@ -261,28 +265,32 @@ function HistoryEditor({ entry, onClose, onSaved }: { entry: PrintHistoryEntry; 
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4" onClick={onClose}>
-      <div className="bg-gray-900 rounded-lg p-4 w-full max-w-md space-y-2" onClick={e => e.stopPropagation()}>
-        <h3 className="text-sm font-semibold text-gray-100">Edit Print</h3>
-        <div className="text-xs text-gray-500">{entry.modelName} · {new Date(entry.completedAt).toLocaleString()}</div>
-        <Field label="Rating">
-          <div className="flex gap-1">
-            {[1, 2, 3, 4, 5].map(n => (
-              <button key={n} onClick={() => setRating(n)} className={`text-xl ${n <= rating ? 'text-yellow-400' : 'text-gray-700'}`}>★</button>
-            ))}
-          </div>
-        </Field>
-        <Field label="Notes"><textarea value={notes} onChange={e => setNotes(e.target.value)} rows={3} className={inputCls} /></Field>
-        <Field label="Photo">
-          <input type="file" accept="image/*" onChange={e => {
-            const f = e.target.files?.[0]; if (f) uploadPhoto(f); e.target.value = '';
-          }} className="text-xs text-gray-400" />
-        </Field>
-        <div className="flex justify-end gap-2 pt-2">
+    <Modal
+      title="Edit Print"
+      subtitle={`${entry.modelName} · ${new Date(entry.completedAt).toLocaleString()}`}
+      onClose={onClose}
+      widthClass="max-w-md"
+      panelClass="bg-gray-900 rounded-lg p-4 space-y-2"
+      footer={
+        <>
           <button onClick={onClose} className="px-3 py-1 text-xs bg-gray-700 hover:bg-gray-600 rounded text-gray-300">Cancel</button>
           <button onClick={save} disabled={saving} className="px-3 py-1 text-xs bg-blue-600 hover:bg-blue-500 rounded text-white disabled:opacity-50 disabled:cursor-wait">{saving ? 'Saving…' : 'Save'}</button>
+        </>
+      }
+    >
+      <Field label="Rating">
+        <div className="flex gap-1">
+          {[1, 2, 3, 4, 5].map(n => (
+            <button key={n} onClick={() => setRating(n)} aria-label={`${n} star${n === 1 ? '' : 's'}`} className={`text-xl ${n <= rating ? 'text-yellow-400' : 'text-gray-700'}`}>★</button>
+          ))}
         </div>
-      </div>
-    </div>
+      </Field>
+      <Field label="Notes"><textarea value={notes} onChange={e => setNotes(e.target.value)} rows={3} className={inputCls} /></Field>
+      <Field label="Photo">
+        <input type="file" accept="image/*" onChange={e => {
+          const f = e.target.files?.[0]; if (f) uploadPhoto(f); e.target.value = '';
+        }} className="text-xs text-gray-400" />
+      </Field>
+    </Modal>
   );
 }

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import * as api from '../../api/client';
 import type { PrinterRecord } from '@snorcal/shared';
+import { Modal } from '../Modal';
 
 interface Props {
   printer: PrinterRecord;
@@ -78,14 +79,24 @@ export function EditPrinterModal({ printer, onClose, onSaved }: Props) {
   const isBambu = printer.protocol === 'bambu';
 
   return (
-    <div className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-4">
-      <div className="bg-gray-800 border border-gray-700 rounded-lg w-full max-w-md p-5 space-y-4">
-        <div className="flex items-center justify-between">
-          <h2 className="text-lg font-semibold text-white">Edit Printer</h2>
-          <button onClick={onClose} className="text-gray-400 hover:text-white text-xl">&times;</button>
-        </div>
-
-        {error && <div className="bg-red-900/40 border border-red-700 rounded px-3 py-2 text-sm text-red-200">{error}</div>}
+    <Modal
+      title="Edit Printer"
+      onClose={onClose}
+      widthClass="max-w-md"
+      panelClass="bg-gray-800 border border-gray-700 rounded-lg p-5 space-y-4"
+      closeOnBackdrop={false}
+      footer={
+        <>
+          <button onClick={onClose}
+            className="flex-1 px-3 py-2 bg-gray-700 hover:bg-gray-600 rounded text-sm text-gray-200">Cancel</button>
+          <button onClick={submit} disabled={submitting}
+            className="flex-1 px-3 py-2 bg-blue-600 hover:bg-blue-500 disabled:bg-blue-600/40 rounded text-sm text-white">
+            {submitting ? 'Saving…' : 'Save'}
+          </button>
+        </>
+      }
+    >
+      {error && <div className="bg-red-900/40 border border-red-700 rounded px-3 py-2 text-sm text-red-200">{error}</div>}
 
         <Field label="Name">
           <input value={name} onChange={(e) => setName(e.target.value)}
@@ -184,17 +195,7 @@ export function EditPrinterModal({ printer, onClose, onSaved }: Props) {
             </p>
           </div>
         </details>
-
-        <div className="flex gap-2 pt-2">
-          <button onClick={onClose}
-            className="flex-1 px-3 py-2 bg-gray-700 hover:bg-gray-600 rounded text-sm text-gray-200">Cancel</button>
-          <button onClick={submit} disabled={submitting}
-            className="flex-1 px-3 py-2 bg-blue-600 hover:bg-blue-500 disabled:bg-blue-600/40 rounded text-sm text-white">
-            {submitting ? 'Saving…' : 'Save'}
-          </button>
-        </div>
-      </div>
-    </div>
+    </Modal>
   );
 }
 
