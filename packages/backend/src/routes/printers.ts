@@ -10,6 +10,7 @@ import { parseGcodeFilaments } from '../services/gcode-filaments.js';
 import { rewriteGcodeToolMapping, mappingIsNoop } from '../services/gcode-rewriter.js';
 import { getJobsDir, ensureDir } from '../services/model-parser.js';
 import { assertSafeUrl } from '../services/ssrf.js';
+// LAN source binding handled via WS localAddress in adapters (see lan-bind.ts).
 import type { PrinterCommand, PrinterProtocol, PrintOptions } from '@snorcal/shared';
 
 /**
@@ -532,6 +533,7 @@ export async function printerRoutes(app: FastifyInstance, options: { db: Db }) {
         reply.hijack();
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
+        console.error(`[camera] bambu snapshot ${req.params.id} failed:`, message);
         return reply.status(502).send({ ok: false, error: message });
       }
       return;
@@ -551,6 +553,7 @@ export async function printerRoutes(app: FastifyInstance, options: { db: Db }) {
         }
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
+        console.error(`[camera] moonraker snapshot ${req.params.id} failed:`, message);
         return reply.status(502).send({ ok: false, error: message });
       }
     }
@@ -584,6 +587,7 @@ export async function printerRoutes(app: FastifyInstance, options: { db: Db }) {
       reply.hijack();
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      console.error(`[camera] mjpeg proxy ${req.params.id} failed:`, message);
       return reply.status(502).send({ ok: false, error: message });
     }
   });

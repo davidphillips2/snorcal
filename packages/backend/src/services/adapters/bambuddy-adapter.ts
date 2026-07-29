@@ -4,6 +4,7 @@ import type { PrinterCommand, PrinterStatus, PrinterState, PrinterConnectionStat
 import type { PrinterAdapter } from './adapter.js';
 import { assertSafeUrl } from '../ssrf.js';
 import { wrapGcodeAs3mf } from '../gcode-utils.js';
+import { LAN_SOURCE_IP, lanFetch } from '../lan-bind.js';
 
 export interface BambuddyAdapterOptions {
   printerId: string;           // snorcal printer UUID
@@ -88,7 +89,15 @@ export class BambuddyAdapter implements PrinterAdapter {
       const fail = (err: Error) => {
         if (settled) return;
         settled = true;
-        this.setConnection(false, err.message);
+        // undici's "fetch failed" TypeError wraps the real cause (EHOSTUNREACH,
+        // ECONNREFUSED, cert error, etc.) in err.cause. Log it so PrinterManager's
+        // generic reason string ("fetch failed") isn't the only signal.
+        const cause = (err as Error & { cause?: unknown }).cause;
+        const detail = cause instanceof Error
+          ? `${cause.name}: ${cause.message}`
+          : typeof cause === 'string' ? cause : '';
+        console.warn(`[Bambuddy ${this.baseUrl}] connect failed: ${err.message}${detail ? ` — cause: ${detail}` : ''}`);
+        this.setConnection(false, detail || err.message);
         reject(err);
       };
 
@@ -120,7 +129,7 @@ export class BambuddyAdapter implements PrinterAdapter {
 
     const wsUrl = this.wsUrl();
     if (process.env.DEBUG_PRINTER) console.debug('[Bambuddy] connecting', wsUrl.replace(/token=[^&]*/, 'token=***'));
-    const ws = new WebSocket(wsUrl);
+    const ws = new WebSocket(wsUrl, LAN_SOURCE_IP ? { localAddress: LAN_SOURCE_IP } : undefined);
 
     return new Promise<WebSocket>((resolve, reject) => {
       const onOpen = () => {
@@ -153,12 +162,12 @@ export class BambuddyAdapter implements PrinterAdapter {
   /** POST /api/v1/auth/ws-token with X-API-Key → {token}. */
   private async mintToken(): Promise<string> {
     assertSafeUrl(`${this.baseUrl}/api/v1/auth/ws-token`, { allowPrivate: true });
-    const res = await fetch(`${this.baseUrl}/api/v1/auth/ws-token`, {
+    const res = await lanFetch(`${this.baseUrl}/api/v1/auth/ws-token`, {
       method: 'POST',
       headers: this.apiKey ? { 'X-API-Key': this.apiKey } : {},
       signal: AbortSignal.timeout(8000),
       redirect: 'manual',
-    });
+    } as RequestInit);
     if (!res.ok) throw new Error(`bambuddy ws-token HTTP ${res.status}`);
     const json = await res.json() as { token?: string };
     if (!json.token) throw new Error('bambuddy ws-token: no token in response');
@@ -367,12 +376,12 @@ export class BambuddyAdapter implements PrinterAdapter {
     }
     const url = `${this.baseUrl}/api/v1/webhook/printer/${this.bambuddyPrinterId}/${action}`;
     assertSafeUrl(url, { allowPrivate: true });
-    const res = await fetch(url, {
+    const res = await lanFetch(url, {
       method: 'POST',
       headers: { 'X-API-Key': this.apiKey },
       signal: AbortSignal.timeout(8000),
       redirect: 'manual',
-    });
+    } as RequestInit);
     if (!res.ok) throw new Error(`bambuddy ${action} HTTP ${res.status}`);
   }
 
@@ -408,13 +417,13 @@ export class BambuddyAdapter implements PrinterAdapter {
     const form = new FormData();
     form.append('file', new Blob([uploadBuffer], { type: 'application/octet-stream' }), uploadFilename);
     form.append('printer_id', String(this.bambuddyPrinterId));
-    const res = await fetch(url, {
+    const res = await lanFetch(url, {
       method: 'POST',
       headers: this.apiKey ? { 'X-API-Key': this.apiKey } : {},
       body: form,
       signal: AbortSignal.timeout(180_000),
       redirect: 'manual',
-    });
+    } as RequestInit);
     if (!res.ok) {
       const txt = await res.text().catch(() => '');
       throw new Error(`bambuddy upload HTTP ${res.status} ${txt.slice(0, 200)}`);
@@ -466,7 +475,7 @@ export class BambuddyAdapter implements PrinterAdapter {
       ...(amsMapping ? { ams_mapping: amsMapping } : {}),
       ...(plateId ? { plate_id: plateId } : {}),
     };
-    const queueRes = await fetch(queueUrl, {
+    const queueRes = await lanFetch(queueUrl, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -475,7 +484,7 @@ export class BambuddyAdapter implements PrinterAdapter {
       body: JSON.stringify(queueBody),
       signal: AbortSignal.timeout(15_000),
       redirect: 'manual',
-    });
+    } as RequestInit);
     if (!queueRes.ok) {
       const txt = await queueRes.text().catch(() => '');
       throw new Error(`bambuddy queue create HTTP ${queueRes.status} ${txt.slice(0, 200)}`);
@@ -489,12 +498,12 @@ export class BambuddyAdapter implements PrinterAdapter {
     }
     const startUrl = `${this.baseUrl}/api/v1/webhook/printer/${this.bambuddyPrinterId}/start`;
     assertSafeUrl(startUrl, { allowPrivate: true });
-    const startRes = await fetch(startUrl, {
+    const startRes = await lanFetch(startUrl, {
       method: 'POST',
       headers: { 'X-API-Key': this.apiKey },
       signal: AbortSignal.timeout(15_000),
       redirect: 'manual',
-    });
+    } as RequestInit);
     if (!startRes.ok) {
       const txt = await startRes.text().catch(() => '');
       throw new Error(`bambuddy start HTTP ${startRes.status} ${txt.slice(0, 200)}`);
@@ -506,11 +515,11 @@ export class BambuddyAdapter implements PrinterAdapter {
   async fetchCameraSnapshot(): Promise<Buffer | null> {
     const url = `${this.baseUrl}/api/v1/printers/${this.bambuddyPrinterId}/camera/snapshot`;
     assertSafeUrl(url, { allowPrivate: true });
-    const res = await fetch(url, {
+    const res = await lanFetch(url, {
       headers: this.apiKey ? { 'X-API-Key': this.apiKey } : {},
       signal: AbortSignal.timeout(6000),
       redirect: 'manual',
-    });
+    } as RequestInit);
     if (!res.ok) throw new Error(`bambuddy camera HTTP ${res.status}`);
     return Buffer.from(await res.arrayBuffer());
   }

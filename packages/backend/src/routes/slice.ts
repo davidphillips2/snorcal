@@ -799,7 +799,11 @@ export async function buildSliceInput3MF(
         || key === 'print_settings_id'
         || key === 'default_print_profile'
         || key === 'default_filament_profile'
-        || key === 'inherits_group') continue;
+        || key === 'inherits_group'
+        // Bed dimensions derive from the resolved printer profile, never the
+        // imported 3MF (cross-printer imports carry source-printer bed size).
+        || key === 'printable_area'
+        || key === 'printable_height') continue;
       // Skip empty strings — the embedded blob frequently stores unused
       // keys as "" (e.g. curr_bed_type on some imports). Overwriting a
       // meaningful value with "" silently resets it.
@@ -848,11 +852,25 @@ export async function buildSliceInput3MF(
   // orientation analysis.
   if (body.profiles?.machine) {
     projectSettings['printer_settings_id'] = body.profiles.machine;
+    // printer_model is what OrcaSlicer keys bed dimensions off when no
+    // named printer_settings_id preset is resolvable (e.g. user picked a
+    // custom profile that's a stub). Without it, slicer falls back to
+    // projectSettings.printable_area carried over from the imported 3MF —
+    // for cross-printer imports (e.g. A1mini 180x180 source re-sliced on
+    // P1S 256x256 target), the stale bed size rejects objects that fit
+    // the target printer ("plate 1: Nothing to be sliced, no object is
+    // fully inside the print volume", exit 206).
+    projectSettings['printer_model'] = body.profiles.machine;
   }
-  if (body.profiles?.process) {
-    projectSettings['print_settings_id'] = body.profiles.process;
-    projectSettings['default_print_profile'] = body.profiles.process;
-  }
+  // Bed dimensions must always come from the resolved printer profile, never
+  // from the imported 3MF. Source 3MFs carry the original author's bed size
+  // (often a smaller printer than the user's target) and that bleeds through
+  // to the slicer, which then rejects objects that overflow the stale bed.
+  // The bundled printer profile (loaded via printer_settings_id above, or
+  // OrcaSlicer's default if unset) supplies correct printable_area +
+  // printable_height for the target printer.
+  delete projectSettings['printable_area'];
+  delete projectSettings['printable_height'];
   const filamentNames: string[] = (body.filamentSlots && body.filamentSlots.length > 0)
     ? body.filamentSlots.map(s => s.profile).filter((n): n is string => !!n)
     : (body.profiles?.filament ? [body.profiles.filament] : []);
@@ -1244,26 +1262,59 @@ export async function runSliceJob(
       if (result.gcodeSize) db.updateJobOutput(jobId, result.gcodeSize);
 
       // Rename gcode to use model name
+      let finalGcodePath = result.gcodePath;
       if (result.gcodePath) {
         const baseName = modelName.replace(/\.[^.]+$/, ''); // strip extension
         const gcodeName = `${baseName}.gcode`;
         const renamedPath = path.join(path.dirname(result.gcodePath), gcodeName);
-        try { fs.renameSync(result.gcodePath, renamedPath); } catch { /* keep original name */ }
+        try { fs.renameSync(result.gcodePath, renamedPath); finalGcodePath = renamedPath; } catch { /* keep original name */ }
+      }
+
+      // Inject Bambu-format layer count comment into HEADER_BLOCK so P1S/X1C
+      // firmware reports total_layer_num (OrcaSlicer only writes FOOTER flavor).
+      if (finalGcodePath && fs.existsSync(finalGcodePath)) {
+        try { injectBambuLayerCountHeader(finalGcodePath); } catch (e) {
+          console.warn(`[slice ${jobId}] injectBambuLayerCountHeader failed:`, e instanceof Error ? e.message : e);
+        }
       }
 
       // Parse estimates from gcode comments
-      if (result.gcodePath && fs.existsSync(result.gcodePath)) {
-        const estimates = parseGcodeEstimates(result.gcodePath, modelName);
+      if (finalGcodePath && fs.existsSync(finalGcodePath)) {
+        const estimates = parseGcodeEstimates(finalGcodePath, modelName);
         db.updateJobEstimates(jobId, estimates);
-      } else if (result.gcodePath) {
-        // Check renamed path
-        const renamed = path.join(path.dirname(result.gcodePath), `${modelName.replace(/\.[^.]+$/, '')}.gcode`);
-        if (fs.existsSync(renamed)) {
-          const estimates = parseGcodeEstimates(renamed, modelName);
-          db.updateJobEstimates(jobId, estimates);
-        }
       }
   } catch (err) {
+    // Dump diagnostic context to backend log BEFORE workDir cleanup deletes
+    // evidence. OrcaSlicer exits with generic "run found error" stderr while
+    // the real cause is in slicer.log (--logfile). Capture both here.
+    try {
+      const slicerLogPath = path.join(workDir, 'slicer.log');
+      const slicerLog = fs.existsSync(slicerLogPath)
+        ? fs.readFileSync(slicerLogPath, 'utf8').slice(-3000)
+        : '(no slicer.log)';
+      const inputPath = path.join(workDir, 'input.3mf');
+      const inputInfo = fs.existsSync(inputPath)
+        ? `${fs.statSync(inputPath).size} bytes`
+        : 'MISSING';
+      // Copy input.3mf to /tmp for inspection — OrcaSlicer "nothing to slice"
+      // errors require inspecting the built 3MF (object placement, plate meta).
+      if (fs.existsSync(inputPath)) {
+        const tmpPath = `/tmp/snorcal-failed-${jobId}.3mf`;
+        try { fs.copyFileSync(inputPath, tmpPath); console.warn(`[slice FAIL] input.3mf copied to ${tmpPath}`); } catch {}
+      }
+      console.error(`[slice FAIL ${jobId}]`, {
+        error: err instanceof Error ? err.message : String(err),
+        engine: body.engine,
+        modelId: body.modelId,
+        modelExists: body.modelId ? !!db.getModel(body.modelId) : 'n/a',
+        plateIndex: body.plateIndex,
+        modelsCount: body.models?.length,
+        modelsSummary: body.models?.map((m: any) => ({ modelId: m.modelId, visible: m.visible, kind: m.kind, name: m.name })),
+        inputInfo,
+        slicerLogTail: slicerLog,
+      });
+    } catch { /* best effort */ }
+
     // Failure (non-zero exit, spawn error, abort from cancel, 3MF build
     // failure) — remove the workDir so failed slices don't accumulate on
     // disk. Success path keeps the dir (holds output gcode; removed later by
@@ -1305,6 +1356,47 @@ export function runSliceDirect(
     const message = err instanceof Error ? `${err.message}\n${err.stack?.slice(0, 500)}` : String(err);
     db.updateJobStatus(jobId, 'failed', { errorMessage: message });
   });
+}
+
+/**
+ * Inject `; total layers count = N` into HEADER_BLOCK so Bambu firmware
+ * populates `total_layer_num` for OrcaSlicer-output gcodes. OrcaSlicer only
+ * writes this comment in FOOTER_BLOCK (Bambu format); Bambu firmware scans
+ * HEADER_BLOCK only → reports 0 layers → UI shows "Layer 0/0" mid-print.
+ * Idempotent: skips if Bambu-format comment already present in header.
+ */
+function injectBambuLayerCountHeader(gcodePath: string): void {
+  let content: string;
+  try { content = fs.readFileSync(gcodePath, 'utf-8'); } catch { return; }
+  const lines = content.split('\n');
+
+  // Resolve layer count: prefer Orca header comment, fall back to LAYER_CHANGE count.
+  let layerCount: number | undefined;
+  const headerEndIdx = lines.findIndex(l => l.includes('HEADER_BLOCK_END'));
+  const headerScanLimit = headerEndIdx > 0 ? headerEndIdx : 200;
+  for (let i = 0; i < Math.min(headerScanLimit, lines.length); i++) {
+    const m = lines[i].match(/;\s*total layer number:\s*(\d+)/i);
+    if (m) { layerCount = parseInt(m[1], 10); break; }
+  }
+  if (!Number.isFinite(layerCount as number)) {
+    let changes = 0;
+    for (const l of lines) if (/^;LAYER_CHANGE\b/.test(l)) changes++;
+    if (changes > 0) layerCount = changes;
+  }
+  if (!Number.isFinite(layerCount as number) || (layerCount as number) <= 0) return;
+
+  const startIdx = lines.findIndex(l => l.includes('HEADER_BLOCK_START'));
+  const endIdx = lines.findIndex(l => l.includes('HEADER_BLOCK_END'));
+  if (startIdx < 0 || endIdx < 0 || endIdx <= startIdx) return;
+
+  // Skip if Bambu-format comment already exists in HEADER_BLOCK (idempotent).
+  // OrcaSlicer always writes it in FOOTER_BLOCK — that doesn't count.
+  const headerSlice = lines.slice(startIdx, endIdx + 1);
+  if (headerSlice.some(l => /;\s*total layers count\s*=/.test(l))) return;
+
+  // Insert just before HEADER_BLOCK_END. Keep comment style Bambu-native.
+  lines.splice(endIdx, 0, `; total layers count = ${layerCount}`);
+  fs.writeFileSync(gcodePath, lines.join('\n'));
 }
 
 function parseGcodeEstimates(gcodePath: string, modelName: string): {
