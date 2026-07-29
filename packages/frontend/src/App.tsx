@@ -6,7 +6,7 @@ import { FacePainter, type PaintMode } from './components/Viewer/FacePainter';
 import { ViewerToolbar } from './components/Viewer/ViewerToolbar';
 import { TransformPanel } from './components/ModelEdit/TransformPanel';
 import { MeasureTool, type Measurement } from './components/ModelEdit/MeasureTool';
-import { CutTool } from './components/ModelEdit/CutTool';
+import { CutTool, type CutPiece } from './components/ModelEdit/CutTool';
 import { AddVolumeModal } from './components/ModelEdit/AddVolumeModal';
 import { SupportPainter } from './components/ModelEdit/SupportPainter';
 import { ObjectListPanel } from './components/ObjectList/ObjectListPanel';
@@ -1453,12 +1453,16 @@ export default function App() {
   }, [activeModel, updateModels]);
 
   // Cut — CSG halves upload as new models; original active model is removed
-  const handleCutComplete = useCallback(async (files: { file: File; name: string }[]) => {
-    if (files.length === 0) return;
+  const handleCutComplete = useCallback(async (pieces: CutPiece[], mode: 'objects' | 'parts') => {
+    if (pieces.length === 0) return;
+    const parentId = activeModel?.modelId;
     setIsUploading(true);
     try {
-      const uploaded = await Promise.all(files.map(f => api.uploadModel(f.file)));
-      const newModels: ProjectModel[] = uploaded.map(m => ({
+      const uploaded = await Promise.all(pieces.map(p => api.uploadModel(p.file)));
+      // Both modes place each piece at the original's position so the cut
+      // result sits where the source sat. Geometry is already world-baked in
+      // CutTool, so identity rotation is correct here.
+      const newModels: ProjectModel[] = uploaded.map((m, i) => ({
         uid: makeUid(),
         modelId: m.id,
         name: m.name,
@@ -1471,23 +1475,41 @@ export default function App() {
         mirror: { ...DEFAULT_MIRROR },
         faceColors: null,
         visible: true,
-        kind: 'model',
+        // 'parts' mode: link halves to the original as printable parts so they
+        // slice together as one assembly (threemf-builder treats a parent with
+        // kind:'part' children as a container and emits the parts' geometry).
+        // 'objects' mode: independent models, no link.
+        kind: mode === 'parts' && parentId ? 'part' : 'model',
+        linkedTo: mode === 'parts' && parentId ? [parentId] : undefined,
       }));
-      // Remove the original, append halves
+
       updateModels(prev => {
+        if (mode === 'parts' && parentId) {
+          // Keep the original as the assembly container; append halves as parts.
+          // Parent's own mesh is dropped at slice time because it has part
+          // children (threemf-builder parentsWithParts).
+          return [...prev, ...newModels];
+        }
+        // objects mode: replace the original with the independent halves.
         const without = activeModelIndex == null ? prev : prev.filter((_, i) => i !== activeModelIndex);
         return [...without, ...newModels];
       });
-      // After cut: original removed, halves appended at end of array.
-      // Closure captures pre-update projectModels.length, so first new index = N-1.
-      setSelectedIndices(new Set([projectModels.length - 1]));
+
+      // Selection: jump to the first new model. Compute its index from the
+      // current array length (parts mode appends; objects mode removes 1 then
+      // appends N). Either way the first new index = pre-update length minus
+      // (1 if original removed, else 0).
+      const firstNewIdx = mode === 'parts'
+        ? projectModels.length
+        : projectModels.length - 1;
+      setSelectedIndices(new Set([firstNewIdx]));
       setPaintMode('orbit');
     } catch (err) {
       toast.error('Cut upload failed', err instanceof Error ? err.message : String(err));
     } finally {
       setIsUploading(false);
     }
-  }, [activeModel, activeModelIndex, activePlateId]);
+  }, [activeModel, activeModelIndex, activePlateId, projectModels.length]);
 
   // Add negative/modifier volume — uploads primitive STL, links to active model
   // (or to addVolumeParentId when triggered from a per-row ⊖ button).
