@@ -244,7 +244,10 @@ export function CutTool({ sceneRefs, mesh, baseName = 'cut', active, onCutComple
         // Unwrap jumps across the ±π boundary.
         if (delta > Math.PI) delta -= 2 * Math.PI;
         if (delta < -Math.PI) delta += 2 * Math.PI;
-        const deg = (dragging === 'tilt' ? startTilt : startYaw) + delta / DEG;
+        // Sensitivity multiplier: atan2 gives 1:1 rad→deg but cursor sweep on a
+        // distant helper plane produces tiny angular deltas per pixel. 3× makes
+        // the ring feel like Orca's responsive dial.
+        const deg = (dragging === 'tilt' ? startTilt : startYaw) + (delta / DEG) * 3;
         if (dragging === 'tilt') setTiltDeg(deg);
         else setYawDeg(deg);
       } else {
@@ -333,12 +336,23 @@ export function CutTool({ sceneRefs, mesh, baseName = 'cut', active, onCutComple
       const evaluator = new Evaluator();
       evaluator.attributes = ['position', 'normal'];
 
+      // CSG runs in world space (subject had matrixWorld baked). Translate the
+      // result back into the mesh's LOCAL frame so the exported STL matches the
+      // original upload's coordinate system — STLViewer then recenters it and
+      // applies positionOffset exactly like any other model. Without this, the
+      // world-baked coords fought STLViewer's recenter+offset and halves landed
+      // at plate center with a broken restPosition (snap-back on drag).
+      const invMeshMatrix = mesh.matrixWorld.clone().invert();
+
       const pieces: CutPiece[] = [];
       const keep = (label: 'upper' | 'lower', keepUpper: boolean) => {
         const cutter = makeHalfBrush(!keepUpper); // remove the OTHER side
         const result = evaluator.evaluate(subject, cutter, SUBTRACTION);
+        const localGeo = result.geometry.clone();
+        localGeo.applyMatrix4(invMeshMatrix);
+        localGeo.computeVertexNormals();
         pieces.push({
-          file: geometryToSTL(result.geometry, new THREE.Matrix4(), `${baseName}_${label}.stl`),
+          file: geometryToSTL(localGeo, new THREE.Matrix4(), `${baseName}_${label}.stl`),
           name: `${baseName}_${label}`,
           kind: label,
         });
