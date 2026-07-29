@@ -190,7 +190,7 @@ function PrinterCard({ printer, status, expanded, onToggle, onDelete, onReconnec
         <CameraView printer={printer} expanded={expanded} />
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
-            <span className={`w-2 h-2 rounded-full ${connColor}`} />
+            <span className={`w-2 h-2 rounded-full ${connColor}`} role="img" aria-label={`${printer.name} ${connection}`} />
             <h3 className="text-sm font-medium text-white truncate">{printer.name}</h3>
           </div>
           <div className="text-xs text-gray-400 mt-0.5">

@@ -234,6 +234,8 @@ function ObjectRow({
               onClick={(e) => { e.stopPropagation(); onToggleCollapse(model.uid); }}
               className="w-4 h-4 flex items-center justify-center text-gray-500 hover:text-white text-[10px]"
               title={isCollapsed ? 'Expand' : 'Collapse'}
+              aria-label={isCollapsed ? `Expand ${model.name}` : `Collapse ${model.name}`}
+              aria-expanded={!isCollapsed}
             >
               {isCollapsed ? '\u25B6' : '\u25BC'}
             </button>
@@ -266,6 +268,7 @@ function ObjectRow({
               onClick={(e) => { e.stopPropagation(); onAddNegative(model.modelId); }}
               className="shrink-0 w-5 h-5 flex items-center justify-center rounded text-red-400/80 hover:text-red-300 hover:bg-red-600/20 text-xs"
               title="Add negative volume to this object"
+              aria-label={`Add negative volume to ${model.name}`}
             >
               {'\u2296'}
             </button>
@@ -275,6 +278,7 @@ function ObjectRow({
               onClick={(e) => { e.stopPropagation(); onDuplicate(globalIdx); }}
               className="shrink-0 w-5 h-5 flex items-center justify-center rounded text-gray-400 hover:text-white hover:bg-gray-600/50 text-[10px]"
               title="Duplicate"
+              aria-label={`Duplicate ${model.name}`}
             >
               {'\u2398'}
             </button>
@@ -285,6 +289,8 @@ function ObjectRow({
                 onClick={(e) => { e.stopPropagation(); setMenuOpen(v => !v); }}
                 className="shrink-0 w-5 h-5 flex items-center justify-center rounded text-gray-400 hover:text-white hover:bg-gray-600/50 text-xs"
                 title="Move / duplicate to plate"
+                aria-label={`Move or duplicate ${model.name} to another plate`}
+                aria-expanded={menuOpen}
               >
                 {'\u22EF'}
               </button>
@@ -303,6 +309,8 @@ function ObjectRow({
             onClick={(e) => { e.stopPropagation(); onToggleVisible(globalIdx); }}
             className="shrink-0 w-5 h-5 flex items-center justify-center rounded text-gray-400 hover:text-white hover:bg-gray-600/50"
             title={model.visible ? 'Hide' : 'Show'}
+            aria-label={model.visible ? `Hide ${model.name}` : `Show ${model.name}`}
+            aria-pressed={!model.visible}
           >
             {model.visible ? '\u25C9' : '\u25EF'}
           </button>
@@ -310,6 +318,7 @@ function ObjectRow({
             onClick={(e) => { e.stopPropagation(); onRemove(globalIdx); }}
             className="shrink-0 w-5 h-5 flex items-center justify-center rounded text-gray-400 hover:text-red-400 hover:bg-red-600/20 text-xs"
             title="Remove"
+            aria-label={`Remove ${model.name}`}
           >
             &times;
           </button>

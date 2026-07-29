@@ -47,7 +47,7 @@ export function JobCard({ job, onCancel, onDownload, onDownloadThreemf, onPrevie
     <div className="bg-gray-700/40 rounded-lg p-2.5 border border-gray-600/50">
       <div className="flex items-center justify-between mb-1.5">
         <div className="flex items-center gap-2 min-w-0">
-          <span className={`shrink-0 w-2 h-2 rounded-full ${STATUS_COLORS[job.status] || 'bg-gray-500'}`} />
+          <span className={`shrink-0 w-2 h-2 rounded-full ${STATUS_COLORS[job.status] || 'bg-gray-500'}`} role="img" aria-label={`Job ${job.status}`} />
           <span className="text-xs text-white truncate">{job.modelName || ENGINE_LABELS[job.engine] || job.engine}</span>
           {job.plateIndex != null && (
             <span className="shrink-0 px-1 py-0.5 rounded text-[10px] font-medium bg-gray-600 text-gray-300">P{job.plateIndex}</span>

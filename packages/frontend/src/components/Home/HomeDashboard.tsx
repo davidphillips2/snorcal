@@ -247,7 +247,7 @@ function PrinterTile({ printer, status, onReconnect, reconnecting, onOpen }: {
       </button>
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2">
-          <span className={`w-2 h-2 rounded-full ${connColor} flex-shrink-0`} />
+          <span className={`w-2 h-2 rounded-full ${connColor} flex-shrink-0`} role="img" aria-label={`${printer.name} ${connection}`} />
           <h3 className="text-sm font-medium text-white truncate cursor-pointer hover:text-blue-300"
               onClick={onOpen}>{printer.name}</h3>
           {(connection === 'disconnected' || connection === 'error') && (

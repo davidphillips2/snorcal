@@ -150,7 +150,7 @@ export function PrinterDetail({ id, onBack }: Props) {
         <div className="flex items-center gap-3 flex-wrap">
           <button onClick={onBack}
             className="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-sm text-gray-200">← Back</button>
-          <span className={`w-2.5 h-2.5 rounded-full ${connColor}`} />
+          <span className={`w-2.5 h-2.5 rounded-full ${connColor}`} role="img" aria-label={`${printer.name} ${connection}`} />
           <h1 className="text-xl font-semibold text-white">{printer.name}</h1>
           <span className="text-xs text-gray-400 capitalize px-2 py-0.5 bg-gray-800 rounded">
             {state}

@@ -54,7 +54,7 @@ const PALETTE = [
 
 function IconOrbit() {
   return (
-    <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+    <svg className="w-4 h-4" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
       <circle cx="12" cy="12" r="3" />
       <path d="M12 3a9 9 0 0 1 0 18" />
       <path d="M12 21a9 9 0 0 1 0-18" />
@@ -64,7 +64,7 @@ function IconOrbit() {
 
 function IconRotate() {
   return (
-    <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+    <svg className="w-4 h-4" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
       <path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.3" />
     </svg>
   );
@@ -72,7 +72,7 @@ function IconRotate() {
 
 function IconLayFlat() {
   return (
-    <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+    <svg className="w-4 h-4" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
       <path d="M12 3v18M5 15l7 7 7-7" />
     </svg>
   );
@@ -80,7 +80,7 @@ function IconLayFlat() {
 
 function IconPaint() {
   return (
-    <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+    <svg className="w-4 h-4" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
       <path d="M12 2a7 7 0 0 0-7 7c0 5.25 7 13 7 13s7-7.75 7-13a7 7 0 0 0-7-7z" />
       <circle cx="12" cy="9" r="2.5" />
     </svg>
@@ -89,7 +89,7 @@ function IconPaint() {
 
 function IconFill() {
   return (
-    <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+    <svg className="w-4 h-4" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
       <path d="M2 22l1-1h3l9-9M3 21l9-9" />
       <path d="M10.5 7.5L16 2l4 4-5.5 5.5" />
       <path d="M19 14c.5.5 2 2.5 2 4a3 3 0 0 1-6 0c0-1.5 1.5-3 2-4z" fill="currentColor" />
@@ -99,7 +99,7 @@ function IconFill() {
 
 function IconUndo() {
   return (
-    <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+    <svg className="w-4 h-4" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
       <path d="M3 7v6h6" />
       <path d="M3 13a9 9 0 0 1 15.4-6.4L21 9" />
     </svg>
@@ -108,7 +108,7 @@ function IconUndo() {
 
 function IconRedo() {
   return (
-    <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+    <svg className="w-4 h-4" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
       <path d="M21 7v6h-6" />
       <path d="M21 13a9 9 0 0 0-15.4-6.4L3 9" />
     </svg>
@@ -117,7 +117,7 @@ function IconRedo() {
 
 function IconSave() {
   return (
-    <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+    <svg className="w-4 h-4" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
       <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
       <polyline points="17 21 17 13 7 13 7 21" />
       <polyline points="7 3 7 8 15 8" />
@@ -127,7 +127,7 @@ function IconSave() {
 
 function IconTransform() {
   return (
-    <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+    <svg className="w-4 h-4" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
       <path d="M5 5l4-3 4 3M9 2v20M19 19l-3 4-3-4M13 22V2" />
     </svg>
   );
@@ -135,7 +135,7 @@ function IconTransform() {
 
 function IconMeasure() {
   return (
-    <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+    <svg className="w-4 h-4" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
       <path d="M3 8h18M3 16h18M8 3v18M16 3v18" />
       <path d="M8 12h8" strokeDasharray="2 2" />
     </svg>
@@ -144,7 +144,7 @@ function IconMeasure() {
 
 function IconCut() {
   return (
-    <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+    <svg className="w-4 h-4" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
       <circle cx="6" cy="6" r="3" />
       <circle cx="6" cy="18" r="3" />
       <line x1="20" y1="4" x2="8.12" y2="15.88" />
@@ -156,7 +156,7 @@ function IconCut() {
 
 function IconSupport() {
   return (
-    <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+    <svg className="w-4 h-4" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
       <path d="M12 3v18" />
       <path d="M8 7h8M6 11h12M4 15h16M6 19h12" strokeDasharray="2 2" />
     </svg>
@@ -165,7 +165,7 @@ function IconSupport() {
 
 function IconBrim() {
   return (
-    <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+    <svg className="w-4 h-4" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
       <rect x="6" y="6" width="12" height="12" rx="1" />
       <path d="M2 8V6M2 16v-2M8 2H6M16 2h-2M22 8V6M22 16v-2M8 22H6M16 22h-2" strokeDasharray="1.5 1.5" />
     </svg>
@@ -174,7 +174,7 @@ function IconBrim() {
 
 function IconHollow() {
   return (
-    <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+    <svg className="w-4 h-4" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
       <path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10 10-4.5 10-10S17.5 2 12 2z" />
       <path d="M12 7c-2.8 0-5 2.2-5 5s2.2 5 5 5 5-2.2 5-5-2.2-5-5-5z" strokeDasharray="2 2" />
     </svg>
@@ -224,6 +224,8 @@ export function ViewerToolbar({
               key={key}
               onClick={() => onModeChange(key)}
               title={label}
+              aria-label={label}
+              aria-pressed={paintMode === key}
               className={`w-8 h-8 flex items-center justify-center rounded-md transition ${
                 paintMode === key
                   ? 'bg-blue-600 text-white'
@@ -240,6 +242,7 @@ export function ViewerToolbar({
             onClick={onUndo}
             disabled={!canUndo}
             title="Undo (Ctrl+Z)"
+            aria-label="Undo"
             className="w-8 h-8 flex items-center justify-center rounded-md text-gray-300 hover:bg-gray-700 transition disabled:opacity-30 disabled:pointer-events-none"
           >
             <IconUndo />
@@ -248,6 +251,7 @@ export function ViewerToolbar({
             onClick={onRedo}
             disabled={!canRedo}
             title="Redo (Ctrl+Shift+Z)"
+            aria-label="Redo"
             className="w-8 h-8 flex items-center justify-center rounded-md text-gray-300 hover:bg-gray-700 transition disabled:opacity-30 disabled:pointer-events-none"
           >
             <IconRedo />
@@ -255,6 +259,7 @@ export function ViewerToolbar({
           <button
             onClick={onSave}
             title="Save colors"
+            aria-label="Save face colors"
             className="w-8 h-8 flex items-center justify-center rounded-md text-green-400 hover:bg-gray-700 transition"
           >
             <IconSave />
@@ -262,6 +267,8 @@ export function ViewerToolbar({
           <button
             onClick={onToggleBrim}
             title={brimOn ? 'Anti-warp brim on (click to disable)' : 'Enable anti-warp brim (ears + 8mm)'}
+            aria-label={brimOn ? 'Disable anti-warp brim' : 'Enable anti-warp brim'}
+            aria-pressed={brimOn}
             className={`w-8 h-8 flex items-center justify-center rounded-md transition ${
               brimOn ? 'bg-orange-600 text-white' : 'text-gray-300 hover:bg-gray-700'
             }`}
@@ -271,6 +278,8 @@ export function ViewerToolbar({
           <button
             onClick={onToggleHollow}
             title={hollowOn ? 'Hollow preset on (click to disable)' : 'Hollow preset (0% infill, open shells, 3 walls)'}
+            aria-label={hollowOn ? 'Disable hollow preset' : 'Enable hollow preset'}
+            aria-pressed={hollowOn}
             className={`w-8 h-8 flex items-center justify-center rounded-md transition ${
               hollowOn ? 'bg-purple-600 text-white' : 'text-gray-300 hover:bg-gray-700'
             }`}
