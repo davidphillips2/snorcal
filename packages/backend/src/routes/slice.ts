@@ -869,17 +869,34 @@ export async function buildSliceInput3MF(
     // P1S 256x256 target), the stale bed size rejects objects that fit
     // the target printer ("plate 1: Nothing to be sliced, no object is
     // fully inside the print volume", exit 206).
-    projectSettings['printer_model'] = body.profiles.machine;
+    //
+    // body.profiles.machine is a settings_id like "Bambu Lab P1S (0.4 nozzle)"
+    // but OrcaSlicer's printer_model registry keys on the model family NAME
+    // ("Bambu Lab P1S") — the nozzle-suffix form matches no registered model
+    // and bed resolution silently fails. Strip the " (X nozzle)" suffix.
+    projectSettings['printer_model'] = body.profiles.machine.replace(/\s*\([^)]*nozzle[^)]*\)\s*$/i, '').trim();
   }
-  // Bed dimensions must always come from the resolved printer profile, never
-  // from the imported 3MF. Source 3MFs carry the original author's bed size
-  // (often a smaller printer than the user's target) and that bleeds through
-  // to the slicer, which then rejects objects that overflow the stale bed.
-  // The bundled printer profile (loaded via printer_settings_id above, or
-  // OrcaSlicer's default if unset) supplies correct printable_area +
-  // printable_height for the target printer.
-  delete projectSettings['printable_area'];
-  delete projectSettings['printable_height'];
+  // Bed dimensions come from the target printer's buildVolume (sent by the
+  // frontend), NOT the imported 3MF. Source 3MFs carry the original author's
+  // bed size (often a smaller printer than the user's target) and that bleeds
+  // through to the slicer, which then rejects objects that overflow the stale
+  // bed ("Nothing to be sliced, no object is fully inside the print volume",
+  // exit 206).
+  //
+  // OrcaSlicer's CLI reads bed dimensions from project_settings.config's
+  // printable_area/printable_height; it does NOT auto-resolve them from
+  // printer_model at slice time. The WIP that just deleted these keys
+  // (assuming the bundled machine preset would supply them) broke bed
+  // resolution for the CLI path. Write explicit values from buildVolume.
+  if (body.buildVolume) {
+    const bx = body.buildVolume.x;
+    const by = body.buildVolume.y;
+    projectSettings['printable_area'] = ['0x0', `${bx}x0`, `${bx}x${by}`, `0x${by}`];
+    projectSettings['printable_height'] = String(body.buildVolume.z);
+  } else {
+    // No buildVolume (no printer selected) — leave whatever the template /
+    // embedded 3MF carried. Don't delete; deleting caused exit 206.
+  }
   const filamentNames: string[] = (body.filamentSlots && body.filamentSlots.length > 0)
     ? body.filamentSlots.map(s => s.profile).filter((n): n is string => !!n)
     : (body.profiles?.filament ? [body.profiles.filament] : []);
@@ -1143,14 +1160,12 @@ function sanitizeSentinelsAndZeroFilaments(settings: Record<string, unknown>, en
   // left alone because it carries per-slot identity used by the slicer's
   // filament-output naming.
   //
-  // printer_model is intentionally KEPT (not cleared): when the selected
-  // printer_settings_id can't resolve to a bundled preset, OrcaSlicer keys
-  // bed dimensions off printer_model instead. Clearing it here made the
-  // slicer fall back to the 200x200 default bed and reject objects that fit
-  // the target printer ("Nothing to be sliced, no object is fully inside the
-  // print volume", exit 206). buildSliceInput3MF sets printer_model above
-  // from body.profiles.machine; don't clobber it.
-  settings.printer_settings_id = '';
+  // printer_settings_id + printer_model are intentionally KEPT: OrcaSlicer
+  // resolves bed dimensions (printable_area/height) by loading the machine
+  // preset named in printer_settings_id. Clearing it left no machine preset
+  // loaded → bed fell back to 200x200 → objects rejected as out-of-volume
+  // ("Nothing to be sliced", exit 206). buildSliceInput3MF sets both from
+  // body.profiles.machine above; don't clobber.
   settings.print_settings_id = '';
 
   // OrcaSlicer/BambuStudio exit 205: "Ooze prevention is only supported with
