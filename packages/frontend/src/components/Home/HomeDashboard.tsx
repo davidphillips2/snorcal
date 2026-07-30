@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { formatLastSeen } from '../../lib/last-seen';
+import { connectionColor } from '../../lib/status-colors';
 import type { PrinterRecord, PrinterStatus } from '@snorcal/shared';
 import * as api from '../../api/client';
 import { formatDurationShort } from '../../lib/gcode-stats';
@@ -200,10 +201,7 @@ function PrinterTile({ printer, status, onReconnect, reconnecting, onOpen }: {
 }) {
   const connection = status?.connection ?? 'disconnected';
   const state = status?.state ?? 'offline';
-  const connColor = {
-    connected: 'bg-green-500', connecting: 'bg-yellow-500',
-    disconnected: 'bg-red-500', error: 'bg-red-500',
-  }[connection] || 'bg-gray-500';
+  const connColor = connectionColor(connection);
 
   return (
     <div className="bg-gray-800 border border-gray-700 rounded-lg p-3 flex items-stretch gap-3 min-w-0 hover:border-gray-500 transition-colors">

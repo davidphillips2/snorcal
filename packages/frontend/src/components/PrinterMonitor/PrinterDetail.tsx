@@ -8,6 +8,7 @@ import { EditPrinterModal } from './EditPrinterModal';
 import { UploadFileSection } from './UploadFileSection';
 import { PrintQueueSection } from './PrintQueueSection';
 import { formatLastSeen } from '../../lib/last-seen';
+import { connectionColor } from '../../lib/status-colors';
 import { MATERIAL_PRESETS } from '../../lib/material-presets';
 import { ManualFilamentsEditor } from './ManualFilamentsEditor';
 import { useToast } from '../Toast';
@@ -65,10 +66,7 @@ export function PrinterDetail({ id, onBack }: Props) {
 
   const connection = status?.connection ?? 'disconnected';
   const state = status?.state ?? 'offline';
-  const connColor = {
-    connected: 'bg-green-500', connecting: 'bg-yellow-500',
-    disconnected: 'bg-red-500', error: 'bg-red-500',
-  }[connection] || 'bg-gray-500';
+  const connColor = connectionColor(connection);
 
   if (!printer) {
     return (

@@ -5,6 +5,7 @@ import { AddPrinterModal } from './AddPrinterModal';
 import { EditPrinterModal } from './EditPrinterModal';
 import { CameraView } from './CameraView';
 import { formatLastSeen } from '../../lib/last-seen';
+import { connectionColor } from '../../lib/status-colors';
 import { useToast } from '../Toast';
 import { useSSEEvent } from '../../hooks/useSSE';
 
@@ -167,10 +168,7 @@ interface CardProps {
 function PrinterCard({ printer, status, expanded, onToggle, onDelete, onReconnect, reconnecting, onEdit, onCommand, commandPending }: CardProps) {
   const connection = status?.connection ?? 'disconnected';
   const state = status?.state ?? 'offline';
-  const connColor = {
-    connected: 'bg-green-500', connecting: 'bg-yellow-500',
-    disconnected: 'bg-red-500', error: 'bg-red-500',
-  }[connection] || 'bg-gray-500';
+  const connColor = connectionColor(connection);
 
   return (
     <div className="bg-gray-800 border border-gray-700 rounded-lg overflow-hidden min-w-0">
