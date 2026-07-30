@@ -9,6 +9,7 @@
 
 set -euo pipefail
 cd "$(dirname "$0")"
+REPO_DIR="$(pwd)"
 
 BACK_PORT=3000
 FRONT_PORT=5173
@@ -33,9 +34,14 @@ is_listening() { lsof -ti:"$1" >/dev/null 2>&1; }
 
 start_dev() {
   mkdir -p "$(dirname "$BE_LOG")" "$(dirname "$FE_LOG")"
+  # Pin DATA_DIR so the backend finds the right snorcal.db regardless of cwd.
+  # getDataDir() falls back to process.cwd()/data, which breaks when the
+  # detached subshell's cd doesn't propagate — backend then creates an empty
+  # DB at <repo-root>/data and the app asks for a new password.
+  export DATA_DIR="$REPO_DIR/packages/backend/data"
   # Detach so the script can exit; each server logs to its own file.
   # Preserve the repo's dev env (UV_THREADPOOL_SIZE=16 for backend).
-  ( cd packages/backend  && nohup pnpm run dev > "$BE_LOG" 2>&1 & ) 2>/dev/null
+  ( cd packages/backend  && DATA_DIR="$DATA_DIR" nohup pnpm run dev > "$BE_LOG" 2>&1 & ) 2>/dev/null
   ( cd packages/frontend && nohup pnpm run dev > "$FE_LOG" 2>&1 & ) 2>/dev/null
   echo "starting… (logs: $BE_LOG, $FE_LOG)"
 }

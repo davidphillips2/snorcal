@@ -1142,9 +1142,16 @@ function sanitizeSentinelsAndZeroFilaments(settings: Record<string, unknown>, en
   // in the slicer's bundled vendor folder (exit 1). filament_settings_id is
   // left alone because it carries per-slot identity used by the slicer's
   // filament-output naming.
+  //
+  // printer_model is intentionally KEPT (not cleared): when the selected
+  // printer_settings_id can't resolve to a bundled preset, OrcaSlicer keys
+  // bed dimensions off printer_model instead. Clearing it here made the
+  // slicer fall back to the 200x200 default bed and reject objects that fit
+  // the target printer ("Nothing to be sliced, no object is fully inside the
+  // print volume", exit 206). buildSliceInput3MF sets printer_model above
+  // from body.profiles.machine; don't clobber it.
   settings.printer_settings_id = '';
   settings.print_settings_id = '';
-  settings.printer_model = '';
 
   // OrcaSlicer/BambuStudio exit 205: "Ooze prevention is only supported with
   // the wipe tower when 'single_extruder_multi_material' is off". Error fires
