@@ -10,7 +10,7 @@ test('multi-material slice via UI reaches completed', async ({ page }) => {
     if (msg.type() === 'error') errors.push(msg.text());
   });
 
-  await page.goto('http://localhost:5173');
+  await page.goto('http://localhost:7327');
   await page.waitForTimeout(2500);
 
   // Navigate to slice view (home shows printers/jobs dashboard)

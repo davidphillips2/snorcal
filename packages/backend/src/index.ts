@@ -1,6 +1,6 @@
 import { buildApp } from './app.js';
 
-const PORT = parseInt(process.env.PORT || '3000');
+const PORT = parseInt(process.env.PORT || '7326');
 const HOST = process.env.HOST || '0.0.0.0';
 
 async function main() {

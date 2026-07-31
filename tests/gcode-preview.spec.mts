@@ -6,7 +6,7 @@ test('gcode preview batman with gcode-preview library', async ({ page }) => {
     if (msg.type() === 'error') console.log('CONSOLE ERROR:', msg.text());
   });
 
-  await page.goto('http://localhost:5173');
+  await page.goto('http://localhost:7327');
   await page.waitForTimeout(2000);
 
   // Slice view + sidebar Jobs panel (matches pause-at-layer test flow).

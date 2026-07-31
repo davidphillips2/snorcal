@@ -15,7 +15,7 @@ services:
   app:
     image: ghcr.io/davidphillips2/snorcal:${SNORCAL_TAG:-latest}
     ports:
-      - "${PORT:-3000}:3000"
+      - "${PORT:-7326}:7326"
     volumes:
       - snorcal-data:/data
     environment:

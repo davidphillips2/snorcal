@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Start or restart snorcal dev servers (backend :3000 + frontend :5173).
+# Start or restart snorcal dev servers (backend :7326 + frontend :7327).
 #
 #   ./dev.sh         start if not running, else restart both
 #   ./dev.sh status  show what's running without changing anything
@@ -11,8 +11,8 @@ set -euo pipefail
 cd "$(dirname "$0")"
 REPO_DIR="$(pwd)"
 
-BACK_PORT=3000
-FRONT_PORT=5173
+BACK_PORT=7326
+FRONT_PORT=7327
 BE_LOG=/tmp/snorcal-backend.log
 FE_LOG=/tmp/snorcal-frontend.log
 

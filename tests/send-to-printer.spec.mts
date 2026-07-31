@@ -7,7 +7,7 @@ import { test, expect } from '@playwright/test';
 test('send-to-printer uploads gcode without starting print', async ({ page }) => {
   test.setTimeout(60000);
 
-  const apiBase = 'http://localhost:3000/api';
+  const apiBase = 'http://localhost:7326/api';
 
   // Pick a completed job (any will do — we just need gcode to upload)
   const jobsRes = await (await fetch(`${apiBase}/jobs?status=completed`)).json();

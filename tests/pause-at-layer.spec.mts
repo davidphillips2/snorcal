@@ -9,20 +9,20 @@ test('pause toggle injects gcode sidecar', async ({ page }) => {
   page.on('pageerror', err => console.log('[PAGEERROR]', err.message));
 
   // --- Setup: pick a completed job + ensure clean pause state ---
-  const setupRes = await fetch('http://localhost:3000/api/jobs?status=completed');
+  const setupRes = await fetch('http://localhost:7326/api/jobs?status=completed');
   const setupJson = await setupRes.json();
   const completed = setupJson.data as Array<{ id: string }>;
   expect(completed.length, 'need at least one completed job').toBeGreaterThan(0);
   const jobId = completed[0].id;
 
   // Clear any leftover pauses from prior runs
-  await fetch(`http://localhost:3000/api/jobs/${jobId}/pauses`, {
+  await fetch(`http://localhost:7326/api/jobs/${jobId}/pauses`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ pauses: [] }),
   });
 
-  await page.goto('http://localhost:5173');
+  await page.goto('http://localhost:7327');
   await page.waitForTimeout(2000);
 
   // Navigate to slice view, open Jobs panel in sidebar (the sidebar Preview
@@ -74,7 +74,7 @@ test('pause toggle injects gcode sidecar', async ({ page }) => {
   await page.screenshot({ path: 'tests/31-pause-after.png' });
 
   // Verify sidecar was generated via backend API (jobId is dynamic)
-  const apiBase = 'http://localhost:3000/api';
+  const apiBase = 'http://localhost:7326/api';
   const after = await (await fetch(`${apiBase}/jobs/${jobId}/pauses`)).json();
   expect(after.data.length).toBe(1);
   expect(after.data[0].layer).toBe(10);

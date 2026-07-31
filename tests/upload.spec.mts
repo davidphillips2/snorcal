@@ -10,7 +10,7 @@ test('STL upload lands in models list + viewer', async ({ page }) => {
   const errors: string[] = [];
   page.on('pageerror', err => errors.push(err.message));
 
-  const apiBase = 'http://localhost:3000/api';
+  const apiBase = 'http://localhost:7326/api';
   const stlPath = '/Users/david-mini/u1-slicer-bridge/test-data/3DBenchy.stl';
   const stlName = path.basename(stlPath);
 
@@ -18,7 +18,7 @@ test('STL upload lands in models list + viewer', async ({ page }) => {
   const before = await (await fetch(`${apiBase}/models`)).json();
   const beforeCount = before.data.length;
 
-  await page.goto('http://localhost:5173');
+  await page.goto('http://localhost:7327');
   await page.waitForTimeout(1500);
 
   await page.locator('button:has-text("slice")').first().click();

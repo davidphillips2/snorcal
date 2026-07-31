@@ -6,7 +6,7 @@
 #
 # Optional env overrides:
 #   $env:SNORCAL_HOME   = "C:\Users\you\snorcal"   # install dir (default: $USERPROFILE\snorcal)
-#   $env:SNORCAL_PORT   = "4000"                    # port (default: 3000)
+#   $env:SNORCAL_PORT   = "8000"                    # port (default: 7326)
 #
 # Re-running on an existing install performs `git pull` + rebuild + task refresh.
 
@@ -53,7 +53,7 @@ Ok "git / node $(& $node -p 'process.versions.node') / pnpm $(& $pnpm --version)
 $InstallDir = if ($env:SNORCAL_HOME) { $env:SNORCAL_HOME } else { Join-Path $env:USERPROFILE "snorcal" }
 $DataDir    = Join-Path $env:USERPROFILE ".snorcal\data"
 $LogDir     = Join-Path $env:USERPROFILE ".snorcal\logs"
-$Port       = if ($env:SNORCAL_PORT) { $env:SNORCAL_PORT } else { "3000" }
+$Port       = if ($env:SNORCAL_PORT) { $env:SNORCAL_PORT } else { "7326" }
 
 Log "Install dir: $InstallDir"
 Log "Data dir:    $DataDir"

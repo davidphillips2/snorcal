@@ -14,7 +14,6 @@ import { MakerworldImportModal } from './components/ModelUploader/MakerworldImpo
 import { PlateTabs } from './components/Plates/PlateTabs';
 import { AxisIndicator } from './components/Viewer/AxisIndicator';
 import { Bed } from './components/Viewer/Bed';
-import { ModelMover } from './components/Viewer/ModelMover';
 import { ModelUploader } from './components/ModelUploader';
 import { JobList } from './components/Jobs/JobList';
 import { SettingsPanel } from './components/Settings/SettingsPanel';
@@ -2023,15 +2022,11 @@ export default function App() {
           {sceneRefs && hasVisibleModels && !previewJobId && (
             <>
               {viewer3DEnabled && <AxisIndicator sceneRefs={sceneRefs} />}
-              <ModelMover
-                mesh={activeMesh}
-                sceneRefs={sceneRefs}
-                active={paintMode === 'orbit'}
-                bounds={activePlateBounds}
-                onPositionChange={handlePositionChange}
-                onDragEnd={handlePositionChange}
-              />
-              {paintMode === 'transform' && !isCoarsePointer() && selectedMeshesForGizmo.length > 0 && (
+              {/* Unified transform gizmo (Orca-style): always visible on
+                  selection, switches move/rotate/scale via W/E/R keys or the
+                  toolbar group. Touch devices (coarse pointer) skip the gizmo
+                  and rely on the TransformPanel numeric inputs instead. */}
+              {!isCoarsePointer() && selectedMeshesForGizmo.length > 0 && (
                 <TransformGizmo
                   sceneRefs={sceneRefs}
                   selectedMeshes={selectedMeshesForGizmo}
@@ -2130,7 +2125,7 @@ export default function App() {
                 onToggleViewer3D={() => setViewer3DEnabled(v => !v)}
               />
               )}
-              {paintMode === 'transform' && (
+              {selectedModelsForGizmo.length > 0 && (
                 <TransformPanel
                   selectedModels={selectedModelsForGizmo}
                   onUpdateAll={handleUpdateAllSelected}

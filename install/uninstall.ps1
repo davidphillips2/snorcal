@@ -31,7 +31,7 @@ if ($PSVersionTable.Platform -and $PSVersionTable.Platform -ne "Win32NT") {
 
 $InstallDir = if ($env:SNORCAL_HOME) { $env:SNORCAL_HOME } else { Join-Path $env:USERPROFILE "snorcal" }
 $DataDir    = Join-Path $env:USERPROFILE ".snorcal"
-$Port       = if ($env:SNORCAL_PORT) { $env:SNORCAL_PORT } else { "3000" }
+$Port       = if ($env:SNORCAL_PORT) { $env:SNORCAL_PORT } else { "7326" }
 
 # ----------------------------------------------------------------------------
 # Stop + unregister Scheduled Task

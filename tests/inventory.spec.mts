@@ -9,13 +9,13 @@ test('inventory panel lists + creates spool', async ({ page }) => {
   page.on('pageerror', err => console.log('[PAGEERROR]', err.message));
 
   // Clean slate via API
-  const apiBase = 'http://localhost:3000/api';
+  const apiBase = 'http://localhost:7326/api';
   const initial = await (await fetch(`${apiBase}/inventory/spools`)).json();
   for (const s of initial.data) {
     await fetch(`${apiBase}/inventory/spools/${s.id}`, { method: 'DELETE' });
   }
 
-  await page.goto('http://localhost:5173');
+  await page.goto('http://localhost:7327');
   await page.waitForTimeout(1500);
 
   // Sidebar "inventory" button lives under Target printer picker — needs sidebar visible.
