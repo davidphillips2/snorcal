@@ -6,6 +6,9 @@ import type { TransformMode, TransformSpace } from '../../lib/transforms';
 interface ViewerToolbarProps {
   paintMode: PaintMode;
   onModeChange: (mode: PaintMode) => void;
+  /** Whether a transformable model is selected (drives the Move/Rotate/Scale
+   *  sub-bar visibility). */
+  hasSelection: boolean;
   activeColor: string;
   onColorChange: (color: string) => void;
   onUndo: () => void;
@@ -184,7 +187,6 @@ function IconHollow() {
 const MODES: { key: PaintMode; label: string; Icon: () => ReactNode }[] = [
   { key: 'orbit', label: 'Orbit', Icon: IconOrbit },
   { key: 'rotate', label: 'Rotate', Icon: IconRotate },
-  { key: 'transform', label: 'Transform', Icon: IconTransform },
   { key: 'measure', label: 'Measure', Icon: IconMeasure },
   { key: 'cut', label: 'Cut', Icon: IconCut },
   { key: 'support', label: 'Support', Icon: IconSupport },
@@ -194,7 +196,7 @@ const MODES: { key: PaintMode; label: string; Icon: () => ReactNode }[] = [
 ];
 
 export function ViewerToolbar({
-  paintMode, onModeChange, activeColor, onColorChange, onUndo, onRedo, canUndo, canRedo, onSave,
+  paintMode, onModeChange, hasSelection, activeColor, onColorChange, onUndo, onRedo, canUndo, canRedo, onSave,
   rotation, onRotationChange, onAutoOrient, filamentColors,
   supportDiameter, onSupportDiameterChange,
   paintZRange, paintZBounds, onPaintZRangeChange,
@@ -440,8 +442,9 @@ export function ViewerToolbar({
         </div>
       )}
 
-      {/* Transform gizmo sub-bar */}
-      {paintMode === 'transform' && (
+      {/* Transform gizmo sub-bar — always available when a model is selected
+          and no other tool (paint/cut/measure/support) owns the pointer. */}
+      {hasSelection && paintMode !== 'paint' && paintMode !== 'fill' && paintMode !== 'cut' && paintMode !== 'measure' && paintMode !== 'support' && (
         <div className="absolute top-14 left-2 bg-gray-800/90 backdrop-blur rounded-lg px-3 py-2 shadow-lg z-20 flex items-center gap-2">
           {isCoarsePointer ? (
             <span className="text-xs text-gray-400">Gizmo disabled on touch — use panel + drag</span>

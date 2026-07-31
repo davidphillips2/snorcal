@@ -181,6 +181,26 @@ export default function App() {
     return () => window.removeEventListener('keydown', onKey);
   }, [handleUndo, handleRedo]);
 
+  // Transform-mode shortcuts (W=move, E=rotate, R=scale — Orca/Blender
+  // convention). Only when a model is selected and no tool owns the pointer.
+  const canSwitchTransform = selectedIndices.size > 0
+    && paintMode !== 'paint' && paintMode !== 'fill'
+    && paintMode !== 'cut' && paintMode !== 'measure' && paintMode !== 'support';
+  useEffect(() => {
+    if (!canSwitchTransform) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      const t = e.target as HTMLElement;
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
+      const k = e.key.toLowerCase();
+      if (k === 'w') { e.preventDefault(); setTransformMode('translate'); }
+      else if (k === 'e') { e.preventDefault(); setTransformMode('rotate'); }
+      else if (k === 'r') { e.preventDefault(); setTransformMode('scale'); }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [canSwitchTransform]);
+
   // Models on the active plate
   const activePlateModels = projectModels.filter(m => m.plateId === activePlateId);
 
@@ -1215,7 +1235,7 @@ export default function App() {
     }));
   }, [updateModels]);
 
-  // Active plate world bounds for ModelMover clamp (plate X offset + bed half-size)
+  // Active plate world bounds (plate X offset + bed half-size).
   const activePlateBounds = useMemo(() => {
     const off = plateOffsets[activePlateId];
     if (!off) return null;
@@ -1402,9 +1422,15 @@ export default function App() {
   useEffect(() => {
     if (!sceneRefs) return;
     const isPaintMode = paintMode === 'paint' || paintMode === 'fill' || paintMode === 'lay' || paintMode === 'support';
+    // Modes that own left-drag for their own interaction (painting, cutting,
+    // measuring, lay-on-face, support). In those, left-drag must NOT orbit.
+    // In every other mode (orbit, rotate) left-drag orbits empty space — the
+    // transform gizmo intercepts left-drag on its own handles separately and
+    // disables orbit via its dragging-changed event while a handle is dragged.
+    const leftDragOwnedByTool = isPaintMode || paintMode === 'cut' || paintMode === 'measure';
 
     sceneRefs.controls.mouseButtons = {
-      LEFT: paintMode === 'orbit' ? THREE.MOUSE.ROTATE : undefined,
+      LEFT: leftDragOwnedByTool ? undefined : THREE.MOUSE.ROTATE,
       MIDDLE: THREE.MOUSE.DOLLY,
       RIGHT: isPaintMode ? undefined : THREE.MOUSE.ROTATE,
     };
@@ -2084,6 +2110,7 @@ export default function App() {
               <ViewerToolbar
                 paintMode={paintMode}
                 onModeChange={setPaintMode}
+                hasSelection={selectedModelsForGizmo.length > 0}
                 activeColor={activeColor}
                 onColorChange={setActiveColor}
                 onUndo={handleUndo}
