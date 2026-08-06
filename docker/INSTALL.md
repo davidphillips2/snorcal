@@ -53,7 +53,7 @@ First run will download one image (~3 GB — the app plus a bundled OrcaSlicer a
 
 ## 4. Open the app
 
-Browser → <http://localhost:3000>
+Browser → <http://localhost:7326>
 
 **First launch sets a password.** Pick one, then you'll be prompted to add a
 printer. Have ready:
@@ -97,7 +97,7 @@ docker compose -f docker-compose.example.yml up -d
 
 ## Troubleshooting
 
-**Port 3000 in use?** Edit the file, change `"${PORT:-3000}:3000"` to `"${PORT:-3654}:3000"`, then open `http://localhost:3654` instead.
+**Port 7326 in use?** Edit the file, change `"${PORT:-7326}:7326"` to `"${PORT:-8765}:7326"`, then open `http://localhost:8765` instead.
 
 **"Cannot connect to Redis"?** You can ignore this — Snorcal runs fine without Redis (it's optional, used only for the BullMQ job queue). Slices run in-process instead.
 

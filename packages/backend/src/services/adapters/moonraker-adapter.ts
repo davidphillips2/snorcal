@@ -4,6 +4,7 @@ import WebSocket from 'ws';
 import type { PrinterCommand, PrinterStatus, PrinterState, PrinterConnectionState, AmsSlot } from '@snorcal/shared';
 import type { PrinterAdapter } from './adapter.js';
 import { assertSafeUrl } from '../ssrf.js';
+import { LAN_SOURCE_IP, lanFetch } from '../lan-bind.js';
 
 export interface MoonrakerAdapterOptions {
   printerId: string;
@@ -78,7 +79,10 @@ export class MoonrakerAdapter implements PrinterAdapter {
     this.destroyed = false;
     return new Promise((resolve, reject) => {
       const url = `ws://${this.ip}:${this.port}/websocket`;
-      const ws = new WebSocket(url, { headers: this.authHeaders() });
+      const ws = new WebSocket(url, {
+        headers: this.authHeaders(),
+        ...(LAN_SOURCE_IP ? { localAddress: LAN_SOURCE_IP } : {}),
+      });
       let settled = false;
 
       const fail = (err: Error) => {
@@ -435,12 +439,12 @@ export class MoonrakerAdapter implements PrinterAdapter {
     if (this.apiKey) headers['X-Api-Key'] = this.apiKey;
     // Let fetch set the multipart boundary — don't copy form.getHeaders().
 
-    const res = await fetch(url, {
+    const res = await lanFetch(url, {
       method: 'POST',
       headers,
       body: form,
       signal: AbortSignal.timeout(180000),
-    });
+    } as RequestInit);
     if (!res.ok) {
       const txt = await res.text().catch(() => '');
       throw new Error(`Upload failed: HTTP ${res.status} ${txt}`);
@@ -463,11 +467,11 @@ export class MoonrakerAdapter implements PrinterAdapter {
     // User-configured camera URL — allowPrivate (cameras on LAN) but still
     // block metadata hosts / non-http(s) schemes, and disable redirect follows.
     assertSafeUrl(this.snapshotUrl, { allowPrivate: true });
-    const res = await fetch(this.snapshotUrl, {
+    const res = await lanFetch(this.snapshotUrl, {
       headers: this.authHeaders(),
       signal: AbortSignal.timeout(6000),
       redirect: 'manual',
-    });
+    } as RequestInit);
     if (!res.ok) throw new Error(`camera HTTP ${res.status}`);
     return Buffer.from(await res.arrayBuffer());
   }

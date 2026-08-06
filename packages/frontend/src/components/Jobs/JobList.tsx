@@ -1,3 +1,6 @@
+import { useState } from 'react';
+import { jobStatusColor } from '../../lib/status-colors';
+
 interface JobCardProps {
   job: {
     id: string;
@@ -24,14 +27,6 @@ interface JobCardProps {
   queueLabel?: string;
 }
 
-const STATUS_COLORS: Record<string, string> = {
-  queued: 'bg-yellow-500',
-  running: 'bg-blue-500',
-  completed: 'bg-green-500',
-  failed: 'bg-red-500',
-  cancelled: 'bg-gray-500',
-};
-
 const ENGINE_LABELS: Record<string, string> = {
   orcaslicer: 'OrcaSlicer',
   bambustudio: 'BambuStudio',
@@ -39,11 +34,13 @@ const ENGINE_LABELS: Record<string, string> = {
 };
 
 export function JobCard({ job, onCancel, onDownload, onDownloadThreemf, onPreview, onSendToPrinter, onQueue, queueLabel }: JobCardProps) {
+  const [cancelling, setCancelling] = useState(false);
+
   return (
     <div className="bg-gray-700/40 rounded-lg p-2.5 border border-gray-600/50">
       <div className="flex items-center justify-between mb-1.5">
         <div className="flex items-center gap-2 min-w-0">
-          <span className={`shrink-0 w-2 h-2 rounded-full ${STATUS_COLORS[job.status] || 'bg-gray-500'}`} />
+          <span className={`shrink-0 w-2 h-2 rounded-full ${jobStatusColor(job.status)}`} role="img" aria-label={`Job ${job.status}`} />
           <span className="text-xs text-white truncate">{job.modelName || ENGINE_LABELS[job.engine] || job.engine}</span>
           {job.plateIndex != null && (
             <span className="shrink-0 px-1 py-0.5 rounded text-[10px] font-medium bg-gray-600 text-gray-300">P{job.plateIndex}</span>
@@ -92,10 +89,15 @@ export function JobCard({ job, onCancel, onDownload, onDownloadThreemf, onPrevie
       <div className="flex gap-1.5 mt-2">
         {job.status === 'running' && onCancel && (
           <button
-            onClick={() => onCancel(job.id)}
-            className="px-2 py-0.5 text-[10px] rounded bg-red-600/20 text-red-400 hover:bg-red-600/30 transition"
+            onClick={async () => {
+              if (cancelling) return;
+              setCancelling(true);
+              try { await onCancel(job.id); } finally { setCancelling(false); }
+            }}
+            disabled={cancelling}
+            className="px-2 py-0.5 text-[10px] rounded bg-red-600/20 text-red-400 hover:bg-red-600/30 transition disabled:opacity-50 disabled:cursor-wait"
           >
-            Cancel
+            {cancelling ? 'Cancelling…' : 'Cancel'}
           </button>
         )}
         {job.status === 'completed' && onDownload && (

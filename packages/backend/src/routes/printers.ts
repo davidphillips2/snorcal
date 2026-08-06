@@ -10,6 +10,7 @@ import { parseGcodeFilaments } from '../services/gcode-filaments.js';
 import { rewriteGcodeToolMapping, mappingIsNoop } from '../services/gcode-rewriter.js';
 import { getJobsDir, ensureDir } from '../services/model-parser.js';
 import { assertSafeUrl } from '../services/ssrf.js';
+// LAN source binding handled via WS localAddress in adapters (see lan-bind.ts).
 import type { PrinterCommand, PrinterProtocol, PrintOptions } from '@snorcal/shared';
 
 /**
@@ -217,7 +218,7 @@ export async function printerRoutes(app: FastifyInstance, options: { db: Db }) {
       return reply.send({ ok: true, data: devices });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      return reply.send({ ok: false, error: `Discovery failed: ${message}` });
+      return reply.status(500).send({ ok: false, error: `Discovery failed: ${message}` });
     }
   });
 
@@ -430,7 +431,7 @@ export async function printerRoutes(app: FastifyInstance, options: { db: Db }) {
       return reply.send(result);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      return reply.send({ ok: false, error: message });
+      return reply.status(502).send({ ok: false, error: message });
     }
   });
 
@@ -443,7 +444,7 @@ export async function printerRoutes(app: FastifyInstance, options: { db: Db }) {
       return reply.send({ ok: true });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      return reply.send({ ok: false, error: message });
+      return reply.status(502).send({ ok: false, error: message });
     }
   });
 
@@ -503,7 +504,7 @@ export async function printerRoutes(app: FastifyInstance, options: { db: Db }) {
       return reply.send({ ok: true });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      return reply.send({ ok: false, error: message });
+      return reply.status(502).send({ ok: false, error: message });
     }
   });
 
@@ -532,6 +533,7 @@ export async function printerRoutes(app: FastifyInstance, options: { db: Db }) {
         reply.hijack();
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
+        console.error(`[camera] bambu snapshot ${req.params.id} failed:`, message);
         return reply.status(502).send({ ok: false, error: message });
       }
       return;
@@ -551,6 +553,7 @@ export async function printerRoutes(app: FastifyInstance, options: { db: Db }) {
         }
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
+        console.error(`[camera] moonraker snapshot ${req.params.id} failed:`, message);
         return reply.status(502).send({ ok: false, error: message });
       }
     }
@@ -584,6 +587,7 @@ export async function printerRoutes(app: FastifyInstance, options: { db: Db }) {
       reply.hijack();
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      console.error(`[camera] mjpeg proxy ${req.params.id} failed:`, message);
       return reply.status(502).send({ ok: false, error: message });
     }
   });
@@ -652,6 +656,17 @@ export async function printerRoutes(app: FastifyInstance, options: { db: Db }) {
 
       const mapping = Array.isArray(body.filamentMapping) ? body.filamentMapping : null;
       const hasMapping = mapping && mapping.length > 0;
+      // Validate mapping indices. -1 / 0 = "skip" sentinel for some adapters
+      // (Bambu ams_mapping uses 0=skip); positive = slot/tray index. Reject
+      // non-integers, NaN, or negatives other than -1 before they reach the
+      // gcode rewriter (which would silently emit malformed T-codes).
+      if (hasMapping) {
+        for (const v of mapping!) {
+          if (!Number.isInteger(v) || (v < 0 && v !== -1)) {
+            return reply.status(400).send({ ok: false, error: `Invalid filament mapping entry: ${v}. Each must be an integer slot index, 0, or -1 (skip).` });
+          }
+        }
+      }
       const printOptions = body.printOptions;
 
       // Decide if we need to rewrite gcode T-codes.
@@ -699,7 +714,7 @@ export async function printerRoutes(app: FastifyInstance, options: { db: Db }) {
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      return reply.send({ ok: false, error: message });
+      return reply.status(502).send({ ok: false, error: message });
     }
   });
 
@@ -746,7 +761,7 @@ export async function printerRoutes(app: FastifyInstance, options: { db: Db }) {
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      return reply.send({ ok: false, error: message });
+      return reply.status(502).send({ ok: false, error: message });
     }
   });
 
@@ -832,7 +847,7 @@ export async function printerRoutes(app: FastifyInstance, options: { db: Db }) {
       return reply.send({ ok: true, data: { printerPath } });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      return reply.send({ ok: false, error: message });
+      return reply.status(502).send({ ok: false, error: message });
     } finally {
       try { fs.rmSync(stageDir, { recursive: true, force: true }); } catch { /* ignore */ }
     }

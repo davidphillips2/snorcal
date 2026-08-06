@@ -28,7 +28,7 @@ before `node` exec.
 | Variable | Default | Purpose |
 |---|---|---|
 | `SNORCAL_HOME` | `~/snorcal` (mac/linux) or `%USERPROFILE%\snorcal` (win) | Install / clone location |
-| `SNORCAL_PORT` | `3000` | Backend listen port |
+| `SNORCAL_PORT` | `7326` | Backend listen port |
 | `SNORCAL_DATA_DIR` | `~/.snorcal/data` (mac/linux only — Windows always `%USERPROFILE%\.snorcal\data`) | SQLite DB, models, jobs |
 | `SNORCAL_LOG_DIR` | `~/.snorcal/logs` (mac/linux) | Log output location |
 | `SNORCAL_PASSWORD_HASH` | _(unset)_ | scrypt hash of the login password. If unset, the UI shows a one-time setup screen on first launch. Generate with `pnpm --filter backend exec tsx scripts/hash-password.ts`. |
@@ -173,8 +173,8 @@ Restart the service after editing.
   or switch to a system-level service (out of scope here — see plan file).
 - **better-sqlite3 native build.** If pnpm install fails on linux with a
   compiler error, install build-essential / make / g++ and re-run.
-- **Port 3000 conflict.** Override with `SNORCAL_PORT=xxxx`.
-- **Reverse proxy.** The service listens on `0.0.0.0:3000` (HTTP). Snorcal has
+- **Port 7326 conflict.** Override with `SNORCAL_PORT=xxxx`.
+- **Reverse proxy.** The service listens on `0.0.0.0:7326` (HTTP). Snorcal has
   built-in password auth (see above), but for HTTPS put your own nginx / Caddy
   / Traefik in front. `trustProxy` is enabled so secure cookies work behind a
   TLS-terminating proxy. **Do not expose the port directly to the internet** —

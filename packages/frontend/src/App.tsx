@@ -6,7 +6,7 @@ import { FacePainter, type PaintMode } from './components/Viewer/FacePainter';
 import { ViewerToolbar } from './components/Viewer/ViewerToolbar';
 import { TransformPanel } from './components/ModelEdit/TransformPanel';
 import { MeasureTool, type Measurement } from './components/ModelEdit/MeasureTool';
-import { CutTool } from './components/ModelEdit/CutTool';
+import { CutTool, type CutPiece } from './components/ModelEdit/CutTool';
 import { AddVolumeModal } from './components/ModelEdit/AddVolumeModal';
 import { SupportPainter } from './components/ModelEdit/SupportPainter';
 import { ObjectListPanel } from './components/ObjectList/ObjectListPanel';
@@ -14,7 +14,6 @@ import { MakerworldImportModal } from './components/ModelUploader/MakerworldImpo
 import { PlateTabs } from './components/Plates/PlateTabs';
 import { AxisIndicator } from './components/Viewer/AxisIndicator';
 import { Bed } from './components/Viewer/Bed';
-import { ModelMover } from './components/Viewer/ModelMover';
 import { ModelUploader } from './components/ModelUploader';
 import { JobList } from './components/Jobs/JobList';
 import { SettingsPanel } from './components/Settings/SettingsPanel';
@@ -29,284 +28,35 @@ import { PrinterDashboard } from './components/PrinterMonitor/PrinterDashboard';
 import { InventoryPanel } from './components/Inventory/InventoryPanel';
 import { MultiPrinterFit } from './components/PrinterMonitor/MultiPrinterFit';
 import { LiveMonitorOverlay } from './components/PrinterMonitor/LiveMonitorOverlay';
+import { useToast } from './components/Toast';
 import { FilamentRemapModal } from './components/PrinterMonitor/FilamentRemapModal';
 import { AddPrinterModal } from './components/PrinterMonitor/AddPrinterModal';
 import type { PrinterStatus } from '@snorcal/shared';
 import { HomeDashboard } from './components/Home/HomeDashboard';
 import { PrinterDetail } from './components/PrinterMonitor/PrinterDetail';
 import { useSSE } from './hooks/useSSE';
+import { useUndo } from './hooks/useUndo';
+import { usePlates } from './hooks/usePlates';
+import { useModelTransforms } from './hooks/useModelTransforms';
 import * as api from './api/client';
 import type { PausePoint } from './api/client';
 import { shelfPack } from './lib/pack';
 import { extractLayerTypes } from './lib/gcode-stats';
+import {
+  type ProjectModel, type Job, type UploadModelMeta,
+  DEFAULT_SCALE, DEFAULT_MIRROR, makeUid,
+  buildNegativeChildPms, buildPrintableChildPms,
+} from './lib/project-types';
+// Re-export ProjectModel so existing `import { ProjectModel } from './App'`
+// sites keep working. Long-term these should import from lib/project-types.
+export type { ProjectModel };
+import { type PersistedState, loadPersistedState, savePersistedState } from './lib/persistence';
+import { buildSliceBody as buildSliceBodyFn } from './lib/slice-body';
 import { TransformGizmo } from './components/Viewer/TransformGizmo';
 import { CollisionOverlay } from './components/Viewer/CollisionOverlay';
 import { MultiMeasureOverlay } from './components/Viewer/MultiMeasureOverlay';
 import { isCoarsePointer, type TransformMode, type TransformSpace, type SnapSettings } from './lib/transforms';
 import type { ModelKind, Scale3D, Mirror3D, FilamentSlot } from '@snorcal/shared';
-
-// --- Types ---
-
-export interface ProjectModel {
-  uid: string; // stable instance id (survives array reorders) — used as React key + meshRefs key
-  modelId: string;
-  name: string;
-  faceCount: number;
-  plateCount: number;
-  /** Backend plate index inside a multi-plate 3MF (1-based). Set when this pm
-   *  represents one plate of a multi-plate import. Undefined for single-plate
-   *  uploads and for user-created UI plates that don't map to a backend plate. */
-  backendPlateIndex?: number;
-  /** Object names extracted from the 3MF's model_settings.config for the plate
-   *  this pm represents. Used to label the plate tab with what's actually on
-   *  it (e.g. "Mickey1.step") instead of the meaningless filename. */
-  backendPlateObjectNames?: string[];
-  plateId: string; // which plate this model belongs to
-  rotation: Rotation3D;
-  positionOffset: { x: number; y: number; z: number };
-  scale: Scale3D;                  // default {1,1,1}
-  mirror: Mirror3D;                // default {false,false,false}
-  faceColors: Uint8Array | null;
-  visible: boolean;
-  kind: ModelKind;                 // default 'model'
-  linkedTo?: string[];             // parent modelId(s) for negative/modifier
-  settings?: Record<string, unknown>; // per-object override (modifier subset)
-  /** Set when this ProjectModel is an embedded negative part (sourced from a
-   *  3MF upload). Renders via /files/model/:parentId/negative/:plate/:part. */
-  negativePartRef?: { parentModelId: string; plate: number; part: number };
-  /** Set when this ProjectModel is a printable sub-object of a 3MF assembly
-   *  (one `<object>` inside the parent 3MF). Renders via
-   *  /files/model/:parentId/part/:plate/:part. */
-  printablePartRef?: { parentModelId: string; plate: number; part: number };
-}
-
-const DEFAULT_SCALE: Scale3D = { x: 1, y: 1, z: 1 };
-const DEFAULT_MIRROR: Mirror3D = { x: false, y: false, z: false };
-
-interface Job {
-  id: string;
-  modelName?: string;
-  engine: string;
-  status: string;
-  progress: number;
-  currentStep?: string;
-  gcodeSize?: number;
-  estimatedTime?: string;
-  filamentUsedG?: number;
-  filamentCost?: number;
-  errorMessage?: string;
-  plateIndex?: number;
-  createdAt: string;
-}
-
-// --- Persistence ---
-
-// crypto.randomUUID requires a secure context (https or localhost). LAN IPs
-// over plain http don't qualify on Safari, so fall back to getRandomValues.
-function makeUid(): string {
-  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-    return crypto.randomUUID();
-  }
-  const buf = new Uint8Array(16);
-  if (typeof crypto !== 'undefined' && crypto.getRandomValues) {
-    crypto.getRandomValues(buf);
-  } else {
-    for (let i = 0; i < 16; i++) buf[i] = Math.floor(Math.random() * 256);
-  }
-  return Array.from(buf, b => b.toString(16).padStart(2, '0')).join('');
-}
-
-/**
- * Build child ProjectModels (kind=negative) for every embedded negative part
- * that ships with a 3MF (e.g. MakerWorld keyring holes). Each child links to
- * its parent via `linkedTo` and carries a `negativePartRef` so the slicer can
- * resolve geometry via /files/model/:parentId/negative/:plate/:part.
- *
- * Delta offset puts the child next to the parent after STLViewer's per-mesh
- * centering (parent gets centered to origin; child needs to compensate).
- */
-function buildNegativeChildPms(
-  model: {
-    id: string;
-    name: string;
-    negativeParts?: Array<{ plateIndex: number; partIndex: number; faceCount: number; boundsMin?: { x: number; y: number; z: number }; boundsMax?: { x: number; y: number; z: number } }>;
-    boundsMin?: { x: number; y: number; z: number };
-    boundsMax?: { x: number; y: number; z: number };
-  },
-  plateId: string,
-  offset: number,
-): ProjectModel[] {
-  if (!model.negativeParts || model.negativeParts.length === 0 || !model.boundsMin || !model.boundsMax) {
-    return [];
-  }
-  const pCx = (model.boundsMin.x + model.boundsMax.x) / 2;
-  const pCz = (model.boundsMin.z + model.boundsMax.z) / 2;
-  const pMinY = model.boundsMin.y;
-  const children: ProjectModel[] = [];
-  for (const np of model.negativeParts) {
-    if (np.plateIndex !== 1) continue; // multi-plate imports surface only plate-1 children on the freshly-created pm
-    if (!np.boundsMin || !np.boundsMax) continue;
-    const cCx = (np.boundsMin.x + np.boundsMax.x) / 2;
-    const cCz = (np.boundsMin.z + np.boundsMax.z) / 2;
-    children.push({
-      uid: makeUid(),
-      modelId: model.id, // child reuses parent id; URL resolved via negativePartRef
-      name: `${model.name} (neg ${np.partIndex})`,
-      faceCount: np.faceCount,
-      plateCount: 1,
-      plateId,
-      rotation: { x: 0, y: 0, z: 0 },
-      positionOffset: {
-        x: offset + (cCx - pCx),
-        y: np.boundsMin.y - pMinY,
-        z: cCz - pCz,
-      },
-      scale: { ...DEFAULT_SCALE },
-      mirror: { ...DEFAULT_MIRROR },
-      faceColors: null,
-      visible: true,
-      kind: 'negative',
-      linkedTo: [model.id],
-      negativePartRef: { parentModelId: model.id, plate: np.plateIndex, part: np.partIndex },
-    });
-  }
-  return children;
-}
-
-/**
- * Build child ProjectModels (kind=part) for every printable sub-object in a
- * 3MF assembly (each `<object>` in the source file). Mirrors
- * `buildNegativeChildPms` but for printable parts that compose the parent
- * assembly rather than cutters that subtract from it.
- *
- * Each child links via `linkedTo` and carries a `printablePartRef` so the
- * slicer resolves geometry via /files/model/:parentId/part/:plate/:part.
- */
-function buildPrintableChildPms(
-  model: {
-    id: string;
-    name: string;
-    parts?: Array<{ plateIndex: number; partIndex: number; faceCount: number; name?: string; extruder?: number; boundsMin?: { x: number; y: number; z: number }; boundsMax?: { x: number; y: number; z: number } }>;
-  },
-  plateId: string,
-): ProjectModel[] {
-  if (!model.parts || model.parts.length === 0) return [];
-  // Only plate-1 parts attach to the freshly-created pm (mirrors the
-  // negative-parts rule). Multi-plate uploads create one pm per plate.
-  return model.parts
-    .filter(pp => pp.plateIndex === 1)
-    .map(pp => ({
-      uid: makeUid(),
-      modelId: model.id,
-      name: pp.name ?? `${model.name} (part ${pp.partIndex})`,
-      faceCount: pp.faceCount,
-      plateCount: 1,
-      plateId,
-      // Identity transform — the per-part STL already has Y-up coordinates
-      // captured at parse time. Parent's plate-centering happens in
-      // threemf-builder, applied via the parentOffset mechanism that all
-      // children share.
-      rotation: { x: 0, y: 0, z: 0 },
-      positionOffset: { x: 0, y: 0, z: 0 },
-      scale: { x: 1, y: 1, z: 1 },
-      mirror: { x: false, y: false, z: false },
-      faceColors: null,
-      visible: true,
-      kind: 'part',
-      linkedTo: [model.id],
-      printablePartRef: { parentModelId: model.id, plate: pp.plateIndex, part: pp.partIndex },
-    }));
-}
-
-interface PersistedModel {
-  uid?: string; // optional for backwards compat (older saves lack this)
-  modelId: string;
-  name: string;
-  faceCount: number;
-  plateCount: number;
-  plateId: string;
-  rotation: Rotation3D;
-  positionOffset: { x: number; y: number; z: number };
-  scale?: Scale3D;
-  mirror?: Mirror3D;
-  visible: boolean;
-  kind?: ModelKind;
-  linkedTo?: string[];
-  settings?: Record<string, unknown>;
-  negativePartRef?: { parentModelId: string; plate: number; part: number };
-  printablePartRef?: { parentModelId: string; plate: number; part: number };
-}
-
-interface PersistedState {
-  plates: Array<{ id: string; name: string }>;
-  activePlateId: string;
-  models: PersistedModel[];
-  /** @deprecated use selectedIndices — kept for restore migration */
-  activeModelIndex?: number | null;
-  selectedIndices?: number[];
-  engine: string;
-  settings: Record<string, string>;
-  selectedProfiles: { machine?: string; filament?: string; filament2?: string; process?: string };
-  filamentSlots: FilamentSlot[];
-  multiMaterial: { enabled: boolean; supportFilament: string; supportInterfaceFilament: string };
-  printerIp: string;
-  // UI state — restored across reloads so user lands where they left off
-  view?: 'home' | 'slice' | 'jobs' | 'printer' | 'settings';
-  showSidebar?: boolean;
-  showSettings?: boolean;
-  showJobs?: boolean;
-  showInventory?: boolean;
-  paintMode?: string;
-  activeColor?: string;
-  selectedPrinterId?: string | null;
-  targetPrinterId?: string | null;
-  viewer3DEnabled?: boolean;
-  previewJobId?: string | null;
-  gcodeColorMode?: 'filament' | 'lineType' | 'speed';
-  showAllLayers?: boolean;
-  currentPreviewLayer?: number;
-  // Transform gizmo (Phase 2)
-  transformMode?: TransformMode;
-  transformSpace?: TransformSpace;
-  snapEnabled?: boolean;
-  snapTranslateMM?: number;
-  snapRotateDeg?: number;
-}
-
-// Migrate legacy slorca_* localStorage keys → snorcal_* (one-shot per key)
-function migrateLegacyKeys() {
-  const keys = [
-    'snorcal_project', 'snorcal_engine', 'snorcal_filament_slots',
-    'snorcal_printer_ip', 'snorcal_multi_material', 'snorcal_target_printer',
-  ];
-  for (const k of keys) {
-    const oldKey = k.replace('snorcal_', 'slorca_');
-    if (localStorage.getItem(k) === null && localStorage.getItem(oldKey) !== null) {
-      localStorage.setItem(k, localStorage.getItem(oldKey)!);
-      localStorage.removeItem(oldKey);
-    }
-  }
-  // printers.ts STORAGE_KEY legacy
-  if (localStorage.getItem('snorcal_printer') === null && localStorage.getItem('slorca_printer') !== null) {
-    localStorage.setItem('snorcal_printer', localStorage.getItem('slorca_printer')!);
-    localStorage.removeItem('slorca_printer');
-  }
-}
-
-function loadPersistedState(): PersistedState | null {
-  try {
-    migrateLegacyKeys();
-    const raw = localStorage.getItem('snorcal_project');
-    if (!raw) return null;
-    return JSON.parse(raw);
-  } catch { return null; }
-}
-
-function savePersistedState(state: PersistedState) {
-  try {
-    localStorage.setItem('snorcal_project', JSON.stringify(state));
-  } catch { /* localStorage full */ }
-}
 
 /** World-space bounding box dimensions in mm for a mesh. */
 function computeMeshBoundsMM(mesh: THREE.Mesh): { x: number; y: number; z: number } {
@@ -320,6 +70,7 @@ function computeMeshBoundsMM(mesh: THREE.Mesh): { x: number; y: number; z: numbe
 // --- App ---
 
 export default function App() {
+  const toast = useToast();
   const [isUploading, setIsUploading] = useState(false);
   const [sceneRefs, setSceneRefs] = useState<SceneRefs | null>(null);
   const meshRefs = useRef<Record<string, THREE.Mesh | null>>({});
@@ -335,8 +86,6 @@ export default function App() {
   // per-row ⊖ button in ObjectListPanel). Falls back to activeModel.modelId.
   const [addVolumeParentId, setAddVolumeParentId] = useState<string | null>(null);
   const [activeColor, setActiveColor] = useState(() => persisted.current?.activeColor || '#FF0000');
-  const [plates, setPlates] = useState<Array<{ id: string; name: string }>>(() => persisted.current?.plates ?? [{ id: defaultPlateId, name: 'Plate 1' }]);
-  const [activePlateId, setActivePlateId] = useState(() => persisted.current?.activePlateId ?? defaultPlateId);
   const [projectModels, setProjectModels] = useState<ProjectModel[]>([]);
   const [selectedIndices, setSelectedIndices] = useState<Set<number>>(new Set());
   // Derived single-active index (first of set or null) — kept for back-compat
@@ -362,78 +111,29 @@ export default function App() {
   const [snapRotateDeg, setSnapRotateDeg] = useState<number>(() => persisted.current?.snapRotateDeg ?? 15);
 
   // --- Undo/redo history (50-step stack of projectModels snapshots) ---
-  const undoStackRef = useRef<ProjectModel[][]>([]);
-  const redoStackRef = useRef<ProjectModel[][]>([]);
+  // Undo/redo + tracked setter (snapshots before each mutation). Paint-undo
+  // takes precedence via the window bridge — see hooks/useUndo.ts.
   const projectModelsRef = useRef(projectModels);
   projectModelsRef.current = projectModels;
-  const [, forceUndoTick] = useState(0);
+  const { pushUndo, updateModels, handleUndo, handleRedo, canUndo, canRedo } = useUndo({
+    projectModels,
+    setProjectModels,
+    clearSelection: () => selectSingle(null),
+  });
 
-  const pushUndo = useCallback(() => {
-    undoStackRef.current.push(projectModelsRef.current.map(p => ({ ...p })));
-    if (undoStackRef.current.length > 50) undoStackRef.current.shift();
-    redoStackRef.current = [];
-    forceUndoTick(t => t + 1);
-  }, []);
+  // --- Plates (tabs) + active-plate state ---
+  const {
+    plates, setPlates,
+    activePlateId, setActivePlateId,
+    handleRenamePlate, handleDuplicatePlate, handleDeletePlate, handleReorderPlates,
+  } = usePlates({
+    initialPlates: persisted.current?.plates ?? [{ id: defaultPlateId, name: 'Plate 1' }],
+    initialActivePlateId: persisted.current?.activePlateId ?? defaultPlateId,
+    projectModels,
+    updateModels,
+    clearSelection: () => selectSingle(null),
+  });
 
-  // Tracked setter — snapshots current state before applying updater
-  const updateModels = useCallback((updater: ProjectModel[] | ((prev: ProjectModel[]) => ProjectModel[])) => {
-    pushUndo();
-    setProjectModels(updater);
-  }, [pushUndo]);
-
-  // --- Plate manager handlers ---
-  const handleRenamePlate = useCallback((id: string, name: string) => {
-    setPlates(prev => prev.map(p => p.id === id ? { ...p, name } : p));
-  }, []);
-  const handleDuplicatePlate = useCallback((id: string) => {
-    const idx = plates.findIndex(p => p.id === id);
-    if (idx < 0) return;
-    const src = plates[idx];
-    const newId = `plate-${Date.now()}`;
-    const modelIdMap = new Map<string, string>();
-    const clones: ProjectModel[] = projectModels
-      .filter(m => m.plateId === id)
-      .map(m => {
-        const newMid = `m-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-        modelIdMap.set(m.modelId, newMid);
-        return { ...m, modelId: newMid, plateId: newId, faceColors: m.faceColors ? new Uint8Array(m.faceColors) : null };
-      });
-    clones.forEach(c => {
-      if (c.linkedTo) c.linkedTo = c.linkedTo.map(lid => modelIdMap.get(lid) ?? lid);
-    });
-    setPlates(prev => [
-      ...prev.slice(0, idx + 1),
-      { id: newId, name: `${src.name} copy` },
-      ...prev.slice(idx + 1),
-    ]);
-    updateModels(pm => [...pm, ...clones]);
-    setActivePlateId(newId);
-    selectSingle(null);
-  }, [plates, projectModels, updateModels]);
-  const handleDeletePlate = useCallback((id: string) => {
-    if (plates.length <= 1) return;
-    const idx = plates.findIndex(p => p.id === id);
-    if (idx < 0) return;
-    setPlates(prev => prev.filter(p => p.id !== id));
-    updateModels(pm => pm.filter(m => m.plateId !== id));
-    if (activePlateId === id) {
-      const fallbackIdx = Math.max(0, idx - 1);
-      setActivePlateId(prev => {
-        const next = plates.filter(p => p.id !== id);
-        return next[Math.min(fallbackIdx, next.length - 1)]?.id ?? prev;
-      });
-      selectSingle(null);
-    }
-  }, [plates, activePlateId, updateModels]);
-  const handleReorderPlates = useCallback((fromIdx: number, toIdx: number) => {
-    setPlates(prev => {
-      if (fromIdx === toIdx || fromIdx < 0 || toIdx < 0 || fromIdx >= prev.length || toIdx >= prev.length) return prev;
-      const next = [...prev];
-      const [moved] = next.splice(fromIdx, 1);
-      next.splice(toIdx, 0, moved);
-      return next;
-    });
-  }, []);
   // Toggle anti-warp brim preset: brim_ears + 8mm width
   const toggleBrim = useCallback(() => {
     setSettings(prev => {
@@ -460,36 +160,7 @@ export default function App() {
     });
   }, []);
 
-  const handleUndo = useCallback(() => {
-    // Paint undo takes precedence (most recent action); fall back to project-models
-    const paintUndo = (window as any).__snorcal_undo as (() => boolean) | undefined;
-    if (paintUndo && paintUndo()) return;
-    if (undoStackRef.current.length > 0) {
-      const present = projectModelsRef.current.map(p => ({ ...p }));
-      const past = undoStackRef.current.pop()!;
-      redoStackRef.current.push(present);
-      setProjectModels(past);
-      selectSingle(null);
-      forceUndoTick(t => t + 1);
-      return;
-    }
-  }, []);
-
-  const handleRedo = useCallback(() => {
-    if (redoStackRef.current.length === 0) return;
-    const present = projectModelsRef.current.map(p => ({ ...p }));
-    const future = redoStackRef.current.pop()!;
-    undoStackRef.current.push(present);
-    setProjectModels(future);
-    selectSingle(null);
-    forceUndoTick(t => t + 1);
-  }, []);
-
-  const canUndo = undoStackRef.current.length > 0
-    || ((window as any).__snorcal_paint_undo_count ?? 0) > 0;
-  const canRedo = redoStackRef.current.length > 0;
-
-  // Undo/redo keyboard shortcuts (Ctrl/Cmd+Z, Ctrl+Shift+Z, Ctrl+Y)
+  // Undo/redo keyboard shortcuts (Ctrl/Cmd+Z, Ctrl/Shift+Z, Ctrl+Y)
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const meta = e.metaKey || e.ctrlKey;
@@ -509,6 +180,26 @@ export default function App() {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [handleUndo, handleRedo]);
+
+  // Transform-mode shortcuts (W=move, E=rotate, R=scale — Orca/Blender
+  // convention). Only when a model is selected and no tool owns the pointer.
+  const canSwitchTransform = selectedIndices.size > 0
+    && paintMode !== 'paint' && paintMode !== 'fill'
+    && paintMode !== 'cut' && paintMode !== 'measure' && paintMode !== 'support';
+  useEffect(() => {
+    if (!canSwitchTransform) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      const t = e.target as HTMLElement;
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
+      const k = e.key.toLowerCase();
+      if (k === 'w') { e.preventDefault(); setTransformMode('translate'); }
+      else if (k === 'e') { e.preventDefault(); setTransformMode('rotate'); }
+      else if (k === 'r') { e.preventDefault(); setTransformMode('scale'); }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [canSwitchTransform]);
 
   // Models on the active plate
   const activePlateModels = projectModels.filter(m => m.plateId === activePlateId);
@@ -699,7 +390,10 @@ export default function App() {
         filamentCost: j.filamentCost, errorMessage: j.errorMessage,
         printerName: j.printerName, createdAt: j.createdAt,
       })));
-    }).catch(console.error);
+    }).catch(err => {
+      console.error('listJobs failed', err);
+      toast.error('Failed to load jobs', err instanceof Error ? err.message : String(err));
+    });
 
     // Restore project models
     const saved = persisted.current;
@@ -799,7 +493,10 @@ export default function App() {
         // touched.
         setSettings(prev => ({ ...data.process, ...prev }));
       }
-    }).catch(console.error);
+    }).catch(err => {
+      console.error('getDefaultSettings failed', err);
+      toast.error('Failed to load default slicer settings', err instanceof Error ? err.message : String(err));
+    });
   }, [engine]);
 
   // Persist state on changes (debounced)
@@ -866,14 +563,37 @@ export default function App() {
       }
       if (!jobId) continue;
       setJobs((prev) =>
-        prev.map((j) =>
-          j.id === jobId
-            ? { ...j, status: msg.type === 'job:completed' ? 'completed' : msg.type === 'job:failed' ? 'failed' : 'running',
-                progress: (msg.data.progress as number) ?? j.progress,
-                currentStep: msg.data.currentStep as string | undefined,
-                errorMessage: msg.data.error as string | undefined }
-            : j
-        ),
+        prev.map((j) => {
+          if (j.id !== jobId) return j;
+          // job:completed/job:failed events carry only jobId — force progress
+          // to 100 (or last for failed) so the bar doesn't freeze at whatever
+          // the last progress tick happened to land on.
+          if (msg.type === 'job:completed') {
+            // SSE event carries only jobId — fetch the full job row so the
+            // card picks up estimates (time/filament/size) the backend parsed
+            // from the gcode post-slice. Without this, optimistic status flip
+            // stops the polling fallback before estimates are read.
+            api.getJob(jobId).then(r => {
+              setJobs(prev => prev.map(jj => jj.id === jobId ? {
+                ...jj,
+                estimatedTime: r.estimatedTime,
+                filamentUsedG: r.filamentUsedG,
+                filamentCost: r.filamentCost,
+                gcodeSize: r.gcodeSize,
+              } : jj));
+            }).catch(() => {});
+            return { ...j, status: 'completed', progress: 100, currentStep: undefined, errorMessage: undefined };
+          }
+          if (msg.type === 'job:failed') {
+            return { ...j, status: 'failed', errorMessage: (msg.data.error as string) ?? j.errorMessage };
+          }
+          // job:progress
+          return {
+            ...j, status: 'running',
+            progress: (msg.data.progress as number) ?? j.progress,
+            currentStep: (msg.data.currentStep as string) ?? j.currentStep,
+          };
+        }),
       );
     }
     if (printerListDirty) {
@@ -917,7 +637,7 @@ export default function App() {
       const model = await api.uploadModel(file);
       await addModelToProject(model);
     } catch (err) {
-      alert(`Upload failed: ${err instanceof Error ? err.message : String(err)}`);
+      toast.error('Upload failed', err instanceof Error ? err.message : String(err));
     } finally {
       setIsUploading(false);
     }
@@ -1039,7 +759,7 @@ export default function App() {
       // helper but skip the settings overwrite.
       await applySourceSettings(m.modelId);
     } catch (err) {
-      alert(`MakerWorld import failed: ${err instanceof Error ? err.message : String(err)}`);
+      toast.error('MakerWorld import failed', err instanceof Error ? err.message : String(err));
     }
   }, [addModelToProject]);
 
@@ -1071,7 +791,7 @@ export default function App() {
       // 404 = model has no embedded settings — benign, nothing to apply.
       const msg = err instanceof Error ? err.message : String(err);
       if (!/not found|no source settings/i.test(msg)) {
-        alert(`Failed to load embedded settings: ${msg}`);
+        toast.error('Failed to load embedded settings', msg);
       }
       return;
     }
@@ -1234,63 +954,10 @@ export default function App() {
   // (POST /api/slice) and `handleSaveThreemf` (POST /api/files/preview-3mf)
   // so the pre-slice download is byte-identical to what would have been sent.
   const buildSliceBody = useCallback((models: ProjectModel[]) => {
-    if (models.length === 0) throw new Error('No models');
-    // Layer DEFAULT_VALUES first so UI source-of-truth wins over backend
-    // default-project-settings.json. Backend defaults otherwise mismatch UI
-    // (e.g. enable_prime_tower: backend "1" vs UI "0" → user sees tower
-    // they never asked for). User toggles in `settings` override both.
-    const processSettings: Record<string, string> = {};
-    Object.assign(processSettings, DEFAULT_VALUES);
-    Object.assign(processSettings, settings);
-    const firstPlateIdx = plates.findIndex(p => p.id === models[0].plateId) + 1 || 1;
-    const anyMultiPlate = models.some(m => m.plateCount > 1);
-    const backendIdx = models[0].backendPlateIndex;
-
-    // Auto-detect multi-material: count distinct extruder IDs across the
-    // painted faces of every model being sliced. ≥2 unique extruders means
-    // the model uses 2+ filaments in a single print (multi-color paint,
-    // multi-material assembly) → slicer needs the full slot list + flush
-    // volumes + T<n> toolchange emission. With <2 unique, send only the
-    // primary slot — otherwise an imported 3MF carrying 4 AMS-bay colours
-    // would force a 4-filament slice for what's physically a single-spool
-    // print. Manual toggle still ORs in (user can force multi-material
-    // e.g. for support/interface on a different extruder, which the paint
-    // data doesn't reflect).
-    const usedExtruders = new Set<number>();
-    for (const pm of models) {
-      if (pm.faceColors) {
-        for (const e of pm.faceColors) usedExtruders.add(e);
-      }
-    }
-    const autoMulti = usedExtruders.size >= 2;
-    const effectiveMulti = multiMaterial.enabled || autoMulti;
-
-    return {
-      models: models.map(pm => ({
-        modelId: pm.modelId,
-        rotation: pm.rotation,
-        positionOffset: pm.positionOffset,
-        scale: pm.scale,
-        mirror: pm.mirror,
-        kind: pm.kind,
-        linkedTo: pm.linkedTo,
-        name: pm.name,
-        settings: pm.settings,
-        visible: pm.visible,
-        negativePartRef: pm.negativePartRef,
-        printablePartRef: pm.printablePartRef,
-      })),
-      engine,
-      plateIndex: backendIdx ?? (anyMultiPlate ? firstPlateIdx : undefined),
-      settings: { process: processSettings, machine: {}, filaments: [{}] },
-      profiles: selectedProfiles,
-      multiMaterial: effectiveMulti ? multiMaterial : undefined,
-      filamentSlots: filamentSlots.length > 0
-        ? (effectiveMulti ? filamentSlots : [filamentSlots[0]])
-        : undefined,
-      buildVolume: bedVolume ?? undefined,
-      printerId: targetPrinterId ?? undefined,
-    } as const;
+    return buildSliceBodyFn(models, {
+      engine, settings, selectedProfiles, multiMaterial, filamentSlots,
+      bedVolume, plates, targetPrinterId,
+    });
   }, [engine, settings, selectedProfiles, multiMaterial, filamentSlots, bedVolume, plates, targetPrinterId]);
 
   // Save the input 3MF without slicing — useful when slice fails and you want
@@ -1311,7 +978,7 @@ export default function App() {
       setTimeout(() => URL.revokeObjectURL(url), 60_000);
     } catch (err) {
       console.error('Save 3MF failed:', err);
-      alert(`Save 3MF failed: ${err instanceof Error ? err.message : String(err)}`);
+      toast.error('Save 3MF failed', err instanceof Error ? err.message : String(err));
     }
   }, [activePlateModels, saveAllColors, buildSliceBody]);
 
@@ -1327,7 +994,7 @@ export default function App() {
       }
     } catch (err) {
       console.error('Slice failed:', err);
-      alert(`Slice failed: ${err instanceof Error ? err.message : String(err)}`);
+      toast.error('Slice failed', err instanceof Error ? err.message : String(err));
     }
   }, [activePlateModels, saveAllColors, sliceModels, engine]);
 
@@ -1348,7 +1015,7 @@ export default function App() {
       setShowJobs(true);
     } catch (err) {
       console.error('Slice all failed:', err);
-      alert(`Slice failed: ${err instanceof Error ? err.message : String(err)}`);
+      toast.error('Slice failed', err instanceof Error ? err.message : String(err));
     }
   }, [projectModels, saveAllColors, sliceModels, engine]);
 
@@ -1367,9 +1034,15 @@ export default function App() {
   }, [activeModelIndex, projectModels, plates]);
 
   const handleCancelJob = useCallback(async (jobId: string) => {
-    await api.cancelJob(jobId);
-    setJobs(prev => prev.map(j => j.id === jobId ? { ...j, status: 'cancelled' } : j));
-  }, []);
+    try {
+      await api.cancelJob(jobId);
+      setJobs(prev => prev.map(j => j.id === jobId ? { ...j, status: 'cancelled' } : j));
+      toast.info('Job cancelled');
+    } catch (err) {
+      toast.error('Cancel failed', err instanceof Error ? err.message : String(err));
+      throw err;
+    }
+  }, [toast]);
 
   const handleDownloadGcode = useCallback((jobId: string) => { window.open(api.getGcodeUrl(jobId), '_blank'); }, []);
   const handleDownloadThreemf = useCallback((jobId: string) => { window.open(api.getThreemfUrl(jobId), '_blank'); }, []);
@@ -1409,7 +1082,7 @@ export default function App() {
     } catch (err) {
       // Revert on failure
       setJobPauses(jobPauses);
-      alert(`Failed to update pauses: ${err instanceof Error ? err.message : String(err)}`);
+      toast.error('Failed to update pauses', err instanceof Error ? err.message : String(err));
     }
   }, [previewJobId, jobPauses, printers, targetPrinterId]);
 
@@ -1417,11 +1090,11 @@ export default function App() {
 
   const handleSendToPrinter = useCallback(async (jobId: string) => {
     if (!targetPrinterId) {
-      alert('No target printer selected. Add a printer first.');
+      toast.warning('No target printer selected', 'Add a printer first.');
       return;
     }
     const printer = printers.find(p => p.id === targetPrinterId);
-    if (!printer) { alert('Target printer not found'); return; }
+    if (!printer) { toast.error('Target printer not found'); return; }
 
     // Check if the send dialog is needed. Bambu printers always need the
     // dialog — print options (bed leveling, flow cali, vibration comp,
@@ -1430,7 +1103,12 @@ export default function App() {
     // when filament remapping is required (multi-filament gcode or manual
     // slots on the printer).
     let filaments: api.JobFilament[] = [];
-    try { filaments = await api.getJobFilaments(jobId); } catch { /* ignore */ }
+    try {
+      filaments = await api.getJobFilaments(jobId);
+    } catch (err) {
+      toast.error('Could not read job filaments', err instanceof Error ? err.message : String(err));
+      return;
+    }
     const usedCount = filaments.filter(f => f.used).length;
     const hasAms = printer.protocol === 'bambu' && printerStatuses[targetPrinterId]?.ams && printerStatuses[targetPrinterId]!.ams!.length > 0;
     const hasManualSlots = (printer.manualSlots ?? 0) > 0;
@@ -1446,22 +1124,22 @@ export default function App() {
     // Direct send — no remap
     try {
       const result = await api.sendToRegisteredPrinter(targetPrinterId, jobId, true);
-      alert(`Sent to printer. Path: ${result.printerPath}`);
-    } catch (err) { alert(`Send failed: ${err instanceof Error ? err.message : String(err)}`); }
-  }, [targetPrinterId, printers, printerStatuses]);
+      toast.success('Sent to printer', result.printerPath);
+    } catch (err) { toast.error('Send failed', err instanceof Error ? err.message : String(err)); }
+  }, [targetPrinterId, printers, printerStatuses, toast]);
 
   const handleQueueOnPrinter = useCallback(async (jobId: string) => {
     if (!targetPrinterId) {
-      alert('No target printer selected. Add a printer first.');
+      toast.warning('No target printer selected', 'Add a printer first.');
       return;
     }
     try {
       const result = await api.addToPrintQueue(targetPrinterId, jobId);
-      alert(result.duplicate ? 'Already in queue' : 'Added to queue');
+      toast.info(result.duplicate ? 'Already in queue' : 'Added to queue');
     } catch (err) {
-      alert(`Queue failed: ${err instanceof Error ? err.message : String(err)}`);
+      toast.error('Queue failed', err instanceof Error ? err.message : String(err));
     }
-  }, [targetPrinterId]);
+  }, [targetPrinterId, toast]);
 
   const targetPrinter = printers.find(p => p.id === targetPrinterId);
 
@@ -1514,6 +1192,19 @@ export default function App() {
     ? projectModels[activeModelIndex] : null;
   const activeMesh = activeModel != null ? meshRefs.current[activeModel.uid] : null;
 
+  // Transform operations (rotate/orient/lay/position/duplicate/array/etc).
+  const {
+    handleAutoOrient, handleLayOnFace, handleRotationChange, handlePositionChange,
+    handleUpdateActiveModel, handleUpdateAllSelected, handleResetOrigin,
+    handleToggleVisible, handleDuplicateAt, handleDuplicate,
+    handleMoveToPlate, handleDuplicateToPlate,
+    handleLinearArray, handleCircularArray,
+  } = useModelTransforms({
+    activeModelIndex, activeModel, activeMesh, projectModels, selectedIndices,
+    meshRefs, updateModels, setSelectedIndices, selectSingle,
+    exitToolMode: () => setPaintMode('orbit'),
+  });
+
   // Selected models on the active plate, with parallel mesh + global-index arrays
   // for TransformGizmo (Phase 2).
   const selectedGlobalIndicesArr = useMemo(
@@ -1557,7 +1248,7 @@ export default function App() {
     }));
   }, [updateModels]);
 
-  // Active plate world bounds for ModelMover clamp (plate X offset + bed half-size)
+  // Active plate world bounds (plate X offset + bed half-size).
   const activePlateBounds = useMemo(() => {
     const off = plateOffsets[activePlateId];
     if (!off) return null;
@@ -1587,155 +1278,18 @@ export default function App() {
     return { x: maxX - minX, y: maxY - minY, z: maxZ - minZ };
   }, [projectModels, activePlateId, meshRevision]);
 
-  const handleAutoOrient = useCallback(() => {
-    if (!activeMesh || activeModelIndex == null) return;
-    const newRotation = autoOrient(activeMesh.geometry);
-    updateModels(prev => prev.map((p, i) => i === activeModelIndex ? { ...p, rotation: newRotation } : p));
-  }, [activeMesh, activeModelIndex, updateModels]);
-
-  const handleLayOnFace = useCallback((newRotation: Rotation3D) => {
-    if (activeModelIndex == null) return;
-    updateModels(prev => prev.map((p, i) => i === activeModelIndex ? { ...p, rotation: newRotation } : p));
-    setPaintMode('orbit');
-  }, [activeModelIndex, updateModels]);
-
-  const handleRotationChange = useCallback((rotation: Rotation3D) => {
-    if (activeModelIndex == null) return;
-    updateModels(prev => prev.map((p, i) => i === activeModelIndex ? { ...p, rotation } : p));
-  }, [activeModelIndex, updateModels]);
-
-  const handlePositionChange = useCallback((pos: THREE.Vector3) => {
-    if (activeModelIndex == null) return;
-    const pm = projectModels[activeModelIndex];
-    if (!pm) return;
-    const mesh = meshRefs.current[pm.uid];
-    const rest = mesh?.userData?.restPosition as { x: number; y: number; z: number } | undefined;
-    if (!rest) return;
-    // pos is absolute mesh position; subtract rest (centering offset) to get pure user offset
-    updateModels(prev => prev.map((p, i) => i === activeModelIndex ? {
-      ...p,
-      positionOffset: { x: pos.x - rest.x, y: pos.y - rest.y, z: pos.z - rest.z }
-    } : p));
-  }, [activeModelIndex, projectModels, updateModels]);
-
-  // --- Transform ops (mirror / scale / duplicate / array) ---
-
-  const handleUpdateActiveModel = useCallback((patch: Partial<ProjectModel>) => {
-    if (activeModelIndex == null) return;
-    updateModels(prev => prev.map((p, i) => i === activeModelIndex ? { ...p, ...patch } : p));
-  }, [activeModelIndex, updateModels]);
-
-  // Apply the same patch to every selected model (Phase 3 multi-aware panel).
-  const handleUpdateAllSelected = useCallback((patch: Partial<ProjectModel>) => {
-    if (selectedIndices.size === 0) return;
-    updateModels(prev => prev.map((p, i) => selectedIndices.has(i) ? { ...p, ...patch } : p));
-  }, [selectedIndices, updateModels]);
-
-  // Reset every selected model's rotation/positionOffset to identity (origin).
-  const handleResetOrigin = useCallback(() => {
-    if (selectedIndices.size === 0) return;
-    updateModels(prev => prev.map((p, i) => selectedIndices.has(i)
-      ? { ...p, rotation: { x: 0, y: 0, z: 0 }, positionOffset: { x: 0, y: 0, z: 0 } }
-      : p));
-  }, [selectedIndices, updateModels]);
-
-  const handleToggleVisible = useCallback((idx: number) => {
-    updateModels(prev => prev.map((p, i) => i === idx ? { ...p, visible: !p.visible } : p));
-  }, [updateModels]);
-
-  const handleDuplicateAt = useCallback((idx: number) => {
-    const src = projectModels[idx];
-    if (!src) return;
-    const dup: ProjectModel = {
-      ...src,
-      uid: makeUid(),
-      positionOffset: {
-        x: src.positionOffset.x + 20,
-        y: src.positionOffset.y,
-        z: src.positionOffset.z,
-      },
-    };
-    updateModels(prev => [...prev, dup]);
-  }, [projectModels, updateModels]);
-
-  const handleDuplicate = useCallback(() => {
-    if (activeModelIndex == null) return;
-    handleDuplicateAt(activeModelIndex);
-    // After dup, the clone is appended at the end — switch selection to it.
-    setSelectedIndices(new Set([projectModels.length]));
-  }, [activeModelIndex, handleDuplicateAt, projectModels.length]);
-
-  // Cross-plate ops (Phase 4). Move = change plateId in place. Duplicate-to
-  // creates a clone on the target plate (offset to plate origin) and selects it.
-  const handleMoveToPlate = useCallback((globalIdx: number, plateId: string) => {
-    updateModels(prev => prev.map((p, i) => i === globalIdx
-      ? { ...p, plateId, positionOffset: { x: 0, y: 0, z: 0 } }
-      : p));
-    selectSingle(globalIdx);
-  }, [updateModels, selectSingle]);
-
-  const handleDuplicateToPlate = useCallback((globalIdx: number, plateId: string) => {
-    const src = projectModels[globalIdx];
-    if (!src) return;
-    const dup: ProjectModel = {
-      ...src,
-      uid: makeUid(),
-      plateId,
-      positionOffset: { x: 0, y: 0, z: 0 },
-    };
-    updateModels(prev => [...prev, dup]);
-    setSelectedIndices(new Set([projectModels.length]));
-  }, [projectModels, updateModels]);
-
-  const handleLinearArray = useCallback((count: number, dx: number, dy: number) => {
-    if (!activeModel || count < 2) return;
-    const copies: ProjectModel[] = [];
-    for (let i = 1; i < count; i++) {
-      copies.push({
-        ...activeModel,
-        uid: makeUid(),
-        positionOffset: {
-          x: activeModel.positionOffset.x + dx * i,
-          y: activeModel.positionOffset.y,
-          z: activeModel.positionOffset.z + dy * i,  // Three.js Z = bed Y
-        },
-      });
-    }
-    updateModels(prev => [...prev, ...copies]);
-  }, [activeModel, updateModels]);
-
-  const handleCircularArray = useCallback((count: number, radius: number) => {
-    if (!activeModel || count < 2) return;
-    const copies: ProjectModel[] = [];
-    const cx = activeModel.positionOffset.x;
-    const cz = activeModel.positionOffset.z;
-    for (let i = 1; i < count; i++) {
-      const angle = (i / count) * Math.PI * 2;
-      copies.push({
-        ...activeModel,
-        uid: makeUid(),
-        positionOffset: {
-          x: cx + Math.cos(angle) * radius,
-          y: activeModel.positionOffset.y,
-          z: cz + Math.sin(angle) * radius,
-        },
-        rotation: {
-          x: activeModel.rotation.x,
-          y: activeModel.rotation.y,
-          z: activeModel.rotation.z + (angle * 180 / Math.PI),
-        },
-      });
-    }
-    updateModels(prev => [...prev, ...copies]);
-  }, [activeModel, updateModels]);
 
   // Cut — CSG halves upload as new models; original active model is removed
-  const handleCutComplete = useCallback(async (files: { file: File; name: string }[]) => {
-    if (files.length === 0) return;
+  const handleCutComplete = useCallback(async (pieces: CutPiece[], mode: 'objects' | 'parts') => {
+    if (pieces.length === 0) return;
+    const parentId = activeModel?.modelId;
     setIsUploading(true);
     try {
-      const uploaded = await Promise.all(files.map(f => api.uploadModel(f.file)));
-      const newModels: ProjectModel[] = uploaded.map(m => ({
+      const uploaded = await Promise.all(pieces.map(p => api.uploadModel(p.file)));
+      // Both modes place each piece at the original's position so the cut
+      // result sits where the source sat. Geometry is already world-baked in
+      // CutTool, so identity rotation is correct here.
+      const newModels: ProjectModel[] = uploaded.map((m, i) => ({
         uid: makeUid(),
         modelId: m.id,
         name: m.name,
@@ -1748,23 +1302,41 @@ export default function App() {
         mirror: { ...DEFAULT_MIRROR },
         faceColors: null,
         visible: true,
-        kind: 'model',
+        // 'parts' mode: link halves to the original as printable parts so they
+        // slice together as one assembly (threemf-builder treats a parent with
+        // kind:'part' children as a container and emits the parts' geometry).
+        // 'objects' mode: independent models, no link.
+        kind: mode === 'parts' && parentId ? 'part' : 'model',
+        linkedTo: mode === 'parts' && parentId ? [parentId] : undefined,
       }));
-      // Remove the original, append halves
+
       updateModels(prev => {
+        if (mode === 'parts' && parentId) {
+          // Keep the original as the assembly container; append halves as parts.
+          // Parent's own mesh is dropped at slice time because it has part
+          // children (threemf-builder parentsWithParts).
+          return [...prev, ...newModels];
+        }
+        // objects mode: replace the original with the independent halves.
         const without = activeModelIndex == null ? prev : prev.filter((_, i) => i !== activeModelIndex);
         return [...without, ...newModels];
       });
-      // After cut: original removed, halves appended at end of array.
-      // Closure captures pre-update projectModels.length, so first new index = N-1.
-      setSelectedIndices(new Set([projectModels.length - 1]));
+
+      // Selection: jump to the first new model. Compute its index from the
+      // current array length (parts mode appends; objects mode removes 1 then
+      // appends N). Either way the first new index = pre-update length minus
+      // (1 if original removed, else 0).
+      const firstNewIdx = mode === 'parts'
+        ? projectModels.length
+        : projectModels.length - 1;
+      setSelectedIndices(new Set([firstNewIdx]));
       setPaintMode('orbit');
     } catch (err) {
-      alert(`Cut upload failed: ${err instanceof Error ? err.message : String(err)}`);
+      toast.error('Cut upload failed', err instanceof Error ? err.message : String(err));
     } finally {
       setIsUploading(false);
     }
-  }, [activeModel, activeModelIndex, activePlateId]);
+  }, [activeModel, activeModelIndex, activePlateId, projectModels.length]);
 
   // Add negative/modifier volume — uploads primitive STL, links to active model
   // (or to addVolumeParentId when triggered from a per-row ⊖ button).
@@ -1776,7 +1348,7 @@ export default function App() {
     setAddVolumeKind(null);
     setAddVolumeParentId(null);
     if (!parentId) {
-      alert('Select a model first to attach a volume.');
+      toast.warning('Select a model first', 'Attach a volume to a selected model.');
       return;
     }
     setIsUploading(true);
@@ -1801,7 +1373,7 @@ export default function App() {
       };
       updateModels(prev => [...prev, newPm]);
     } catch (err) {
-      alert(`Add volume failed: ${err instanceof Error ? err.message : String(err)}`);
+      toast.error('Add volume failed', err instanceof Error ? err.message : String(err));
     } finally {
       setIsUploading(false);
     }
@@ -1847,7 +1419,7 @@ export default function App() {
       };
       updateModels(prev => [...prev, newPm]);
     } catch (err) {
-      alert(`Add support failed: ${err instanceof Error ? err.message : String(err)}`);
+      toast.error('Add support failed', err instanceof Error ? err.message : String(err));
     } finally {
       setIsUploading(false);
     }
@@ -1863,9 +1435,18 @@ export default function App() {
   useEffect(() => {
     if (!sceneRefs) return;
     const isPaintMode = paintMode === 'paint' || paintMode === 'fill' || paintMode === 'lay' || paintMode === 'support';
+    // Modes that own left-drag for their own interaction (painting, cutting,
+    // measuring, lay-on-face, support). In those, left-drag must NOT orbit.
+    // In every other mode (orbit, rotate) left-drag orbits empty space — the
+    // transform gizmo intercepts left-drag on its own handles separately and
+    // disables orbit via its dragging-changed event while a handle is dragged.
+    // Cut tool owns left-drag for ring/plane dragging on desktop (mouse).
+    // On touch the cut drag is disabled (rings too small) so orbit stays on.
+    const cutOwnsLeftDrag = paintMode === 'cut' && !isCoarsePointer();
+    const leftDragOwnedByTool = isPaintMode || cutOwnsLeftDrag || paintMode === 'measure';
 
     sceneRefs.controls.mouseButtons = {
-      LEFT: paintMode === 'orbit' ? THREE.MOUSE.ROTATE : undefined,
+      LEFT: leftDragOwnedByTool ? undefined : THREE.MOUSE.ROTATE,
       MIDDLE: THREE.MOUSE.DOLLY,
       RIGHT: isPaintMode ? undefined : THREE.MOUSE.ROTATE,
     };
@@ -2136,15 +1717,24 @@ export default function App() {
             <img src="/icon-192.png" alt="" className="w-6 h-6" />
             <span className="text-base font-semibold tracking-tight">snorcal</span>
           </div>
-          <nav className="flex gap-1">
-            {(['home', 'slice', 'settings'] as const).map(v => (
-              <button key={v} onClick={() => setView(v)}
-                className={`px-3 py-1.5 rounded text-sm capitalize ${
-                  view === v ? 'bg-gray-700 text-white' : 'text-gray-400 hover:text-white hover:bg-gray-800'
-                }`}>
-                {v}
-              </button>
-            ))}
+          <nav className="flex gap-1 items-center">
+            {(['home', 'slice', 'jobs', 'settings'] as const).map(v => {
+              const label = v === 'home' ? 'Printers' : v;
+              const runningCount = v === 'jobs' ? jobs.filter(j => j.status === 'running' || j.status === 'queued').length : 0;
+              return (
+                <button key={v} onClick={() => setView(v)}
+                  className={`px-3 py-1.5 rounded text-sm capitalize flex items-center gap-1.5 ${
+                    view === v ? 'bg-gray-700 text-white' : 'text-gray-400 hover:text-white hover:bg-gray-800'
+                  }`}>
+                  {label}
+                  {runningCount > 0 && (
+                    <span className="inline-flex items-center justify-center min-w-[1.1rem] h-[1.1rem] px-1 text-[10px] font-semibold rounded-full bg-blue-600 text-white" aria-label={`${runningCount} active job${runningCount === 1 ? '' : 's'}`}>
+                      {runningCount}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
           </nav>
         </div>
         <div className="text-xs text-gray-500">{engine}</div>
@@ -2177,6 +1767,7 @@ export default function App() {
 
       {view === 'jobs' && (
         <div className="flex-1 overflow-y-auto p-6 max-w-4xl mx-auto w-full">
+          <h1 className="text-lg font-semibold text-white mb-4">Slicing Jobs</h1>
           <JobList jobs={jobs} onCancel={handleCancelJob} onDownload={handleDownloadGcode}
             onDownloadThreemf={handleDownloadThreemf}
             onPreview={(jid) => { setPreviewJobId(jid); setView('slice'); }}
@@ -2206,8 +1797,8 @@ export default function App() {
             on viewer3DEnabled, which trapped the user in the slice-settings
             full-screen panel on multi-plate imports (viewer auto-disables). */}
         <div className="md:hidden flex items-center gap-3 px-3 py-2 bg-gray-800 border-b border-gray-700 shrink-0">
-          <button onClick={() => setShowSidebar(!showSidebar)} className="p-1.5 rounded-lg bg-gray-700 text-gray-300 hover:bg-gray-600 transition">
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" /></svg>
+          <button onClick={() => setShowSidebar(!showSidebar)} aria-label={showSidebar ? 'Hide sidebar' : 'Show sidebar'} aria-expanded={showSidebar} className="p-1.5 rounded-lg bg-gray-700 text-gray-300 hover:bg-gray-600 transition">
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" /></svg>
           </button>
         </div>
 
@@ -2473,15 +2064,11 @@ export default function App() {
           {sceneRefs && hasVisibleModels && !previewJobId && (
             <>
               {viewer3DEnabled && <AxisIndicator sceneRefs={sceneRefs} />}
-              <ModelMover
-                mesh={activeMesh}
-                sceneRefs={sceneRefs}
-                active={paintMode === 'orbit'}
-                bounds={activePlateBounds}
-                onPositionChange={handlePositionChange}
-                onDragEnd={handlePositionChange}
-              />
-              {paintMode === 'transform' && !isCoarsePointer() && selectedMeshesForGizmo.length > 0 && (
+              {/* Unified transform gizmo (Orca-style): always visible on
+                  selection, switches move/rotate/scale via W/E/R keys or the
+                  toolbar group. Touch devices (coarse pointer) skip the gizmo
+                  and rely on the TransformPanel numeric inputs instead. */}
+              {!isCoarsePointer() && selectedMeshesForGizmo.length > 0 && (
                 <TransformGizmo
                   sceneRefs={sceneRefs}
                   selectedMeshes={selectedMeshesForGizmo}
@@ -2532,6 +2119,7 @@ export default function App() {
                 mesh={activeMesh}
                 baseName={activeModel?.name}
                 active={paintMode === 'cut'}
+                isCoarsePointer={isCoarsePointer()}
                 onCutComplete={handleCutComplete}
                 onCancel={() => setPaintMode('orbit')}
               />
@@ -2539,6 +2127,7 @@ export default function App() {
               <ViewerToolbar
                 paintMode={paintMode}
                 onModeChange={setPaintMode}
+                hasSelection={selectedModelsForGizmo.length > 0}
                 activeColor={activeColor}
                 onColorChange={setActiveColor}
                 onUndo={handleUndo}
@@ -2580,7 +2169,7 @@ export default function App() {
                 onToggleViewer3D={() => setViewer3DEnabled(v => !v)}
               />
               )}
-              {paintMode === 'transform' && (
+              {selectedModelsForGizmo.length > 0 && (
                 <TransformPanel
                   selectedModels={selectedModelsForGizmo}
                   onUpdateAll={handleUpdateAllSelected}
@@ -2707,7 +2296,7 @@ export default function App() {
             onClose={() => setRemapJobId(null)}
             onSent={(printerPath) => {
               setRemapJobId(null);
-              alert(`Sent to printer. Path: ${printerPath}`);
+              toast.success('Sent to printer', printerPath);
             }}
           />
         );

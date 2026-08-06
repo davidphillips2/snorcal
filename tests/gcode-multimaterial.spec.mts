@@ -10,7 +10,7 @@ import path from 'node:path';
 // Pipeline: upload STL → paint first half of faces with filament index 1
 // → POST /api/slice with 2 filamentSlots → poll job → GET gcode → assert T1.
 
-const apiBase = 'http://localhost:3000/api';
+const apiBase = 'http://localhost:7326/api';
 const stlPath = '/Users/david-mini/u1-slicer-bridge/test-data/3DBenchy.stl';
 
 async function uploadStl(): Promise<{ id: string; faceCount: number }> {

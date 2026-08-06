@@ -89,7 +89,7 @@ else  # linux
 fi
 
 # Kill any stray node process still bound to the snorcal port (best-effort).
-PORT="${SNORCAL_PORT:-3000}"
+PORT="${SNORCAL_PORT:-7326}"
 if command -v lsof >/dev/null; then
   pids="$(lsof -ti :"$PORT" 2>/dev/null || true)"
   if [[ -n "$pids" ]]; then

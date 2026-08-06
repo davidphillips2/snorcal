@@ -96,13 +96,13 @@ RUN mkdir -p /data/models /data/output /data/jobs /data/settings /data/print-pho
 ENV NODE_ENV=production
 ENV DATA_DIR=/data
 ENV FRONTEND_DIR=/app/frontend/dist
-ENV PORT=3000
+ENV PORT=7326
 
 # Which slicer(s) to fetch on first boot. orca | bambu | both. The entrypoint
 # downloads the nightly zip from SimplyPrint/slicer-builds into /data/slicers/
 # <engine>/ (cached across restarts) and exports SLICER_PATH_<ENGINE>.
 ENV SLICER_ENGINE=orca
 
-EXPOSE 3000
+EXPOSE 7326
 
 ENTRYPOINT ["/app/app-entrypoint.sh"]

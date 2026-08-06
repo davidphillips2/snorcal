@@ -19,7 +19,7 @@ cd snorcal/docker
 docker compose up --build -d
 ```
 
-Open http://localhost:3000. On first load you'll set a password (see
+Open http://localhost:7326. On first load you'll set a password (see
 [Authentication](#authentication)), then the setup wizard runs to discover
 your printer and pick a profile.
 
@@ -80,8 +80,8 @@ pnpm install
 pnpm dev
 ```
 
-- Backend: http://localhost:3000
-- Frontend: http://localhost:5173 (proxies `/api` → :3000)
+- Backend: http://localhost:7326
+- Frontend: http://localhost:7327 (proxies `/api` → :7326)
 - Data dir: `~/.snorcal/`
 
 You need slicer binaries installed locally. Set env vars pointing to them:
@@ -277,7 +277,7 @@ See `.env.example` for the full list.
 
 - **LAN-only by design.** Snorcal assumes a trusted home/LAN network. Auth
   prevents accidental access, not a determined attacker — **do not expose
-  port 3000 to the internet.** Use Tailscale / WireGuard / a VPN for remote
+  port 7326 to the internet.** Use Tailscale / WireGuard / a VPN for remote
   access, not a public port forward.
 - **Secrets encrypted at rest.** Printer access codes, API keys, and the Bambu
   cloud token are AES-256-GCM encrypted in the SQLite DB, keyed off a DEK file
@@ -288,8 +288,8 @@ See `.env.example` for the full list.
   (printers live there) but reject `javascript:`/`data:`/`file:` schemes.
 - **Reverse proxy optional.** For TLS, put Caddy / Traefik / nginx in front.
   `trustProxy` is enabled so secure cookies work behind a TLS-terminating proxy.
-  To restrict Docker port binding to loopback, change `"${PORT:-3000}:3000"`
-  to `"127.0.0.1:3000:3000"` in `docker-compose.yml`.
+  To restrict Docker port binding to loopback, change `"${PORT:-7326}:7326"`
+  to `"127.0.0.1:7326:7326"` in `docker-compose.yml`.
 
 ---
 

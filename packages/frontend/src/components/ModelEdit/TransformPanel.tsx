@@ -38,6 +38,7 @@ export function TransformPanel({
   onDuplicate, onLinearArray, onCircularArray, onAddVolume,
 }: TransformPanelProps) {
   const [uniform, setUniform] = useState(true);
+  const [collapsed, setCollapsed] = useState(false);
   const [arrCount, setArrCount] = useState(3);
   const [arrDx, setArrDx] = useState(10);
   const [arrDy, setArrDy] = useState(0);
@@ -88,7 +89,20 @@ export function TransformPanel({
   };
 
   return (
-    <div className="absolute top-14 left-2 bg-gray-800/95 backdrop-blur rounded-lg px-3 py-2.5 shadow-lg z-20 w-64 space-y-2.5">
+    <div className="absolute top-14 left-2 bg-gray-800/95 backdrop-blur rounded-lg px-3 py-2.5 shadow-lg z-20 w-64 max-h-[calc(100vh-7rem)] overflow-y-auto space-y-2.5">
+      <div className="flex items-center justify-between">
+        <span className="text-xs uppercase tracking-wide text-gray-400">Transform</span>
+        <button
+          onClick={() => setCollapsed(c => !c)}
+          aria-label={collapsed ? 'Expand transform panel' : 'Collapse transform panel'}
+          aria-expanded={!collapsed}
+          className="text-gray-400 hover:text-white text-lg leading-none"
+        >
+          {collapsed ? '▸' : '▾'}
+        </button>
+      </div>
+      {!collapsed && (
+      <>
       {n > 1 && (
         <div className="text-[10px] uppercase tracking-wide text-blue-300 bg-blue-900/30 rounded px-2 py-1">
           {n} models selected — edits apply to all
@@ -234,6 +248,8 @@ export function TransformPanel({
         <div className="text-[10px] text-gray-500 pt-1 border-t border-gray-700">
           Bounds: {boundsMM.x.toFixed(0)} × {boundsMM.y.toFixed(0)} × {boundsMM.z.toFixed(0)} mm
         </div>
+      )}
+      </>
       )}
     </div>
   );

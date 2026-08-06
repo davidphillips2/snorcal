@@ -11,7 +11,7 @@ services:
       context: ..
       dockerfile: docker/Dockerfile.app
     ports:
-      - "${PORT:-3000}:3000"
+      - "${PORT:-7326}:7326"
     volumes:
       - snorcal-data:/data
     environment:

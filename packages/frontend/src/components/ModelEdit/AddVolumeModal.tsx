@@ -2,6 +2,7 @@ import { useState } from 'react';
 import * as THREE from 'three';
 import type { ModelKind } from '@snorcal/shared';
 import { geometryToSTL } from '../../lib/stl-export';
+import { Modal } from '../Modal';
 
 type Primitive = 'box' | 'cylinder' | 'sphere';
 
@@ -81,85 +82,80 @@ export function AddVolumeModal({ kind, onAdd, onCancel }: AddVolumeModalProps) {
   const accent = kind === 'modifier' ? 'bg-blue-600 hover:bg-blue-500' : 'bg-red-600 hover:bg-red-500';
 
   return (
-    <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center" onClick={onCancel}>
-      <div
-        className="bg-gray-800 rounded-lg shadow-2xl w-80 p-5 space-y-4 border border-gray-700"
-        onClick={e => e.stopPropagation()}
-      >
-        <div className="flex items-center justify-between">
-          <h2 className="text-white font-medium">{title}</h2>
-          <button onClick={onCancel} className="text-gray-400 hover:text-white">✕</button>
+    <Modal
+      title={title}
+      onClose={onCancel}
+      widthClass="max-w-xs"
+      panelClass="bg-gray-800 rounded-lg shadow-2xl p-5 space-y-4 border border-gray-700"
+    >
+      <div>
+        <div className="text-[10px] uppercase tracking-wide text-gray-400 mb-1">Shape</div>
+        <div className="flex gap-1">
+          {PRIMITIVES.map(p => (
+            <button
+              key={p.key}
+              onClick={() => setPrim(p.key)}
+              className={`flex-1 py-1.5 rounded text-xs font-medium ${
+                prim === p.key ? 'bg-gray-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+              }`}
+            >
+              {p.label}
+            </button>
+          ))}
         </div>
+      </div>
 
-        <div>
-          <div className="text-[10px] uppercase tracking-wide text-gray-400 mb-1">Shape</div>
-          <div className="flex gap-1">
-            {PRIMITIVES.map(p => (
-              <button
-                key={p.key}
-                onClick={() => setPrim(p.key)}
-                className={`flex-1 py-1.5 rounded text-xs font-medium ${
-                  prim === p.key ? 'bg-gray-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-                }`}
-              >
-                {p.label}
-              </button>
+      <div className="space-y-2">
+        {prim === 'box' && (
+          <div className="grid grid-cols-3 gap-2">
+            {(['x', 'y', 'z'] as const).map(axis => (
+              <NumInput key={axis} label={`${axis.toUpperCase()} (mm)`} value={box[axis]}
+                onChange={(v) => setBox(b => ({ ...b, [axis]: v }))} />
             ))}
           </div>
-        </div>
-
-        <div className="space-y-2">
-          {prim === 'box' && (
-            <div className="grid grid-cols-3 gap-2">
-              {(['x', 'y', 'z'] as const).map(axis => (
-                <NumInput key={axis} label={`${axis.toUpperCase()} (mm)`} value={box[axis]}
-                  onChange={(v) => setBox(b => ({ ...b, [axis]: v }))} />
-              ))}
-            </div>
-          )}
-          {prim === 'cylinder' && (
-            <div className="grid grid-cols-2 gap-2">
-              <NumInput label="Radius (mm)" value={radius} onChange={setRadius} />
-              <NumInput label="Height (mm)" value={height} onChange={setHeight} />
-            </div>
-          )}
-          {prim === 'sphere' && (
-            <NumInput label="Radius (mm)" value={radius} onChange={setRadius} />
-          )}
-        </div>
-
-        {kind === 'modifier' && (
-          <details className="text-xs">
-            <summary className="text-gray-400 cursor-pointer">Override settings (optional)</summary>
-            <div className="space-y-2 mt-2">
-              <TextInput label="Layer height (mm)" value={layerHeight} onChange={setLayerHeight} placeholder="0.2" />
-              <TextInput label="Infill density (%)" value={infill} onChange={setInfill} placeholder="15" />
-              <TextInput label="Wall loops" value={wallLoops} onChange={setWallLoops} placeholder="2" />
-              <div className="flex items-center gap-2">
-                <span className="text-gray-400 w-28">Support</span>
-                <select
-                  value={String(support)}
-                  onChange={(e) => setSupport(e.target.value === '' ? '' : e.target.value === '1')}
-                  className="flex-1 bg-gray-700 border border-gray-600 rounded px-2 py-1 text-xs text-white"
-                >
-                  <option value="">inherit</option>
-                  <option value="0">off</option>
-                  <option value="1">on</option>
-                </select>
-              </div>
-            </div>
-          </details>
         )}
-
-        <button
-          onClick={handleAdd}
-          disabled={busy}
-          className={`w-full py-2 rounded text-white text-sm ${accent} disabled:opacity-50`}
-        >
-          {busy ? 'Adding…' : 'Add'}
-        </button>
+        {prim === 'cylinder' && (
+          <div className="grid grid-cols-2 gap-2">
+            <NumInput label="Radius (mm)" value={radius} onChange={setRadius} />
+            <NumInput label="Height (mm)" value={height} onChange={setHeight} />
+          </div>
+        )}
+        {prim === 'sphere' && (
+          <NumInput label="Radius (mm)" value={radius} onChange={setRadius} />
+        )}
       </div>
-    </div>
+
+      {kind === 'modifier' && (
+        <details className="text-xs">
+          <summary className="text-gray-400 cursor-pointer">Override settings (optional)</summary>
+          <div className="space-y-2 mt-2">
+            <TextInput label="Layer height (mm)" value={layerHeight} onChange={setLayerHeight} placeholder="0.2" />
+            <TextInput label="Infill density (%)" value={infill} onChange={setInfill} placeholder="15" />
+            <TextInput label="Wall loops" value={wallLoops} onChange={setWallLoops} placeholder="2" />
+            <div className="flex items-center gap-2">
+              <span className="text-gray-400 w-28">Support</span>
+              <select
+                value={String(support)}
+                onChange={(e) => setSupport(e.target.value === '' ? '' : e.target.value === '1')}
+                className="flex-1 bg-gray-700 border border-gray-600 rounded px-2 py-1 text-xs text-white"
+              >
+                <option value="">inherit</option>
+                <option value="0">off</option>
+                <option value="1">on</option>
+              </select>
+            </div>
+          </div>
+        </details>
+      )}
+
+      <button
+        onClick={handleAdd}
+        disabled={busy}
+        className={`w-full py-2 rounded text-white text-sm ${accent} disabled:opacity-50`}
+      >
+        {busy ? 'Adding…' : 'Add'}
+      </button>
+    </Modal>
   );
 }
 

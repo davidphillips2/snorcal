@@ -150,17 +150,11 @@ class PrinterManager {
         console.warn(`[PrinterManager] giving up on ${p.id} after ${count} consecutive failures — waiting for manual reconnect`);
         return; // DO NOT scheduleRetry. Adapter stays in map (disconnected).
       }
-      // Network-level errors that suggest process state corruption rather
-      // than a normal "printer offline" condition. After repeated hits, dump
-      // a process report so we have post-mortem data when the next "stale
-      // adapter after long uptime" incident happens.
       if (/EHOSTUNREACH|ENETUNREACH|EAI_AGAIN/.test(msg)) {
         this.recordNetworkFailure(p.id);
       } else {
         this.networkFailures.delete(p.id);
       }
-      // Schedule a retry with exponential backoff. The adapter stays in the
-      // map (disconnected) so getStatus returns null, not a throw.
       this.scheduleRetry(p);
     }
   }

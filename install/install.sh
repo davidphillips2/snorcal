@@ -81,7 +81,7 @@ ok "git / node $(node -p 'process.versions.node') / pnpm $(pnpm --version)"
 INSTALL_DIR="${SNORCAL_HOME:-$HOME/snorcal}"
 DATA_DIR="${SNORCAL_DATA_DIR:-$HOME/.snorcal/data}"
 LOG_DIR="${SNORCAL_LOG_DIR:-$HOME/.snorcal/logs}"
-PORT="${SNORCAL_PORT:-3000}"
+PORT="${SNORCAL_PORT:-7326}"
 PATH_ENV="$PATH"
 
 # Ensure $HOME is set (systemd --user context can be sparse).

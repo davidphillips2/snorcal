@@ -1,11 +1,14 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { formatLastSeen } from '../../lib/last-seen';
+import { connectionColor } from '../../lib/status-colors';
 import type { PrinterRecord, PrinterStatus } from '@snorcal/shared';
 import * as api from '../../api/client';
-import { probeAuthOnSSEError } from '../../api/client';
 import { formatDurationShort } from '../../lib/gcode-stats';
 import { CameraView } from '../PrinterMonitor/CameraView';
 import { PrinterDashboard } from '../PrinterMonitor/PrinterDashboard';
+import { FilamentsPanel } from '../PrinterMonitor/FilamentsPanel';
+import { useToast } from '../Toast';
+import { useSSEEvent } from '../../hooks/useSSE';
 
 interface JobSummary {
   id: string;
@@ -23,77 +26,49 @@ interface Props {
 }
 
 export function HomeDashboard({ onSlice, onOpenJob, onOpenPrinter, onImportMakerworld }: Props) {
+  const toast = useToast();
   const [printers, setPrinters] = useState<PrinterRecord[]>([]);
   const [statuses, setStatuses] = useState<Record<string, PrinterStatus>>({});
   const [jobs, setJobs] = useState<JobSummary[]>([]);
   const [showPrinterMgmt, setShowPrinterMgmt] = useState(false);
+  const [showFilaments, setShowFilaments] = useState(false);
   const [loading, setLoading] = useState(true);
   const [reconnectingId, setReconnectingId] = useState<string | null>(null);
 
   const refresh = async () => {
-    try {
-      const [list, jobList] = await Promise.all([
-        api.listPrinters().catch(() => []),
-        api.listJobs().catch(() => []),
-      ]);
+    // Run printers + jobs in parallel; surface each failure separately so a
+    // backend-down isn't disguised as "you have no data".
+    const [listRes, jobListRes] = await Promise.allSettled([api.listPrinters(), api.listJobs()]);
+    if (listRes.status === 'fulfilled') {
+      const list = listRes.value;
       setPrinters(list);
       const next: Record<string, PrinterStatus> = {};
       for (const p of list) if (p.status) next[p.id] = p.status;
       setStatuses(next);
-      setJobs((jobList as any[]).slice(0, 5));
-    } finally {
-      setLoading(false);
+    } else {
+      toast.error('Failed to load printers', listRes.reason instanceof Error ? listRes.reason.message : String(listRes.reason));
     }
+    if (jobListRes.status === 'fulfilled') {
+      setJobs((jobListRes.value as any[]).slice(0, 5));
+    } else {
+      toast.error('Failed to load jobs', jobListRes.reason instanceof Error ? jobListRes.reason.message : String(jobListRes.reason));
+    }
+    setLoading(false);
   };
 
   useEffect(() => { refresh(); }, []);
 
-  useEffect(() => {
-    let es: EventSource | null = null;
-    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-    let closed = false;
-    let firstOpen = true;
-    const onMsg = (type: string, event: MessageEvent) => {
-      try {
-        const data = JSON.parse(event.data);
-        if (type === 'printer:status' && data.printerId) {
-          setStatuses(prev => ({ ...prev, [data.printerId]: data }));
-        }
-        if (type === 'job:progress' || type === 'job:completed' || type === 'job:failed') {
-          refresh();
-        }
-      } catch {}
-    };
-    const connect = () => {
-      if (closed) return;
-      es = new EventSource('/api/events');
-      // Resync live status after a reconnect gap (first open is covered by the
-      // mount effect, so skip it to avoid a redundant fetch).
-      es.onopen = () => {
-        if (firstOpen) { firstOpen = false; return; }
-        refresh();
-      };
-      for (const t of ['printer:status', 'job:progress', 'job:completed', 'job:failed']) {
-        es.addEventListener(t, (e) => onMsg(t, e as MessageEvent));
-      }
-      // Native EventSource auto-reconnects, but gives up silently after the
-      // browser's internal cap (esp. after a backend restart). Force a fresh
-      // connection so tiles don't freeze at stale status.
-      es.onerror = () => {
-        try { es?.close(); } catch {}
-        es = null;
-        void probeAuthOnSSEError();
-        if (!closed) reconnectTimer = setTimeout(connect, 2000);
-      };
-    };
-    connect();
-    return () => {
-      closed = true;
-      if (reconnectTimer) clearTimeout(reconnectTimer);
-      try { es?.close(); } catch {}
-      es = null;
-    };
-  }, []);
+  // Live printer status + job updates via the shared SSE connection.
+  useSSEEvent('printer:status', (data) => {
+    if (data.printerId) setStatuses(prev => ({ ...prev, [data.printerId as string]: data as unknown as PrinterStatus }));
+  });
+  const refreshRef = useRef(refresh);
+  refreshRef.current = refresh;
+  useSSEEvent('job:progress', () => refreshRef.current());
+  useSSEEvent('job:completed', () => refreshRef.current());
+  useSSEEvent('job:failed', () => refreshRef.current());
+  useSSEEvent('printer:connected', () => refreshRef.current());
+  useSSEEvent('printer:disconnected', () => refreshRef.current());
 
   const printingCount = Object.values(statuses).filter(s => s.state === 'printing').length;
   const totalJobs = jobs.length;
@@ -139,6 +114,8 @@ export function HomeDashboard({ onSlice, onOpenJob, onOpenPrinter, onImportMaker
           <div className="flex items-center justify-between mb-3">
             <h2 className="text-sm font-semibold text-gray-300 uppercase tracking-wider">Printers</h2>
             <div className="flex gap-2">
+              <button onClick={() => setShowFilaments(true)}
+                className="text-xs text-gray-400 hover:text-white px-2 py-1">Filaments</button>
               <button onClick={() => setShowPrinterMgmt(true)}
                 className="text-xs text-gray-400 hover:text-white px-2 py-1">Manage</button>
               <button onClick={() => setShowPrinterMgmt(true)}
@@ -163,10 +140,10 @@ export function HomeDashboard({ onSlice, onOpenJob, onOpenPrinter, onImportMaker
                     try {
                       const result = await api.reconnectPrinter(p.id);
                       if (!result.ok) {
-                        alert(`Reconnect failed: ${result.error || 'unknown error'}`);
+                        toast.error('Reconnect failed', result.error || 'unknown error');
                       }
                     } catch (e) {
-                      alert(`Reconnect failed: ${e instanceof Error ? e.message : String(e)}`);
+                      toast.error('Reconnect failed', e instanceof Error ? e.message : String(e));
                     } finally {
                       setReconnectingId(null);
                     }
@@ -219,6 +196,9 @@ export function HomeDashboard({ onSlice, onOpenJob, onOpenPrinter, onImportMaker
       {showPrinterMgmt && (
         <PrinterDashboard onClose={() => { setShowPrinterMgmt(false); refresh(); }} />
       )}
+      {showFilaments && (
+        <FilamentsPanel onClose={() => setShowFilaments(false)} />
+      )}
     </div>
   );
 }
@@ -228,10 +208,7 @@ function PrinterTile({ printer, status, onReconnect, reconnecting, onOpen }: {
 }) {
   const connection = status?.connection ?? 'disconnected';
   const state = status?.state ?? 'offline';
-  const connColor = {
-    connected: 'bg-green-500', connecting: 'bg-yellow-500',
-    disconnected: 'bg-red-500', error: 'bg-red-500',
-  }[connection] || 'bg-gray-500';
+  const connColor = connectionColor(connection);
 
   return (
     <div className="bg-gray-800 border border-gray-700 rounded-lg p-3 flex items-stretch gap-3 min-w-0 hover:border-gray-500 transition-colors">
@@ -240,7 +217,7 @@ function PrinterTile({ printer, status, onReconnect, reconnecting, onOpen }: {
       </button>
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2">
-          <span className={`w-2 h-2 rounded-full ${connColor} flex-shrink-0`} />
+          <span className={`w-2 h-2 rounded-full ${connColor} flex-shrink-0`} role="img" aria-label={`${printer.name} ${connection}`} />
           <h3 className="text-sm font-medium text-white truncate cursor-pointer hover:text-blue-300"
               onClick={onOpen}>{printer.name}</h3>
           {(connection === 'disconnected' || connection === 'error') && (

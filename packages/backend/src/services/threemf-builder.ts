@@ -278,33 +278,71 @@ export async function build3MF(input: ThreeMFBuildInput): Promise<Buffer> {
     modelXML += buildObjectXML(obj, componentUuids);
   }
 
-  // Top-level component object — references every object (parent + children).
-  // NOTE: <component> has NO transform attribute. Bisect found that any
-  // component transform (even identity "1 0 0 0 0 1 0 0 0 0 1 0") makes
-  // BambuStudio slicer emit "no layers detected" + exit 156. Snorcal
-  // pre-bakes centering into vertex coords (processModelGeometry), so the
-  // component reference is identity-positioned by default. Bambu Studio's
-  // own exports use component transform because geometry stays in
-  // object-space — different pipeline, different requirement.
-  modelXML += `\n    <object id="${topId}" p:UUID="${topUuid}" type="model">
+  // Build the <build> section + decide whether we need a wrapper object.
+  //
+  // OrcaSlicer's Label Objects (exclude_objects) path walks model_settings.config
+  // and expects each labeled <object> to carry its own geometry. A single
+  // wrapper <object> that only contains <components> (no mesh) — which we use
+  // to group multi-object assemblies — can't be resolved by Orca and aborts
+  // with "Unknown label object id!" (exit 156). Reproduced: same 3MF with
+  // exclude_object=1 fails; with =0 slices clean.
+  //
+  // Fix: for the common case of a single printable model (no negatives /
+  // modifiers / parts), emit <item> directly at that object and drop the
+  // wrapper entirely. Bambu reference 3MFs do exactly this — one <object>
+  // per mesh, one <item> per object, no wrapper. Assemblies (which genuinely
+  // need the wrapper to group children) keep the wrapper; slice.ts forces
+  // exclude_object=0 for those so Label Objects stays off.
+  const isSimpleSingleModel = allObjects.length === 1 && allObjects[0].kind === 'model';
+
+  if (isSimpleSingleModel) {
+    const sole = allObjects[0];
+    modelXML += `
+  </resources>
+  <build p:UUID="${buildUuid}">
+    <item objectid="${sole.id}" p:UUID="${itemUuid}" transform="1 0 0 0 0 1 0 0 0 0 1 0" printable="1"/>
+  </build>
+</model>`;
+  } else {
+    // Assembly: keep the wrapper to group parent + negative/modifier children.
+    // NOTE: <component> has NO transform attribute. Bisect found that any
+    // component transform (even identity "1 0 0 0 0 1 0 0 0 0 1 0") makes
+    // BambuStudio slicer emit "no layers detected" + exit 156. Snorcal
+    // pre-bakes centering into vertex coords (processModelGeometry), so the
+    // component reference is identity-positioned by default. Bambu Studio's
+    // own exports use component transform because geometry stays in
+    // object-space — different pipeline, different requirement.
+    //
+    // The wrapper <object> has no mesh of its own, so OrcaSlicer's Label
+    // Objects path can't resolve it ("Unknown label object id!", exit 156).
+    // Force exclude_object off for assemblies — we're the authority on the
+    // structure we just emitted. project_settings.config is written from
+    // input.projectSettings after build3MF returns.
+    if (input.projectSettings) {
+      input.projectSettings.exclude_object = '0';
+    }
+    modelXML += `\n    <object id="${topId}" p:UUID="${topUuid}" type="model">
       <components>`;
-  for (const obj of allObjects) {
-    modelXML += `\n        <component objectid="${obj.id}" p:UUID="${componentUuids.get(obj.id)}"/>`;
-  }
-  modelXML += `\n      </components>
+    for (const obj of allObjects) {
+      modelXML += `\n        <component objectid="${obj.id}" p:UUID="${componentUuids.get(obj.id)}"/>`;
+    }
+    modelXML += `\n      </components>
     </object>
   </resources>
   <build p:UUID="${buildUuid}">
     <item objectid="${topId}" p:UUID="${itemUuid}" transform="1 0 0 0 0 1 0 0 0 0 1 0" printable="1"/>
   </build>
 </model>`;
+  }
 
   // Always emit model_settings.config (bambuddy parity — Bambu Studio always
   // emits it). Previous conditional emission skipped single-painted-model
   // case; regression noted 2026-06-25 was for extruder=N>1, not for presence
   // of the file itself. Part extruder stays at 1 (or 0 for non-printable),
   // paint_color carries multi-color assignment.
-  const modelSettingsXML = buildModelSettings(allObjects, topId);
+  const modelSettingsXML = isSimpleSingleModel
+    ? buildModelSettings(allObjects, allObjects[0].id)
+    : buildModelSettings(allObjects, topId);
 
   // Package into ZIP
   const zip = new JSZip();

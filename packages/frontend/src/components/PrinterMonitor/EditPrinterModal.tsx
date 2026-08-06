@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import * as api from '../../api/client';
 import type { PrinterRecord } from '@snorcal/shared';
+import { Modal } from '../Modal';
 
 interface Props {
   printer: PrinterRecord;
@@ -28,6 +29,7 @@ export function EditPrinterModal({ printer, onClose, onSaved }: Props) {
   const [bambuddyApiKeyDirty, setBambuddyApiKeyDirty] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
 
   useEffect(() => {
     setName(printer.name);
@@ -43,9 +45,33 @@ export function EditPrinterModal({ printer, onClose, onSaved }: Props) {
     setBambuddyApiKey(''); setBambuddyApiKeyDirty(false);
   }, [printer.id]);
 
+  const validate = (): Record<string, string> => {
+    const errs: Record<string, string> = {};
+    if (!name.trim()) errs.name = 'Required';
+    if (!ip.trim()) errs.ip = 'Required';
+    else if (!/^[a-zA-Z0-9._-]+$/.test(ip.trim())) errs.ip = 'Host or IP only — no http://, port, or path';
+    if (port !== '' && (Number(port) < 1 || Number(port) > 65535)) errs.port = '1–65535';
+    // Access code only validated when the user is editing it (field starts empty
+    // since the backend never returns secrets).
+    if (accessCodeDirty && accessCode.trim() && !/^\d{8}$/.test(accessCode.trim())) {
+      errs.accessCode = 'Must be 8 digits';
+    }
+    if (isBambu && bambuddyMode) {
+      if (!bambuddyUrl.trim()) errs.bambuddyUrl = 'Required';
+      if (bambuddyPrinterId === '') errs.bambuddyPrinterId = 'Required';
+    }
+    return errs;
+  };
+
   const submit = async () => {
     setError(null);
-    if (!name.trim() || !ip.trim()) { setError('Name and IP required'); return; }
+    const errs = validate();
+    if (Object.keys(errs).length > 0) {
+      setFieldErrors(errs);
+      setError('Fix the highlighted fields');
+      return;
+    }
+    setFieldErrors({});
     setSubmitting(true);
     try {
       await api.updatePrinter(printer.id, {
@@ -78,28 +104,38 @@ export function EditPrinterModal({ printer, onClose, onSaved }: Props) {
   const isBambu = printer.protocol === 'bambu';
 
   return (
-    <div className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-4">
-      <div className="bg-gray-800 border border-gray-700 rounded-lg w-full max-w-md p-5 space-y-4">
-        <div className="flex items-center justify-between">
-          <h2 className="text-lg font-semibold text-white">Edit Printer</h2>
-          <button onClick={onClose} className="text-gray-400 hover:text-white text-xl">&times;</button>
-        </div>
+    <Modal
+      title="Edit Printer"
+      onClose={onClose}
+      widthClass="max-w-md"
+      panelClass="bg-gray-800 border border-gray-700 rounded-lg p-5 space-y-4"
+      closeOnBackdrop={false}
+      footer={
+        <>
+          <button onClick={onClose}
+            className="flex-1 px-3 py-2 bg-gray-700 hover:bg-gray-600 rounded text-sm text-gray-200">Cancel</button>
+          <button onClick={submit} disabled={submitting}
+            className="flex-1 px-3 py-2 bg-blue-600 hover:bg-blue-500 disabled:bg-blue-600/40 rounded text-sm text-white">
+            {submitting ? 'Saving…' : 'Save'}
+          </button>
+        </>
+      }
+    >
+      {error && <div className="bg-red-900/40 border border-red-700 rounded px-3 py-2 text-sm text-red-200">{error}</div>}
 
-        {error && <div className="bg-red-900/40 border border-red-700 rounded px-3 py-2 text-sm text-red-200">{error}</div>}
-
-        <Field label="Name">
+        <Field label="Name" error={fieldErrors.name}>
           <input value={name} onChange={(e) => setName(e.target.value)}
-            className="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-white" />
+            className={`w-full bg-gray-700 border rounded px-2 py-1.5 text-sm text-white ${fieldErrors.name ? 'border-red-500' : 'border-gray-600'}`} />
         </Field>
 
         <div className="flex gap-2">
-          <Field label="IP">
+          <Field label="IP" error={fieldErrors.ip}>
             <input value={ip} onChange={(e) => setIp(e.target.value)}
-              className="flex-1 bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-white min-w-0" />
+              className={`flex-1 bg-gray-700 border rounded px-2 py-1.5 text-sm text-white min-w-0 ${fieldErrors.ip ? 'border-red-500' : 'border-gray-600'}`} />
           </Field>
-          <Field label="Port">
+          <Field label="Port" error={fieldErrors.port}>
             <input type="number" value={port} onChange={(e) => setPort(e.target.value === '' ? '' : Number(e.target.value))}
-              className="w-24 bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-white" />
+              className={`w-24 bg-gray-700 border rounded px-2 py-1.5 text-sm text-white ${fieldErrors.port ? 'border-red-500' : 'border-gray-600'}`} />
           </Field>
         </div>
 
@@ -118,27 +154,28 @@ export function EditPrinterModal({ printer, onClose, onSaved }: Props) {
             </div>
 
             {!bambuddyMode ? (
-              <Field label="LAN Access Code">
+              <Field label="LAN Access Code" error={fieldErrors.accessCode}>
                 <input
                   type="password"
                   value={accessCode}
                   onChange={(e) => { setAccessCode(e.target.value); setAccessCodeDirty(true); }}
                   placeholder={accessCodeDirty ? '' : '•••••• (leave blank to keep current)'}
-                  className="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-white"
+                  inputMode="numeric"
+                  className={`w-full bg-gray-700 border rounded px-2 py-1.5 text-sm text-white ${fieldErrors.accessCode ? 'border-red-500' : 'border-gray-600'}`}
                 />
               </Field>
             ) : (
               <>
-                <Field label="Bambuddy URL">
+                <Field label="Bambuddy URL" error={fieldErrors.bambuddyUrl}>
                   <input value={bambuddyUrl} onChange={(e) => setBambuddyUrl(e.target.value)}
                     placeholder="http://100.122.105.27:8000"
-                    className="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-white" />
+                    className={`w-full bg-gray-700 border rounded px-2 py-1.5 text-sm text-white ${fieldErrors.bambuddyUrl ? 'border-red-500' : 'border-gray-600'}`} />
                 </Field>
-                <Field label="Bambuddy Printer ID">
+                <Field label="Bambuddy Printer ID" error={fieldErrors.bambuddyPrinterId}>
                   <input type="number" min={1} value={bambuddyPrinterId}
                     onChange={(e) => setBambuddyPrinterId(e.target.value === '' ? '' : Number(e.target.value))}
                     placeholder="1"
-                    className="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-white" />
+                    className={`w-full bg-gray-700 border rounded px-2 py-1.5 text-sm text-white ${fieldErrors.bambuddyPrinterId ? 'border-red-500' : 'border-gray-600'}`} />
                 </Field>
                 <Field label="Bambuddy API Key (optional)">
                   <input type="password" value={bambuddyApiKey}
@@ -184,25 +221,16 @@ export function EditPrinterModal({ printer, onClose, onSaved }: Props) {
             </p>
           </div>
         </details>
-
-        <div className="flex gap-2 pt-2">
-          <button onClick={onClose}
-            className="flex-1 px-3 py-2 bg-gray-700 hover:bg-gray-600 rounded text-sm text-gray-200">Cancel</button>
-          <button onClick={submit} disabled={submitting}
-            className="flex-1 px-3 py-2 bg-blue-600 hover:bg-blue-500 disabled:bg-blue-600/40 rounded text-sm text-white">
-            {submitting ? 'Saving…' : 'Save'}
-          </button>
-        </div>
-      </div>
-    </div>
+    </Modal>
   );
 }
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+function Field({ label, children, error }: { label: string; children: React.ReactNode; error?: string }) {
   return (
     <label className="block">
       <span className="block text-xs text-gray-400 mb-1">{label}</span>
       {children}
+      {error && <span className="block text-[10px] text-red-400 mt-1">{error}</span>}
     </label>
   );
 }

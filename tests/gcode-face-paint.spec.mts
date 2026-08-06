@@ -8,7 +8,7 @@ import path from 'node:path';
 // must produce T0+T1 tool usage. Distinct from the multimaterial spec in
 // that this one specifically guards the paint → 3MF → gcode metadata path.
 
-const apiBase = 'http://localhost:3000/api';
+const apiBase = 'http://localhost:7326/api';
 const stlPath = '/Users/david-mini/u1-slicer-bridge/test-data/3DBenchy.stl';
 
 async function uploadStl(): Promise<{ id: string; faceCount: number }> {

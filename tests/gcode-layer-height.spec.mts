@@ -7,7 +7,7 @@ import path from 'node:path';
 // `;HEIGHT:0.3` markers in the output gcode. Guards against the regression
 // where user settings get clobbered by the default template.
 
-const apiBase = 'http://localhost:3000/api';
+const apiBase = 'http://localhost:7326/api';
 const stlPath = '/Users/david-mini/u1-slicer-bridge/test-data/3DBenchy.stl';
 
 async function uploadStl(): Promise<{ id: string; faceCount: number }> {

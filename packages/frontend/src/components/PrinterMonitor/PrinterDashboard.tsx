@@ -1,17 +1,20 @@
 import { useEffect, useRef, useState } from 'react';
 import type { PrinterRecord, PrinterStatus } from '@snorcal/shared';
 import * as api from '../../api/client';
-import { probeAuthOnSSEError } from '../../api/client';
 import { AddPrinterModal } from './AddPrinterModal';
 import { EditPrinterModal } from './EditPrinterModal';
 import { CameraView } from './CameraView';
 import { formatLastSeen } from '../../lib/last-seen';
+import { connectionColor } from '../../lib/status-colors';
+import { useToast } from '../Toast';
+import { useSSEEvent } from '../../hooks/useSSE';
 
 interface Props {
   onClose: () => void;
 }
 
 export function PrinterDashboard({ onClose }: Props) {
+  const toast = useToast();
   const [printers, setPrinters] = useState<PrinterRecord[]>([]);
   const [statuses, setStatuses] = useState<Record<string, PrinterStatus>>({});
   const [showAdd, setShowAdd] = useState(false);
@@ -36,26 +39,14 @@ export function PrinterDashboard({ onClose }: Props) {
 
   useEffect(() => { refresh(); }, []);
 
-  // Listen to SSE for printer status updates
-  useEffect(() => {
-    const es = new EventSource('/api/events');
-    const onMsg = (type: string, event: MessageEvent) => {
-      try {
-        const data = JSON.parse(event.data);
-        if (type === 'printer:status' && data.printerId) {
-          setStatuses(prev => ({ ...prev, [data.printerId]: data }));
-        }
-        if (type === 'printer:connected' || type === 'printer:disconnected') {
-          refresh();
-        }
-      } catch {}
-    };
-    for (const t of ['printer:status', 'printer:connected', 'printer:disconnected']) {
-      es.addEventListener(t, (e) => onMsg(t, e as MessageEvent));
-    }
-    es.onerror = () => { void probeAuthOnSSEError(); };
-    return () => es.close();
-  }, []);
+  // Live printer status via the shared SSE connection.
+  const refreshRef = useRef(refresh);
+  refreshRef.current = refresh;
+  useSSEEvent('printer:status', (data) => {
+    if (data.printerId) setStatuses(prev => ({ ...prev, [data.printerId as string]: data as unknown as PrinterStatus }));
+  });
+  useSSEEvent('printer:connected', () => refreshRef.current());
+  useSSEEvent('printer:disconnected', () => refreshRef.current());
 
   const onDelete = async (id: string) => {
     if (!confirm('Remove this printer?')) return;
@@ -68,20 +59,26 @@ export function PrinterDashboard({ onClose }: Props) {
     try {
       const result = await api.reconnectPrinter(id);
       if (!result.ok) {
-        alert(`Reconnect failed: ${result.error || 'unknown error'}`);
+        toast.error('Reconnect failed', result.error || 'unknown error');
       }
     } catch (e) {
-      alert(`Reconnect failed: ${e instanceof Error ? e.message : String(e)}`);
+      toast.error('Reconnect failed', e instanceof Error ? e.message : String(e));
     } finally {
       setReconnectingId(null);
     }
   };
 
+  const [pendingCmd, setPendingCmd] = useState<string | null>(null);
+
   const onCommand = async (printerId: string, command: string, args?: Record<string, unknown>) => {
+    if (pendingCmd) return; // prevent duplicate commands while one is in flight
+    setPendingCmd(printerId);
     try {
       await api.sendPrinterCommand(printerId, command, args);
     } catch (e) {
-      alert(`Command failed: ${e instanceof Error ? e.message : String(e)}`);
+      toast.error('Command failed', e instanceof Error ? e.message : String(e));
+    } finally {
+      setPendingCmd(null);
     }
   };
 
@@ -131,6 +128,7 @@ export function PrinterDashboard({ onClose }: Props) {
                 reconnecting={reconnectingId === p.id}
                 onEdit={() => setEditPrinter(p)}
                 onCommand={(cmd, args) => onCommand(p.id, cmd, args)}
+                commandPending={pendingCmd === p.id}
               />
             ))}
           </div>
@@ -164,15 +162,13 @@ interface CardProps {
   reconnecting?: boolean;
   onEdit: () => void;
   onCommand: (cmd: string, args?: Record<string, unknown>) => void;
+  commandPending?: boolean;
 }
 
-function PrinterCard({ printer, status, expanded, onToggle, onDelete, onReconnect, reconnecting, onEdit, onCommand }: CardProps) {
+function PrinterCard({ printer, status, expanded, onToggle, onDelete, onReconnect, reconnecting, onEdit, onCommand, commandPending }: CardProps) {
   const connection = status?.connection ?? 'disconnected';
   const state = status?.state ?? 'offline';
-  const connColor = {
-    connected: 'bg-green-500', connecting: 'bg-yellow-500',
-    disconnected: 'bg-red-500', error: 'bg-red-500',
-  }[connection] || 'bg-gray-500';
+  const connColor = connectionColor(connection);
 
   return (
     <div className="bg-gray-800 border border-gray-700 rounded-lg overflow-hidden min-w-0">
@@ -180,7 +176,7 @@ function PrinterCard({ printer, status, expanded, onToggle, onDelete, onReconnec
         <CameraView printer={printer} expanded={expanded} />
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
-            <span className={`w-2 h-2 rounded-full ${connColor}`} />
+            <span className={`w-2 h-2 rounded-full ${connColor}`} role="img" aria-label={`${printer.name} ${connection}`} />
             <h3 className="text-sm font-medium text-white truncate">{printer.name}</h3>
           </div>
           <div className="text-xs text-gray-400 mt-0.5">
@@ -239,15 +235,15 @@ function PrinterCard({ printer, status, expanded, onToggle, onDelete, onReconnec
         </button>
         {state === 'printing' && (
           <>
-            <button onClick={() => onCommand('pause')}
-              className="text-xs text-yellow-300 hover:text-yellow-200 px-2 py-1 rounded hover:bg-gray-700">Pause</button>
-            <button onClick={() => onCommand('cancel')}
-              className="text-xs text-red-300 hover:text-red-200 px-2 py-1 rounded hover:bg-gray-700">Cancel</button>
+            <button onClick={() => onCommand('pause')} disabled={commandPending}
+              className="text-xs text-yellow-300 hover:text-yellow-200 px-2 py-1 rounded hover:bg-gray-700 disabled:opacity-50 disabled:cursor-wait">{commandPending ? '…' : 'Pause'}</button>
+            <button onClick={() => onCommand('cancel')} disabled={commandPending}
+              className="text-xs text-red-300 hover:text-red-200 px-2 py-1 rounded hover:bg-gray-700 disabled:opacity-50 disabled:cursor-wait">{commandPending ? '…' : 'Cancel'}</button>
           </>
         )}
         {state === 'paused' && (
-          <button onClick={() => onCommand('resume')}
-            className="text-xs text-green-300 hover:text-green-200 px-2 py-1 rounded hover:bg-gray-700">Resume</button>
+          <button onClick={() => onCommand('resume')} disabled={commandPending}
+            className="text-xs text-green-300 hover:text-green-200 px-2 py-1 rounded hover:bg-gray-700 disabled:opacity-50 disabled:cursor-wait">{commandPending ? '…' : 'Resume'}</button>
         )}
         {(connection === 'disconnected' || connection === 'error' || reconnecting) && (
           <button onClick={onReconnect} disabled={reconnecting}

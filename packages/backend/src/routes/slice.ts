@@ -9,6 +9,7 @@ import { ensureDir, getJobsDir } from '../services/model-parser.js';
 import { build3MF, type ThreeMFModelInput } from '../services/threemf-builder.js';
 import { SlicerExecutor } from '../services/slicer-executor.js';
 import { findGcodeFile } from '../services/gcode-utils.js';
+import { emitJobProgress, emitJobCompleted, emitJobFailed } from '../services/event-bus.js';
 import type { SliceRequest, SliceJobData, MultiMaterialConfig, FilamentSlot } from '@snorcal/shared';
 import os from 'node:os';
 
@@ -799,7 +800,11 @@ export async function buildSliceInput3MF(
         || key === 'print_settings_id'
         || key === 'default_print_profile'
         || key === 'default_filament_profile'
-        || key === 'inherits_group') continue;
+        || key === 'inherits_group'
+        // Bed dimensions derive from the resolved printer profile, never the
+        // imported 3MF (cross-printer imports carry source-printer bed size).
+        || key === 'printable_area'
+        || key === 'printable_height') continue;
       // Skip empty strings — the embedded blob frequently stores unused
       // keys as "" (e.g. curr_bed_type on some imports). Overwriting a
       // meaningful value with "" silently resets it.
@@ -834,6 +839,14 @@ export async function buildSliceInput3MF(
     }
   }
 
+  // Label Objects (exclude_objects): threemf-builder now emits a labelable
+  // structure for the common single-printable-model case (one <object> per
+  // mesh, no wrapper), so OrcaSlicer's exclude_objects path resolves it and
+  // Label Objects can stay on. Assemblies (multiple printable models, or
+  // negative/modifier/support children) still use a wrapper <object> that
+  // Orca can't label → builder forces exclude_object=0 in that case (it's
+  // the authority on the structure it emitted). See threemf-builder.ts.
+
   // Bambuddy parity: preset identity keys (printer_settings_id,
   // print_settings_id, filament_settings_id, master_extruder_id,
   // filament_map, filament_map_mode) ship in the BambuStudio reference
@@ -848,10 +861,41 @@ export async function buildSliceInput3MF(
   // orientation analysis.
   if (body.profiles?.machine) {
     projectSettings['printer_settings_id'] = body.profiles.machine;
+    // printer_model is what OrcaSlicer keys bed dimensions off when no
+    // named printer_settings_id preset is resolvable (e.g. user picked a
+    // custom profile that's a stub). Without it, slicer falls back to
+    // projectSettings.printable_area carried over from the imported 3MF —
+    // for cross-printer imports (e.g. A1mini 180x180 source re-sliced on
+    // P1S 256x256 target), the stale bed size rejects objects that fit
+    // the target printer ("plate 1: Nothing to be sliced, no object is
+    // fully inside the print volume", exit 206).
+    //
+    // body.profiles.machine is a settings_id like "Bambu Lab P1S (0.4 nozzle)"
+    // but OrcaSlicer's printer_model registry keys on the model family NAME
+    // ("Bambu Lab P1S") — the nozzle-suffix form matches no registered model
+    // and bed resolution silently fails. Strip the " (X nozzle)" suffix.
+    projectSettings['printer_model'] = body.profiles.machine.replace(/\s*\([^)]*nozzle[^)]*\)\s*$/i, '').trim();
   }
-  if (body.profiles?.process) {
-    projectSettings['print_settings_id'] = body.profiles.process;
-    projectSettings['default_print_profile'] = body.profiles.process;
+  // Bed dimensions come from the target printer's buildVolume (sent by the
+  // frontend), NOT the imported 3MF. Source 3MFs carry the original author's
+  // bed size (often a smaller printer than the user's target) and that bleeds
+  // through to the slicer, which then rejects objects that overflow the stale
+  // bed ("Nothing to be sliced, no object is fully inside the print volume",
+  // exit 206).
+  //
+  // OrcaSlicer's CLI reads bed dimensions from project_settings.config's
+  // printable_area/printable_height; it does NOT auto-resolve them from
+  // printer_model at slice time. The WIP that just deleted these keys
+  // (assuming the bundled machine preset would supply them) broke bed
+  // resolution for the CLI path. Write explicit values from buildVolume.
+  if (body.buildVolume) {
+    const bx = body.buildVolume.x;
+    const by = body.buildVolume.y;
+    projectSettings['printable_area'] = ['0x0', `${bx}x0`, `${bx}x${by}`, `0x${by}`];
+    projectSettings['printable_height'] = String(body.buildVolume.z);
+  } else {
+    // No buildVolume (no printer selected) — leave whatever the template /
+    // embedded 3MF carried. Don't delete; deleting caused exit 206.
   }
   const filamentNames: string[] = (body.filamentSlots && body.filamentSlots.length > 0)
     ? body.filamentSlots.map(s => s.profile).filter((n): n is string => !!n)
@@ -1115,9 +1159,14 @@ function sanitizeSentinelsAndZeroFilaments(settings: Record<string, unknown>, en
   // in the slicer's bundled vendor folder (exit 1). filament_settings_id is
   // left alone because it carries per-slot identity used by the slicer's
   // filament-output naming.
-  settings.printer_settings_id = '';
+  //
+  // printer_settings_id + printer_model are intentionally KEPT: OrcaSlicer
+  // resolves bed dimensions (printable_area/height) by loading the machine
+  // preset named in printer_settings_id. Clearing it left no machine preset
+  // loaded → bed fell back to 200x200 → objects rejected as out-of-volume
+  // ("Nothing to be sliced", exit 206). buildSliceInput3MF sets both from
+  // body.profiles.machine above; don't clobber.
   settings.print_settings_id = '';
-  settings.printer_model = '';
 
   // OrcaSlicer/BambuStudio exit 205: "Ooze prevention is only supported with
   // the wipe tower when 'single_extruder_multi_material' is off". Error fires
@@ -1169,6 +1218,7 @@ export async function runSliceJob(
   db.updateJobStatus(jobId, 'running');
   db.updateJobProgress(jobId, 5, 'Building 3MF...');
   onProgress?.(5, 'Building 3MF...');
+  emitJobProgress(jobId, 5, 'Building 3MF...');
 
   // Register the executor so the cancel route can reach it (see POST
   // /api/jobs/:id/cancel below). Cleared in the finally.
@@ -1185,6 +1235,7 @@ export async function runSliceJob(
 
     db.updateJobProgress(jobId, 15, 'Spawning slicer...');
     onProgress?.(15, 'Spawning slicer...');
+    emitJobProgress(jobId, 15, 'Spawning slicer...');
 
       // Build bambuddy-style profile stubs from the user's picker choices.
       // Sidecar walks `inherits` against its bundled slicer presets and
@@ -1223,6 +1274,7 @@ export async function runSliceJob(
           const mapped = Math.max(15, Math.min(95, progress));
           db.updateJobProgress(jobId, mapped, step);
           onProgress?.(mapped, step);
+          emitJobProgress(jobId, mapped, step);
         },
       );
 
@@ -1241,29 +1293,64 @@ export async function runSliceJob(
       }
 
       db.updateJobStatus(jobId, 'completed');
+      db.updateJobProgress(jobId, 100, '');
       if (result.gcodeSize) db.updateJobOutput(jobId, result.gcodeSize);
+      emitJobCompleted(jobId);
 
       // Rename gcode to use model name
+      let finalGcodePath = result.gcodePath;
       if (result.gcodePath) {
         const baseName = modelName.replace(/\.[^.]+$/, ''); // strip extension
         const gcodeName = `${baseName}.gcode`;
         const renamedPath = path.join(path.dirname(result.gcodePath), gcodeName);
-        try { fs.renameSync(result.gcodePath, renamedPath); } catch { /* keep original name */ }
+        try { fs.renameSync(result.gcodePath, renamedPath); finalGcodePath = renamedPath; } catch { /* keep original name */ }
+      }
+
+      // Inject Bambu-format layer count comment into HEADER_BLOCK so P1S/X1C
+      // firmware reports total_layer_num (OrcaSlicer only writes FOOTER flavor).
+      if (finalGcodePath && fs.existsSync(finalGcodePath)) {
+        try { injectBambuLayerCountHeader(finalGcodePath); } catch (e) {
+          console.warn(`[slice ${jobId}] injectBambuLayerCountHeader failed:`, e instanceof Error ? e.message : e);
+        }
       }
 
       // Parse estimates from gcode comments
-      if (result.gcodePath && fs.existsSync(result.gcodePath)) {
-        const estimates = parseGcodeEstimates(result.gcodePath, modelName);
+      if (finalGcodePath && fs.existsSync(finalGcodePath)) {
+        const estimates = parseGcodeEstimates(finalGcodePath, modelName);
         db.updateJobEstimates(jobId, estimates);
-      } else if (result.gcodePath) {
-        // Check renamed path
-        const renamed = path.join(path.dirname(result.gcodePath), `${modelName.replace(/\.[^.]+$/, '')}.gcode`);
-        if (fs.existsSync(renamed)) {
-          const estimates = parseGcodeEstimates(renamed, modelName);
-          db.updateJobEstimates(jobId, estimates);
-        }
       }
   } catch (err) {
+    // Dump diagnostic context to backend log BEFORE workDir cleanup deletes
+    // evidence. OrcaSlicer exits with generic "run found error" stderr while
+    // the real cause is in slicer.log (--logfile). Capture both here.
+    try {
+      const slicerLogPath = path.join(workDir, 'slicer.log');
+      const slicerLog = fs.existsSync(slicerLogPath)
+        ? fs.readFileSync(slicerLogPath, 'utf8').slice(-3000)
+        : '(no slicer.log)';
+      const inputPath = path.join(workDir, 'input.3mf');
+      const inputInfo = fs.existsSync(inputPath)
+        ? `${fs.statSync(inputPath).size} bytes`
+        : 'MISSING';
+      // Copy input.3mf to /tmp for inspection — OrcaSlicer "nothing to slice"
+      // errors require inspecting the built 3MF (object placement, plate meta).
+      if (fs.existsSync(inputPath)) {
+        const tmpPath = `/tmp/snorcal-failed-${jobId}.3mf`;
+        try { fs.copyFileSync(inputPath, tmpPath); console.warn(`[slice FAIL] input.3mf copied to ${tmpPath}`); } catch {}
+      }
+      console.error(`[slice FAIL ${jobId}]`, {
+        error: err instanceof Error ? err.message : String(err),
+        engine: body.engine,
+        modelId: body.modelId,
+        modelExists: body.modelId ? !!db.getModel(body.modelId) : 'n/a',
+        plateIndex: body.plateIndex,
+        modelsCount: body.models?.length,
+        modelsSummary: body.models?.map((m: any) => ({ modelId: m.modelId, visible: m.visible, kind: m.kind, name: m.name })),
+        inputInfo,
+        slicerLogTail: slicerLog,
+      });
+    } catch { /* best effort */ }
+
     // Failure (non-zero exit, spawn error, abort from cancel, 3MF build
     // failure) — remove the workDir so failed slices don't accumulate on
     // disk. Success path keeps the dir (holds output gcode; removed later by
@@ -1273,6 +1360,12 @@ export async function runSliceJob(
       try { fs.rmSync(workDir, { recursive: true, force: true }); } catch { /* best effort */ }
     } else {
       console.warn(`[slice] keeping failed workDir at ${workDir} (SNORCAL_KEEP_FAILED_SLICE=1)`);
+    }
+    // Notify SSE listeners — but skip aborts (cancel path sets 'cancelled'
+    // via the cancel route, not 'failed').
+    const isAbort = err instanceof Error && (err.name === 'AbortError' || /abort/i.test(err.message));
+    if (!isAbort) {
+      emitJobFailed(jobId, err instanceof Error ? err.message : String(err));
     }
     throw err;
   } finally {
@@ -1305,6 +1398,47 @@ export function runSliceDirect(
     const message = err instanceof Error ? `${err.message}\n${err.stack?.slice(0, 500)}` : String(err);
     db.updateJobStatus(jobId, 'failed', { errorMessage: message });
   });
+}
+
+/**
+ * Inject `; total layers count = N` into HEADER_BLOCK so Bambu firmware
+ * populates `total_layer_num` for OrcaSlicer-output gcodes. OrcaSlicer only
+ * writes this comment in FOOTER_BLOCK (Bambu format); Bambu firmware scans
+ * HEADER_BLOCK only → reports 0 layers → UI shows "Layer 0/0" mid-print.
+ * Idempotent: skips if Bambu-format comment already present in header.
+ */
+function injectBambuLayerCountHeader(gcodePath: string): void {
+  let content: string;
+  try { content = fs.readFileSync(gcodePath, 'utf-8'); } catch { return; }
+  const lines = content.split('\n');
+
+  // Resolve layer count: prefer Orca header comment, fall back to LAYER_CHANGE count.
+  let layerCount: number | undefined;
+  const headerEndIdx = lines.findIndex(l => l.includes('HEADER_BLOCK_END'));
+  const headerScanLimit = headerEndIdx > 0 ? headerEndIdx : 200;
+  for (let i = 0; i < Math.min(headerScanLimit, lines.length); i++) {
+    const m = lines[i].match(/;\s*total layer number:\s*(\d+)/i);
+    if (m) { layerCount = parseInt(m[1], 10); break; }
+  }
+  if (!Number.isFinite(layerCount as number)) {
+    let changes = 0;
+    for (const l of lines) if (/^;LAYER_CHANGE\b/.test(l)) changes++;
+    if (changes > 0) layerCount = changes;
+  }
+  if (!Number.isFinite(layerCount as number) || (layerCount as number) <= 0) return;
+
+  const startIdx = lines.findIndex(l => l.includes('HEADER_BLOCK_START'));
+  const endIdx = lines.findIndex(l => l.includes('HEADER_BLOCK_END'));
+  if (startIdx < 0 || endIdx < 0 || endIdx <= startIdx) return;
+
+  // Skip if Bambu-format comment already exists in HEADER_BLOCK (idempotent).
+  // OrcaSlicer always writes it in FOOTER_BLOCK — that doesn't count.
+  const headerSlice = lines.slice(startIdx, endIdx + 1);
+  if (headerSlice.some(l => /;\s*total layers count\s*=/.test(l))) return;
+
+  // Insert just before HEADER_BLOCK_END. Keep comment style Bambu-native.
+  lines.splice(endIdx, 0, `; total layers count = ${layerCount}`);
+  fs.writeFileSync(gcodePath, lines.join('\n'));
 }
 
 function parseGcodeEstimates(gcodePath: string, modelName: string): {
