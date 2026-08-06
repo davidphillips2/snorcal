@@ -18,6 +18,10 @@ interface CutToolProps {
   mesh: THREE.Mesh | null;
   baseName?: string;
   active: boolean;
+  /** Coarse pointer (touch). When true, the ring/plane drag is disabled —
+   *  rings + plane body are too small to hit reliably with a finger, and the
+   *  drag fights orbit. Touch users position the cut via the sliders instead. */
+  isCoarsePointer?: boolean;
   onCutComplete: (pieces: CutPiece[], mode: ResultMode) => void;
   onCancel: () => void;
 }
@@ -38,7 +42,7 @@ const DEG = Math.PI / 180;
  * (operationsUtils.js applies it per-triangle), so an arbitrarily oriented
  * cutter works without pre-rotating vertices.
  */
-export function CutTool({ sceneRefs, mesh, baseName = 'cut', active, onCutComplete, onCancel }: CutToolProps) {
+export function CutTool({ sceneRefs, mesh, baseName = 'cut', active, isCoarsePointer = false, onCutComplete, onCancel }: CutToolProps) {
   // Plane orientation: Euler in DEGREES for the inputs; gizmo reads radians.
   const [tiltDeg, setTiltDeg] = useState(0);   // rotation around local X
   const [yawDeg, setYawDeg] = useState(0);     // rotation around local Y
@@ -159,7 +163,7 @@ export function CutTool({ sceneRefs, mesh, baseName = 'cut', active, onCutComple
 
   // Pointer drag handlers — attach to canvas only while active.
   useEffect(() => {
-    if (!sceneRefs || !active || !mesh) return;
+    if (!sceneRefs || !active || !mesh || isCoarsePointer) return;
     const { camera, renderer, controls } = sceneRefs;
     const canvas = renderer.domElement;
 
@@ -458,20 +462,35 @@ export function CutTool({ sceneRefs, mesh, baseName = 'cut', active, onCutComple
   );
 }
 
-function NumField({ label, suffix, color, value, onChange }: {
+function NumField({ label, suffix, color, value, onChange, min = -180, max = 180 }: {
   label: string; suffix?: string; color?: string; value: number; onChange: (n: number) => void;
+  min?: number; max?: number;
 }) {
   return (
-    <label className="flex items-center gap-2">
-      <span className={`text-xs w-10 ${color ?? 'text-gray-400'}`}>{label}</span>
+    <div className="space-y-1">
+      <label className="flex items-center gap-2">
+        <span className={`text-xs w-10 ${color ?? 'text-gray-400'}`}>{label}</span>
+        <input
+          type="number"
+          step="1"
+          value={Number(value.toFixed(1))}
+          onChange={(e) => onChange(Number(e.target.value) || 0)}
+          className="flex-1 bg-gray-700 border border-gray-600 rounded px-2 py-1 text-xs text-white"
+        />
+        {suffix && <span className="text-xs text-gray-500">{suffix}</span>}
+      </label>
+      {/* Range slider — large hit target for touch, fine control on desktop.
+          Wraps at ±180° so dragging either direction reaches any angle. */}
       <input
-        type="number"
+        type="range"
+        min={min}
+        max={max}
         step="1"
-        value={Number(value.toFixed(1))}
-        onChange={(e) => onChange(Number(e.target.value) || 0)}
-        className="flex-1 bg-gray-700 border border-gray-600 rounded px-2 py-1 text-xs text-white"
+        value={Math.max(min, Math.min(max, value))}
+        onChange={(e) => onChange(Number(e.target.value))}
+        aria-label={label}
+        className="w-full accent-pink-500 h-6 cursor-pointer"
       />
-      {suffix && <span className="text-xs text-gray-500">{suffix}</span>}
-    </label>
+    </div>
   );
 }

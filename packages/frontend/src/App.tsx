@@ -1427,7 +1427,10 @@ export default function App() {
     // In every other mode (orbit, rotate) left-drag orbits empty space — the
     // transform gizmo intercepts left-drag on its own handles separately and
     // disables orbit via its dragging-changed event while a handle is dragged.
-    const leftDragOwnedByTool = isPaintMode || paintMode === 'cut' || paintMode === 'measure';
+    // Cut tool owns left-drag for ring/plane dragging on desktop (mouse).
+    // On touch the cut drag is disabled (rings too small) so orbit stays on.
+    const cutOwnsLeftDrag = paintMode === 'cut' && !isCoarsePointer();
+    const leftDragOwnedByTool = isPaintMode || cutOwnsLeftDrag || paintMode === 'measure';
 
     sceneRefs.controls.mouseButtons = {
       LEFT: leftDragOwnedByTool ? undefined : THREE.MOUSE.ROTATE,
@@ -2103,6 +2106,7 @@ export default function App() {
                 mesh={activeMesh}
                 baseName={activeModel?.name}
                 active={paintMode === 'cut'}
+                isCoarsePointer={isCoarsePointer()}
                 onCutComplete={handleCutComplete}
                 onCancel={() => setPaintMode('orbit')}
               />
