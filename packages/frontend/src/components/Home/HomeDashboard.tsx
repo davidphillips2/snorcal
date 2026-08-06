@@ -6,6 +6,7 @@ import * as api from '../../api/client';
 import { formatDurationShort } from '../../lib/gcode-stats';
 import { CameraView } from '../PrinterMonitor/CameraView';
 import { PrinterDashboard } from '../PrinterMonitor/PrinterDashboard';
+import { FilamentsPanel } from '../PrinterMonitor/FilamentsPanel';
 import { useToast } from '../Toast';
 import { useSSEEvent } from '../../hooks/useSSE';
 
@@ -30,6 +31,7 @@ export function HomeDashboard({ onSlice, onOpenJob, onOpenPrinter, onImportMaker
   const [statuses, setStatuses] = useState<Record<string, PrinterStatus>>({});
   const [jobs, setJobs] = useState<JobSummary[]>([]);
   const [showPrinterMgmt, setShowPrinterMgmt] = useState(false);
+  const [showFilaments, setShowFilaments] = useState(false);
   const [loading, setLoading] = useState(true);
   const [reconnectingId, setReconnectingId] = useState<string | null>(null);
 
@@ -112,6 +114,8 @@ export function HomeDashboard({ onSlice, onOpenJob, onOpenPrinter, onImportMaker
           <div className="flex items-center justify-between mb-3">
             <h2 className="text-sm font-semibold text-gray-300 uppercase tracking-wider">Printers</h2>
             <div className="flex gap-2">
+              <button onClick={() => setShowFilaments(true)}
+                className="text-xs text-gray-400 hover:text-white px-2 py-1">Filaments</button>
               <button onClick={() => setShowPrinterMgmt(true)}
                 className="text-xs text-gray-400 hover:text-white px-2 py-1">Manage</button>
               <button onClick={() => setShowPrinterMgmt(true)}
@@ -191,6 +195,9 @@ export function HomeDashboard({ onSlice, onOpenJob, onOpenPrinter, onImportMaker
 
       {showPrinterMgmt && (
         <PrinterDashboard onClose={() => { setShowPrinterMgmt(false); refresh(); }} />
+      )}
+      {showFilaments && (
+        <FilamentsPanel onClose={() => setShowFilaments(false)} />
       )}
     </div>
   );
