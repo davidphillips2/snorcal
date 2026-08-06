@@ -286,6 +286,12 @@ export function CutTool({ sceneRefs, mesh, baseName = 'cut', active, isCoarsePoi
 
   if (!active || !mesh) return null;
 
+  // Slider range for offset: half the largest mesh dimension, so the plane
+  // can sweep from one side of the model to the other.
+  const offsetRange = boundsRef.current
+    ? Math.max(...Object.values(boundsRef.current.getSize(new THREE.Vector3()))) / 2 + 5
+    : 100;
+
   const performCut = async () => {
     if (!mesh || !boundsRef.current || !gizmoRef.current) return;
     setBusy(true);
@@ -396,17 +402,30 @@ export function CutTool({ sceneRefs, mesh, baseName = 'cut', active, isCoarsePoi
         >reset rotation</button>
       </div>
 
-      <label className="flex items-center gap-2">
-        <span className="text-xs text-gray-400 w-12">Offset</span>
+      <div className="space-y-1">
+        <label className="flex items-center gap-2">
+          <span className="text-xs text-gray-400 w-12">Offset</span>
+          <input
+            type="number"
+            step="0.5"
+            value={Number(offset.toFixed(2))}
+            onChange={(e) => setOffset(Number(e.target.value) || 0)}
+            className="flex-1 bg-gray-700 border border-gray-600 rounded px-2 py-1 text-xs text-white"
+          />
+          <span className="text-xs text-gray-500">mm</span>
+        </label>
         <input
-          type="number"
+          type="range"
+          min={-offsetRange}
+          max={offsetRange}
           step="0.5"
-          value={Number(offset.toFixed(2))}
-          onChange={(e) => setOffset(Number(e.target.value) || 0)}
-          className="flex-1 bg-gray-700 border border-gray-600 rounded px-2 py-1 text-xs text-white"
+          value={Math.max(-offsetRange, Math.min(offsetRange, offset))}
+          onChange={(e) => setOffset(Number(e.target.value))}
+          aria-label="Offset"
+          className="w-full accent-pink-500 h-6 cursor-pointer"
         />
-        <span className="text-xs text-gray-500">mm</span>
-      </label>
+        <div className="text-[10px] text-gray-500">Slide the plane along its normal (through the model)</div>
+      </div>
 
       <div>
         <div className="text-[10px] text-gray-500 mb-1">Keep</div>
@@ -415,11 +434,19 @@ export function CutTool({ sceneRefs, mesh, baseName = 'cut', active, isCoarsePoi
             <button
               key={m}
               onClick={() => setKeepMode(m)}
-              className={`flex-1 py-1 rounded text-xs font-medium capitalize transition ${
+              aria-pressed={keepMode === m}
+              className={`flex-1 py-1 rounded text-xs font-medium transition ${
                 keepMode === m ? 'bg-pink-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
               }`}
-            >{m}</button>
+            >{m === 'both' ? 'Both' : m === 'upper' ? '▲ Above' : '▼ Below'}</button>
           ))}
+        </div>
+        <div className="text-[10px] text-gray-500 mt-1">
+          {keepMode === 'both'
+            ? 'Two pieces: above + below the plane.'
+            : keepMode === 'upper'
+              ? 'Keep the half on the side the arrow points (plane normal).'
+              : 'Keep the half opposite the arrow.'}
         </div>
       </div>
 
