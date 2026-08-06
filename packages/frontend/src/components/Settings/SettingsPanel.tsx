@@ -279,6 +279,28 @@ export function SettingsPanel({
     onSettingsChange({ ...settings, [key]: value });
   }, [settings, onSettingsChange]);
 
+  // Load a process profile's settings into the `settings` state when the user
+  // picks one from the dropdown. Previously selecting a process only stored its
+  // name — the slicer was expected to resolve the named preset and overlay its
+  // values, but snorcal embeds settings inline and clears the preset-id keys,
+  // so the named lookup never happened and layer_height (etc.) never changed.
+  // This merges the picked profile's values over the current settings.
+  const lastLoadedProcess = useRef<string | null>(null);
+  useEffect(() => {
+    const name = selectedProfiles.process;
+    if (!name || name === lastLoadedProcess.current) return;
+    lastLoadedProcess.current = name;
+    api.getProfileSettings(engine, 'process', name).then((blob: any) => {
+      if (!blob || typeof blob !== 'object') return;
+      // Flatten: profile blob may nest under a top-level key or be flat.
+      const flat: Record<string, string> = {};
+      for (const [k, v] of Object.entries(blob)) {
+        if (typeof v === 'string' || typeof v === 'number') flat[k] = String(v);
+      }
+      if (Object.keys(flat).length === 0) return;
+      onSettingsChange({ ...settings, ...flat });
+    }).catch(() => { /* profile fetch failed — leave settings as-is */ });
+  }, [selectedProfiles.process, engine]);
   const handleMultiMaterialToggle = (enabled: boolean) => {
     if (enabled) {
       const changes = Object.entries(MULTI_MATERIAL_PRESET)
