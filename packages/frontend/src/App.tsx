@@ -569,6 +569,19 @@ export default function App() {
           // to 100 (or last for failed) so the bar doesn't freeze at whatever
           // the last progress tick happened to land on.
           if (msg.type === 'job:completed') {
+            // SSE event carries only jobId — fetch the full job row so the
+            // card picks up estimates (time/filament/size) the backend parsed
+            // from the gcode post-slice. Without this, optimistic status flip
+            // stops the polling fallback before estimates are read.
+            api.getJob(jobId).then(r => {
+              setJobs(prev => prev.map(jj => jj.id === jobId ? {
+                ...jj,
+                estimatedTime: r.estimatedTime,
+                filamentUsedG: r.filamentUsedG,
+                filamentCost: r.filamentCost,
+                gcodeSize: r.gcodeSize,
+              } : jj));
+            }).catch(() => {});
             return { ...j, status: 'completed', progress: 100, currentStep: undefined, errorMessage: undefined };
           }
           if (msg.type === 'job:failed') {
