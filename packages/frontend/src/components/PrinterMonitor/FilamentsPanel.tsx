@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
-import type { PrinterRecord, PrinterStatus } from '@snorcal/shared';
+import type { AmsSlot, PrinterRecord, PrinterStatus } from '@snorcal/shared';
 import * as api from '../../api/client';
 import { Modal } from '../Modal';
+import { AmsEditor } from './AmsEditor';
 import { useSSEEvent } from '../../hooks/useSSE';
 import { connectionColor } from '../../lib/status-colors';
 
@@ -30,6 +31,7 @@ export function FilamentsPanel({ onClose }: Props) {
   const [printers, setPrinters] = useState<PrinterRecord[]>([]);
   const [statuses, setStatuses] = useState<Record<string, PrinterStatus>>({});
   const [loading, setLoading] = useState(true);
+  const [editing, setEditing] = useState<{ printerId: string; slot: AmsSlot } | null>(null);
 
   const refresh = async () => {
     try {
@@ -110,12 +112,15 @@ export function FilamentsPanel({ onClose }: Props) {
                   <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2">
                     {slots.map((slot, i) => {
                       const hex = slot.color ? `#${slot.color.replace(/^#/, '').slice(0, 6)}` : '#444';
+                      // AMS slots are editable + pushable to the printer (Bambu).
+                      // Manual slots are snorcal-local only — no remote push on Klipper.
+                      const canEdit = slot.source === 'ams' && p.protocol === 'bambu';
                       return (
                         <div key={i} className="flex items-center gap-2 bg-gray-800 rounded p-2">
                           <span className="w-7 h-7 rounded border border-gray-600 flex-shrink-0"
                             style={{ backgroundColor: hex }}
                             title={hex} />
-                          <div className="min-w-0">
+                          <div className="min-w-0 flex-1">
                             <div className="text-[10px] text-gray-500">{slot.label}</div>
                             <div className="text-xs text-white truncate">{slot.type ?? 'unknown'}</div>
                             <div className="text-[10px] text-gray-500 truncate">
@@ -123,6 +128,17 @@ export function FilamentsPanel({ onClose }: Props) {
                               {slot.remain !== undefined && <span>{slot.remain}%</span>}
                             </div>
                           </div>
+                          {canEdit && (
+                            <button
+                              onClick={() => {
+                                const amsSlot = statuses[p.id]?.ams?.[i];
+                                if (amsSlot) setEditing({ printerId: p.id, slot: amsSlot });
+                              }}
+                              aria-label={`Edit ${slot.label}`}
+                              title="Edit + push to printer"
+                              className="text-gray-400 hover:text-white text-xs px-1 shrink-0"
+                            >✎</button>
+                          )}
                         </div>
                       );
                     })}
@@ -133,6 +149,15 @@ export function FilamentsPanel({ onClose }: Props) {
           })
         )}
       </div>
+
+      {editing && (
+        <AmsEditor
+          printerId={editing.printerId}
+          slot={editing.slot}
+          onClose={() => setEditing(null)}
+          onSaved={() => { setEditing(null); refresh(); }}
+        />
+      )}
     </Modal>
   );
 }
