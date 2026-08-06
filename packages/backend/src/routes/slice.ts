@@ -876,6 +876,19 @@ export async function buildSliceInput3MF(
     // and bed resolution silently fails. Strip the " (X nozzle)" suffix.
     projectSettings['printer_model'] = body.profiles.machine.replace(/\s*\([^)]*nozzle[^)]*\)\s*$/i, '').trim();
   }
+  // Process preset identity. OrcaSlicer resolves the named process preset
+  // (walking inherits into its built-in system presets) and overlays those
+  // values on the embedded project_settings — this is how layer_height etc.
+  // actually change when the user picks a different process profile. The
+  // values aren't in snorcal's DB (they live in the slicer's compiled
+  // defaults), so the only way to apply them is via the named lookup.
+  //
+  // The historical SIGSEGV (v0.1.26) came from REWRITING a valid name to a
+  // non-existent one; setting the user's actual DB-sourced selection is safe.
+  if (body.profiles?.process) {
+    projectSettings['print_settings_id'] = body.profiles.process;
+    projectSettings['default_print_profile'] = body.profiles.process;
+  }
   // Bed dimensions come from the target printer's buildVolume (sent by the
   // frontend), NOT the imported 3MF. Source 3MFs carry the original author's
   // bed size (often a smaller printer than the user's target) and that bleeds
@@ -1166,7 +1179,14 @@ function sanitizeSentinelsAndZeroFilaments(settings: Record<string, unknown>, en
   // loaded → bed fell back to 200x200 → objects rejected as out-of-volume
   // ("Nothing to be sliced", exit 206). buildSliceInput3MF sets both from
   // body.profiles.machine above; don't clobber.
-  settings.print_settings_id = '';
+  //
+  // print_settings_id is ALSO kept: OrcaSlicer resolves the named process
+  // preset (walking inherits into built-in system presets) and overlays its
+  // values (layer_height, speeds, etc.) on the embedded settings. Those
+  // values aren't in snorcal's DB — they live in the slicer's compiled
+  // defaults — so the named lookup is the only way to apply a process
+  // profile change. Clearing it made process selection cosmetic.
+  // buildSliceInput3MF sets it from body.profiles.process above.
 
   // OrcaSlicer/BambuStudio exit 205: "Ooze prevention is only supported with
   // the wipe tower when 'single_extruder_multi_material' is off". Error fires

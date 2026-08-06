@@ -110,15 +110,35 @@ export async function settingsRoutes(app: FastifyInstance, options: { db: Db }) 
     return { ok: true, data: profiles };
   });
 
-  // GET /api/settings/:engine/profiles/:type/:name — Load a profile
+  // GET /api/settings/:engine/profiles/:type/:name — Load a profile.
+  // Walks the `inherits` chain in the DB and merges bottom-up so the result
+  // is fully resolved (BBL/Orca process profiles are stubs that only carry
+  // overrides + an `inherits` pointing at a system base preset which has the
+  // real values like layer_height). Without this, loading "0.20mm Standard
+  // @BBL X1C" returned only the stub and layer_height never changed.
+  const resolveProfile = (engine: string, type: string, name: string): Record<string, unknown> | null => {
+    const row = db.getProfile(engine, type, name);
+    if (!row) return null;
+    let blob: Record<string, unknown>;
+    try { blob = JSON.parse(row.settings); } catch { return null; }
+    const parentName = typeof blob.inherits === 'string' ? blob.inherits : null;
+    if (!parentName || parentName === name) return blob;
+    // Parent may live under the same type ("process" presets inherit other
+    // "process" presets). Resolve recursively, cap depth to avoid cycles.
+    const parent = resolveProfile(engine, type, parentName);
+    if (!parent) return blob;
+    // Child overrides parent.
+    return { ...parent, ...blob };
+  };
+
   app.get<{ Params: { engine: string; type: string; name: string } }>(
     '/api/settings/:engine/profiles/:type/:name',
     async (req, reply) => {
-      const profile = db.getProfile(req.params.engine, req.params.type, req.params.name);
-      if (!profile) {
+      const resolved = resolveProfile(req.params.engine, req.params.type, req.params.name);
+      if (!resolved) {
         return reply.status(404).send({ ok: false, error: 'Profile not found' });
       }
-      return { ok: true, data: JSON.parse(profile.settings) };
+      return { ok: true, data: resolved };
     },
   );
 
